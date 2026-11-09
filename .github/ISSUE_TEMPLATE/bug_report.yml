@@ -1,0 +1,24 @@
+name: Bug report
+description: Report a reproducible problem in Sassato.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Include expected behavior. Do not include real workspace data or secrets.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Commands and a small example using fake data.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Sassato build, Node version, operating system, and relevant provider version.
+    validations:
+      required: true

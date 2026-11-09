@@ -1,0 +1,12 @@
+{
+  "workspace": "my-project",
+  "working_dir": ".",
+  "default_human": "alice",
+  "import_timezone": "UTC",
+  "roles": [
+    { "name": "builder", "kind": "agent", "provider": "claude", "working_dir": "." },
+    { "name": "reviewer", "kind": "agent", "provider": "codex", "working_dir": "." },
+    { "name": "alice", "kind": "human" },
+    { "name": "bob", "kind": "human" }
+  ]
+}

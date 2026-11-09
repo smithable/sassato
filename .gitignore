@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.tgz
+.artifacts/
+*.db*
+
+.env
+.env.*
+!.env.example
+*.log
+HANDOFF.md
+docs/checkpoint-*.md
+docs/implementation-plan.md
+*.local.json

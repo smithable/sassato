@@ -1,0 +1,35 @@
+{
+  "default_human": "human",
+  "import_timezone": "Europe/Helsinki",
+  "roles": [
+    {
+      "name": "a",
+      "provider": "claude",
+      "model": "fixture-model"
+    },
+    {
+      "name": "b",
+      "provider": "claude",
+      "model": "fixture-model"
+    },
+    {
+      "name": "c",
+      "provider": "claude",
+      "model": "fixture-model"
+    },
+    {
+      "name": "lead",
+      "provider": "claude",
+      "model": "fixture-model"
+    },
+    {
+      "name": "coordinator",
+      "provider": "claude",
+      "model": "fixture-model"
+    },
+    {
+      "name": "human",
+      "kind": "human"
+    }
+  ]
+}
