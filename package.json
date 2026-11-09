@@ -30,7 +30,8 @@
     "CONTRIBUTING.md",
     "SECURITY.md",
     "docs/configuration.md",
-    "docs/compatibility.md"
+    "docs/compatibility.md",
+    "docs/context-management.md"
   ],
   "scripts": {
     "build": "tsc && node scripts/build-info.mjs",

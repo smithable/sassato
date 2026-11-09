@@ -33,6 +33,13 @@ One optional review gate requires a recorded independent approval before complet
 
 ## Search and context
 
+Recovery checkpoints use append-only `checkpoint` events and the existing WIP row;
+no schema change is required. Saving both is atomic and uses WIP optimistic version
+checks. A fingerprint of relevant durable state and a 24-hour age check mark old
+recovery records stale. Session heartbeats do not affect freshness. `context advise`
+combines that state with explicit agent reports in a read-only snapshot; it never
+measures provider context or invokes compaction. See [context management](context-management.md).
+
 A shared documents table feeds an external-content FTS5 index with unicode61 and prefix
 indexes. SQLite triggers update the index in the source mutation transaction. Search ranks
 with BM25 and returns bounded snippets plus IDs. User query words are quoted, with optional

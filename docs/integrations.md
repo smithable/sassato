@@ -47,6 +47,13 @@ bounded context. Merge `examples/claude-settings.example.json` into your own set
 after editing its script path. Existing settings are never overwritten. No Codex hook
 configuration is installed; Codex workers read context and inbox between tasks.
 
+At task boundaries, save recovery state with `checkpoint save` and consult
+`context advise` using an honest report of task relatedness, context pressure and
+running jobs. After clearing or compaction, read `checkpoint show` and current
+context, then verify the working files. The hook reloads context but does not save
+discoveries before a reset. See [context management](context-management.md) for
+commands, provider limits and the conservative recommendation policy.
+
 ## Stop and resume work
 
 ```sh

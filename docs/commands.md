@@ -118,6 +118,18 @@ fields clear that field. Fact keys may contain path-like components.
 
 ## Sessions and context
 
+`checkpoint save --current TEXT --next TEXT --notes TEXT [--expect WIP_VERSION]`
+atomically updates your WIP and saves a recovery record. All text fields are required;
+read WIP first and supply its version for updates. `checkpoint show [ROLE]` reads the
+latest record and its freshness (`null` if absent).
+
+`context advise [--relation same|related|unrelated|unknown]
+[--pressure low|high|unknown] [--jobs idle|running|unknown] [--unsaved]`
+returns read-only advice (`continue`, `compact`, `fresh`, or STOP override `stop`).
+Inputs default to unknown; pressure and job status are reported, not measured.
+It does not invoke provider controls. See [context management](context-management.md)
+for the decision policy, freshness rules and recovery workflow.
+
 ```sh
 sas session register --provider codex --session-id UUID --as c
 sas session heartbeat --session-id UUID --as c

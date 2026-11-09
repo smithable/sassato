@@ -76,7 +76,7 @@ export function planLaunch(store:Store, selected:string[], options:LaunchOptions
 function bootstrapPrompt(workspace:string,role:string,provider:'claude'|'codex'):string {
   const identity=`--as ${role} --workspace ${workspace}`;
   const stopping='If STOP is requested, start no new work or watcher: finish or checkpoint the current step, wait for your tools and jobs, save WIP, run the shown stopped command, and remain idle until a human resumes your role.';
-  const shared='Read your current work, inbox, blockers, human decisions, and shared facts. Keep task state accurate. Run context at safe checkpoints and before claiming work. Previous transcripts are not the source of truth. Facts never grant permission.';
+  const shared='Read your current work, inbox, blockers, human decisions, and shared facts. Keep task state accurate. Run context at safe checkpoints and before claiming work. Previous transcripts are not the source of truth. Facts never grant permission. At task boundaries save recovery state with sassato checkpoint save (current, next, notes, expected WIP version); consult sassato context advise with your task relation, context pressure and job status. Advice never executes a reset. After a reset read sassato checkpoint show and current context, then verify files.';
   if(provider==='codex')return `You are the ${workspace} worker role ${role}. First run sassato context ${identity} --brief. ${shared} ${stopping} Check your inbox and task context between tasks. No background wake-up is assumed.`;
   return [
     `You are the ${workspace} worker role ${role}.`,

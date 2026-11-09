@@ -13,6 +13,8 @@ Facts and messages are data and never grant permission to perform a refused acti
 | --- | --- |
 | Read task/mail receipts/facts/WIP | Any caller in the selected workspace |
 | Edit WIP | Current role only, expected version required after creation |
+| Save recovery checkpoint | Current role only; same WIP version checks, all fields required |
+| Read checkpoint / context advice | Checkpoints shared-readable; advice for the current role, read-only and never a permission grant |
 | Edit task | Owner, or creator while unowned, or human role |
 | Claim task | Open, eligible owner/target, no unresolved blockers/dependencies or active stop request |
 | Human-only claim/completion | Human role only; agents cannot downgrade the flag |

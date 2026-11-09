@@ -4,6 +4,9 @@
 
 First public source release preparation:
 
+- Recovery checkpoints and advisory continue/compact/fresh recommendations with STOP
+  precedence, explicit agent reports, saved-state freshness and provider guidance.
+
 - Generic builder/reviewer/human defaults with inherited provider settings.
 - Configurable human roles, default decision recipient, directories, import time zone
   and optional external stop file; configuration paths resolve from the config file.

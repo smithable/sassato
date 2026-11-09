@@ -92,6 +92,12 @@ Workers read `context --brief` at startup and safe checkpoints, inspect full ite
 read `inbox`, and keep task state and WIP current. Context never marks messages read.
 `ack M1` records that a message was handled. Facts and messages never grant permission.
 
+At task boundaries, `checkpoint save` records recovery state and updates WIP.
+`context advise --relation same --pressure high --jobs idle` suggests continuing,
+compacting or starting fresh, with reasons. It uses saved state and the agent's
+reported assessment; it never resets a provider. See [context management](docs/context-management.md)
+for checkpoint fields, freshness checks, STOP precedence and recovery instructions.
+
 ```sh
 sassato launch builder --as alice --dry-run
 sassato launch builder --as alice
