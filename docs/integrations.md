@@ -102,7 +102,9 @@ record for recovery. See [durable progress](context-management.md#durable-notifi
 The Claude launch prompt instructs the worker to keep exactly one provider-native background
 tool task waiting. It does not install a daemon or use private messaging APIs. A session
 already idle without a waiter needs an initial human nudge. Codex startup assumes no
-background wake-up and checks the inbox between tasks.
+background wake-up and checks the inbox between tasks. When no actionable work remains, its
+default is an ordinary foreground `sassato wait --timeout 60`, using reconciled notification
+progress. It handles the result and waits again; it should continue existing work before waiting.
 
 ## Import legacy Markdown
 
@@ -152,3 +154,57 @@ preserved. See [upgrade compatibility](compatibility.md) before switching CLI ve
 
 After safely handling urgent mail, run `sassato ack MESSAGE_ID --as ROLE --workspace WORKSPACE`
 before rearming the waiter. Reading the inbox alone leaves urgent notifications pending.
+
+
+## Experimental Codex queue watcher
+
+The default remains foreground `sassato wait`. An optional foreground watcher can queue a
+fixed instruction to check Sassato in an **existing registered Codex thread**. It uses the
+[documented Codex queue command](https://learn.chatgpt.com/docs/developer-commands?surface=cli),
+`codex queue --thread ID --message TEXT --resume --remote ENDPOINT`,
+not a second `codex exec resume` writer. App-server is experimental. Queue acceptance is
+not proof that a model turn ran or finished; inspect the thread and Sassato inbox.
+
+This is off by default and intended for isolated validation before a supervised rollout.
+Native approval behavior, long idle periods, server restart and machine reboot must be checked
+for the installed provider version before production use. The watcher never answers an
+approval, starts a new thread, or passes model, sandbox or approval overrides. It never reads
+provider transcripts or private session databases. The operator owns the app-server lifecycle.
+
+After registering the existing thread and reconciling its notification progress, a human can
+configure a local endpoint and explicitly start the watcher:
+
+```sh
+sassato workspace set --codex-watch '{"reviewer":{"remote":"unix:///absolute/path/codex.sock"}}' --as human
+sassato watch reviewer --as human
+# Equivalent, with a dedicated Windows Terminal window under WSL:
+sassato launch reviewer --watch --new-window --as human
+```
+
+Setting `codex_watch` does not start anything. Ordinary `launch` keeps its existing behavior;
+`--watch` selects the foreground watcher. A watcher holds the same exclusive role lock as a
+normal launcher, so two cannot own a role at once. An already open launcher must exit before
+a separate watcher can acquire that lock; do not remove a live lock. The remote Codex TUI may
+attach separately to the same daemon with `codex --remote ENDPOINT resume THREAD_ID`.
+No cron job, daemon or restart policy is installed by Sassato.
+
+`watch` uses saved notification progress, or an explicit `--since CURSOR` after reconciliation.
+Only the agent saves durable notification progress. Stored mail text and task titles never
+become queued prompts. Each queue attempt records the role, reason, event/message ID and exit
+code in Sassato's audit log. A warning or ambiguous output stops the watcher visibly; even a
+successful queue command only means “queued”. Repeated urgent notifications are retried after
+five minutes and then fifteen minutes. If still unhandled fifteen minutes after the third attempt,
+that notification is marked exhausted with a visible audit event. Other notifications remain
+watched; acknowledging mail removes its retry state. STOP queues one fixed stop instruction and exits (an already acknowledged STOP exits without
+waking the stopped worker). Starting again
+requires a human to resume work and explicitly restart the watcher; removing a stop file alone
+does not rearm an exited watcher.
+
+Use `sassato workspace set --codex-watch '{}' --as human` to disable future watcher starts.
+Stop any currently running foreground watcher separately. Recheck the audit log after any
+interruption before restarting: a process crash between queue acceptance and recording its
+result cannot provide exactly-once delivery.
+
+The configured endpoint must own the registered thread. Attach any interactive TUI to that
+same daemon; do not aim a watcher at a thread being driven by a separate standalone TUI.
+Sassato's role lock coordinates Sassato launchers, not independently started provider processes.

@@ -44,6 +44,7 @@ export function setRole(s: Store, roleName: string, input: RoleInput): Row {
     }
     const provider = input.provider === undefined ? old?.provider ?? null : optionalText(input.provider, 'provider', 40);
     if (provider !== null) name(provider);
+    check(!workspaceSettings(s).codex_watch[role]||(kind==='agent'&&provider==='codex'),'Disable this role in workspace codex_watch before changing its kind or provider',3);
     const model = input.model === undefined ? old?.model ?? null : optionalText(normalizeOption(input.model), 'model', 200);
     const launchOptions = Object.fromEntries(ROLE_OPTION_KEYS.map(key => [key,input[key] === undefined ? old?.[key] ?? null : normalizeOption(input[key]) ?? null]));
     for (const key of ['permission_mode','sandbox_mode','approval_policy'] as const) {
@@ -148,12 +149,24 @@ export function heartbeat(s: Store, external?: string): Row {
     return { ...row,id:`S${row.id}`,last_seen_at:at,state:sessionState(row) };
   });
 }
-export function endSession(s: Store, external?: string): Row {
+export function endSession(s: Store, external?: string, targetRole?:string): Row {
   return s.tx(() => {
-    const row = currentSession(s,external), at = now();
-    s.run('UPDATE sessions SET ended_at=? WHERE workspace_id=? AND id=?',at,s.ws,row.id);
-    s.event('session',`S${row.id}`,'ended',{ role: row.role });
-    return { ...row,id:`S${row.id}`,ended_at:at,state:'ended' };
+    let row:Row;
+    if(targetRole===undefined)row=currentSession(s,external);
+    else {
+      s.requireHuman();const target=name(targetRole);
+      check(s.role(target).kind==='agent','Human session-end override applies to agent roles',3);
+      const latest=s.get('SELECT * FROM sessions WHERE workspace_id=? AND role=? ORDER BY (ended_at IS NULL) DESC,id DESC LIMIT 1',s.ws,target);
+      check(latest,'No session registered for the target role',3);
+      if(external!==undefined)check(latest.external_id===externalId(external),'Session was replaced; inspect the current registration before ending it',4);
+      // A remote turn may outlive the terminal that already ended this row.
+      // Human verification must produce a new audit event without impersonating it.
+      row=latest;
+    }
+    const at=now();
+    s.run('UPDATE sessions SET ended_at=coalesce(ended_at,?) WHERE workspace_id=? AND id=?',at,s.ws,row.id);
+    s.event('session',`S${row.id}`,'ended',{ role: row.role,...(targetRole===undefined?{}:{human_override:true}) });
+    return { ...row,id:`S${row.id}`,ended_at:row.ended_at??at,state:'ended' };
   });
 }
 
@@ -222,13 +235,52 @@ export function setFact(s: Store, key: string, input: FactInput): Row {
     return publicFact(result);
   });
 }
-export function facts(s: Store, options: { key?: string; limit?: number } = {}): Row[] {
-  return (options.key === undefined ? s.all('SELECT * FROM facts WHERE workspace_id=? ORDER BY id DESC LIMIT ?',s.ws,limit(options.limit)) : s.all('SELECT * FROM facts WHERE workspace_id=? AND key=?',s.ws,options.key)).map(publicFact);
+function factTimeParts(value:string,zone:string):Record<string,string> {
+  return Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(new Date(value)).map(part=>[part.type,part.value]));
+}
+function factDay(value:string,zone:string):string {
+  const p=factTimeParts(value,zone);return `${p.year.padStart(4,'0')}-${p.month}-${p.day}`;
+}
+export function facts(s: Store, options: { key?: string; limit?: number; since?:string } = {}): Row[] {
+  return s.snapshot(()=>{
+  if(options.key!==undefined)return s.all('SELECT * FROM facts WHERE workspace_id=? AND key=?',s.ws,options.key).map(publicFact);
+  const count=limit(options.limit);
+  if(options.since===undefined)return s.all('SELECT * FROM facts WHERE workspace_id=? ORDER BY updated_at DESC,id DESC LIMIT ?',s.ws,count).map(publicFact);
+  const day=options.since,utc=Date.parse(`${day}T00:00:00.000Z`);
+  check(/^\d{4}-\d{2}-\d{2}$/.test(day)&&Number.isFinite(utc)&&new Date(utc).toISOString().slice(0,10)===day,'--since must be a calendar date in YYYY-MM-DD form');
+  const zone=workspaceSettings(s).import_timezone,result:Row[]=[];
+  // Fetch bounded pages beginning before every possible local midnight. Comparing
+  // calendar dates in the workspace zone also handles midnight DST transitions.
+  let after=new Date(utc-36*3_600_000).toISOString(),afterId=0;
+  while(result.length<count) {
+    const rows=s.all('SELECT * FROM facts WHERE workspace_id=? AND (updated_at>? OR (updated_at=? AND id>?)) ORDER BY updated_at,id LIMIT 100',s.ws,after,after,afterId);
+    if(!rows.length)break;
+    for(const row of rows)if(factDay(row.updated_at,zone)>=day) {result.push(publicFact(row));if(result.length===count)break;}
+    const last=rows[rows.length-1];after=last.updated_at;afterId=last.id;
+  }
+  return result;
+  });
 }
 export function factHistory(s: Store, key: string): Row[] {
   const fact = s.get('SELECT id FROM facts WHERE workspace_id=? AND key=?',s.ws,key);
   check(fact,'Fact not found',3);
   return s.all("SELECT * FROM events WHERE workspace_id=? AND entity='fact' AND entity_id=? ORDER BY id",s.ws,`F${fact.id}`).map(row => ({ ...row,id:`E${row.id}`,detail:JSON.parse(row.detail) }));
+}
+/** Human-readable facts keep the full version text and provenance out of generic clipping. */
+export function renderFacts(s:Store,rows:Row[],kind:'list'|'get'|'history'):string {
+  if(!rows.length)return 'No matching facts.';
+  const zone=workspaceSettings(s).import_timezone;
+  const clean=(value:unknown)=>String(value??'').replace(/[\x00-\x08\x0b-\x1f\x7f]/g,' ');
+  const oneLine=(value:unknown)=>clean(value).replace(/\s+/g,' ').trim();
+  const stamp=(value:string)=>{const p=factTimeParts(value,zone);return `${p.year.padStart(4,'0')}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second} ${zone}`;};
+  return rows.map(row=>{
+    const fact=kind==='history'?row.detail.after:row;
+    const identity=kind==='history'?row.entity_id:fact.id;
+    const provenance=`set by ${oneLine(fact.updated_by)} at ${stamp(fact.updated_at)}, source: ${oneLine(fact.source)}`;
+    const heading=`${identity} ${oneLine(fact.key)} · version ${fact.version}`;
+    if(kind==='list') {const body=oneLine(fact.body);return `${heading} · ${body.length>220?body.slice(0,220)+'…':body} · ${provenance}`;}
+    return `${heading}\n${clean(fact.body)}\n${provenance}\nchecked at ${stamp(fact.checked_at)}`;
+  }).join(kind==='list'?'\n':'\n\n');
 }
 export interface WipInput { current?: string; next?: string; notes?: string; expected_version?: number }
 export function setWip(s: Store, input: WipInput): Row {
@@ -282,7 +334,7 @@ export function context(s: Store, options: { since?: number; limit?: number } = 
     const stop = s.get('SELECT id,requested_at,acknowledged_at FROM stop_requests WHERE workspace_id=? AND role=? AND cleared_at IS NULL',s.ws,actor);
     if (stop) sections.stop = [{id:`R${stop.id}`,requested_at:stop.requested_at,acknowledged:!!stop.acknowledged_at,
       instruction:stop.acknowledged_at ? 'Checkpoint acknowledged. Stay stopped until a human resumes work.' : `Stop new work. Finish safely; wait for your tools/background jobs to stop; save a resumable checkpoint; then run sas stopped R${stop.id} --as ${actor}.`}];
-    const taskRow = (r:Row) => ({id:`T${r.id}`,title:clip(r.title,120),status:r.status,owner:r.owner,stale:!!r.lease_until && r.lease_until < now()});
+    const taskRow = (r:Row) => ({id:`T${r.id}`,title:clip(r.title,120),status:r.status,owner:r.owner,...(r.status==='open'&&r.owner===actor?{claim_required:true,take_command:`sassato take T${r.id} --as ${actor} --workspace ${s.workspace}`} : {}),stale:!!r.lease_until && r.lease_until < now()});
     section('work',"SELECT id,title,status,owner,lease_until FROM tasks WHERE workspace_id=? AND owner=? AND status IN ('doing','blocked','review') ORDER BY priority DESC,id",[s.ws,actor],taskRow);
     const wip = s.get('SELECT substr(current,1,160) AS current,substr(next,1,160) AS next,substr(notes,1,160) AS notes,version,updated_at FROM wip WHERE workspace_id=? AND role=?',s.ws,actor);
     sections.wip = wip ? [{stale:!Number.isFinite(Date.parse(wip.updated_at))||Date.now()-Date.parse(wip.updated_at)>24*60*60_000,updated_at:wip.updated_at,version:wip.version,current:clip(wip.current),next:clip(wip.next),notes:clip(wip.notes)}] : [];

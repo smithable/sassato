@@ -322,3 +322,37 @@ Urgent messages continue to wake the waiter after reading until `ack M1` records
 handling. Wait output includes up to 2,000 characters and an identity-qualified inbox
 command when truncated. Without `--since` or saved notification progress, `wait`
 fails with an input error instead of silently skipping events. STOP still takes precedence.
+
+
+### Watch an existing Codex thread (experimental)
+
+`watch ROLE [--since CURSOR] [--new-window] --as HUMAN` is equivalent to
+`launch ROLE --watch`. It requires a human-configured `codex_watch` workspace setting,
+a registered Codex thread and reconciled notification progress. It holds the launch lock,
+runs in the foreground, and never creates a thread or overrides its native permissions.
+See [watcher setup and limitations](integrations.md#experimental-codex-queue-watcher).
+
+A restored task whose work lease expired becomes open while retaining its owner. The owner
+must `take` it again; context marks these rows `claim_required` and gives the command.
+`answer --close` is atomic: if restored work still requires review, neither the answer nor the
+closure is saved. Retry `answer` without `--close` to record the decision and preserve review.
+
+Force stop gives a verified provider five seconds after SIGTERM before considering SIGKILL,
+even if the cooperative wait timeout expired. A registration without a verifiable PID stays
+waiting until the worker acknowledges. If a human independently verifies that the provider
+and its jobs have stopped, they may explicitly end that role's session registry entry using
+the command shown in stop status. Ending a registration is not a process stop command.
+
+A queued remote Codex turn can outlive its terminal PID. Stop status therefore remains waiting
+after queue attempts until the worker acknowledges, or a human verifies the remote turn and
+jobs have stopped and explicitly ends the session registration with `session end --for ROLE --as HUMAN`. Terminal exit alone is insufficient.
+
+`fact get KEY` and `fact history KEY` show full text, version, setter, timestamps and source.
+`facts` lists the most recently updated facts first. `facts --since YYYY-MM-DD` lists current
+facts updated from that calendar day onward, oldest first, in the workspace `import_timezone`.
+Use `--limit` to increase the list length; use history for earlier versions of a fact. JSON keeps
+raw UTC timestamps.
+
+`session end --for ROLE --as HUMAN` records the human actor while ending the selected role's
+latest registration, including a previously ended terminal entry. It does not kill a process
+or override evidence of a still-running PID. Agents may only end their own active registration.

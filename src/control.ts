@@ -21,6 +21,8 @@ export interface StopRequest {
   process_start: string | null;
   pending_work: number;
   launcher_pending: boolean;
+  waiting_reason?: string;
+  human_action?: string;
 }
 export interface SelectionOptions { all?: boolean }
 function selectedRoles(s: Store, selected: string[], options: SelectionOptions, requesting: boolean): string[] {
@@ -64,14 +66,29 @@ function view(s: Store, row: Row): StopRequest {
   // An end marker alone does not prove exit: an identified PID must be verified gone/reused.
   const verifiedExit = !!session?.pid && !!session?.process_start && (currentState === 'stale' || currentState === 'ended');
   const launcherPending = pendingLauncher(s,row.role);
+  // A remote queue can outlive its terminal PID. Only the worker's stop
+  // acknowledgement or an explicit session end after the last queue attempt
+  // settles that uncertainty; launcher exit alone is not daemon-turn exit.
+  const queued=s.get("SELECT id,detail FROM events WHERE workspace_id=? AND entity='watch' AND entity_id=? AND action='queue-attempt' ORDER BY id DESC LIMIT 1",s.ws,row.role);
+  const explicitEnd=queued&&s.get("SELECT 1 FROM events WHERE workspace_id=? AND entity='session' AND action='ended' AND json_extract(detail,'$.role')=? AND id>? LIMIT 1",s.ws,row.role,queued.id);
+  const remotePending=!!queued&&!explicitEnd;
+
   // Tasks survive sessions and are not evidence of a running worker. Unknown
   // registrations still require acknowledgement or verified exit.
-  const state: StopState = row.acknowledged_at ? 'acknowledged' : launcherPending ? 'waiting' : verifiedExit ? 'exited' : !session ? 'inactive' : 'waiting';
+  // An explicit end clears an unverified no-PID registration, not a live verified
+  // process. A human must independently verify shutdown before using this escape.
+  const endedWithoutPid = !!session?.ended_at && !session.pid && currentState === 'ended';
+  const state: StopState = row.acknowledged_at ? 'acknowledged' : launcherPending||remotePending ? 'waiting' : verifiedExit ? 'exited' : !session || endedWithoutPid ? 'inactive' : 'waiting';
+  const unresolvedRegistration = state === 'waiting' && !launcherPending && session && (!session.pid||remotePending);
   return {
     id:`R${row.id}`,workspace_id:row.workspace_id,role:row.role,requested_at:row.requested_at,requested_by:row.requested_by,
     acknowledged_at:row.acknowledged_at,cleared_at:row.cleared_at,state,
     session_id:session ? `S${session.id}` : null,session_state:currentState,
-    pid:session?.pid ?? null,process_start:session?.process_start ?? null,pending_work:pending,launcher_pending:launcherPending
+    pid:session?.pid ?? null,process_start:session?.process_start ?? null,pending_work:pending,launcher_pending:launcherPending,
+    ...(unresolvedRegistration ? {
+      waiting_reason:remotePending?'A queued Codex turn may outlive its terminal; wait for worker acknowledgement or independently verify remote shutdown.':'Registered session has no PID; Sassato cannot verify that its provider has stopped.',
+      human_action:`After independently verifying this role's provider and jobs have stopped, a human may run: sassato session end --for ${row.role} --as ${row.requested_by} --workspace ${s.workspace}`
+    } : {})
   };
 }
 /** Request a durable cooperative checkpoint. Repeating an active request preserves its generation. */

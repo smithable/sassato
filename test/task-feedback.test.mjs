@@ -146,4 +146,31 @@ test('relayed human answers retain human authority and audit the registered rela
   assert.equal(JSON.parse(answer.detail).relayed_by, 'target');
   assert.equal(JSON.parse(answer.detail).answered_by, 'human');
   assert.equal(tasks.showTask(s, task.id).questions[0].answered_by, 'human');
+  const reopened = new Store(s.path, 'author', { readonly:true }); reopened.use('work');
+  try {
+    assert.equal(tasks.showTask(reopened, task.id, { historyLimit:1 }).questions[0].relayed_by, 'target');
+  } finally { reopened.close(); }
+});
+
+
+test('answer --close after blocked review keeps its atomic review gate and permits ungated completion', t => {
+  const s = setup(t);
+  for (const reviewRequired of [false, true]) {
+    const task = tasks.addTask(s, { title: `Answer after review: ${reviewRequired}`, reviewRequired });
+    tasks.takeTask(s, task.id); tasks.submitTask(s, task.id, 'Ready for review');
+    const question = tasks.askHuman(s, task.id, { question: 'Does this match the requirements?' });
+    const before = JSON.stringify({task:s.task(task.id),question:s.get('SELECT * FROM questions WHERE id=?', Number(question.id.slice(1))),events:s.all('SELECT * FROM events'),mail:s.all('SELECT * FROM messages')});
+    if (reviewRequired) {
+      as(s, 'human', () => assert.throws(() => tasks.answerQuestion(s, question.id, 'Yes', { close:true }), /Answer and close were not saved.*without --close/));
+      assert.equal(JSON.stringify({task:s.task(task.id),question:s.get('SELECT * FROM questions WHERE id=?', Number(question.id.slice(1))),events:s.all('SELECT * FROM events'),mail:s.all('SELECT * FROM messages')}), before);
+      as(s, 'human', () => tasks.answerQuestion(s, question.id, 'Yes'));
+      assert.equal(tasks.showTask(s, task.id).questions[0].status, 'answered');
+      assert.equal(s.task(task.id).status, 'review');
+      rejects(() => tasks.doneTask(s, task.id), 4);
+    } else {
+      const answer = as(s, 'human', () => tasks.answerQuestion(s, question.id, 'Yes', { close:true }));
+      assert.equal(answer.task_status, 'done'); assert.equal(answer.status, 'answered');
+      assert.equal(s.task(task.id).status, 'done');
+    }
+  }
 });

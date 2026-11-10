@@ -2,6 +2,16 @@
 
 ## 0.1.2 — unreleased
 
+- Add an opt-in foreground Codex queue watcher, including dedicated terminal windows,
+  fixed prompts, native-policy preservation, bounded retries and explicit STOP handling.
+  Ordinary foreground wait remains the default; production rollout requires validation.
+- Keep remote daemon work pending after terminal exit; provide a human-attributed
+  `session end --for ROLE` override after independent shutdown verification.
+- Give verified providers a full five-second force-stop grace even after timeout.
+- Preserve atomic answer/close review rules and notify restored-review owners correctly.
+- Show complete fact text and provenance, local timestamps, and chronological
+  `facts --since YYYY-MM-DD` decisions.
+
 - Separate production coordination fixes from deferred provider recovery experiments;
   durable-state continuity is covered by ordinary Node tests.
 - Require a first waiter cursor, retain urgent wake-ups until acknowledgement, and

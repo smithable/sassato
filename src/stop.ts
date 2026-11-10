@@ -141,7 +141,9 @@ export async function stop(store:Store,selected:string[],options:StopOptions={})
     for(const sent of result.signals.filter(row=>row.status==='sent')) {
       if(sent.pid&&sent.process_start){targets.add(`${sent.pid}:${sent.process_start}`);pending.set(sent.pid,sent.process_start);}
     }
-    const graceDeadline=Math.min(deadline,performance.now()+1000);
+    // Force has its own bounded shutdown grace. A cooperative timeout already
+    // spent waiting for the database must never turn SIGTERM into immediate SIGKILL.
+    const graceDeadline=performance.now()+5000;
     while(pending.size&&!options.signal?.aborted&&performance.now()<graceDeadline) {
       for(const [pid,identity] of pending)if(processIdentity(pid)!==identity){pending.delete(pid);targets.delete(`${pid}:${identity}`);}
       if(!pending.size)break;

@@ -94,11 +94,11 @@ test('force inspects live ended registrations even when a newer dead row exists'
 test('force gives SIGTERM a bounded grace period before escalating a stubborn provider',async t=>{
   const f=fixture(t),term=join(f.dir,'term');
   const p=await provider(f,t,'claude',`process.on('SIGTERM',()=>require('node:fs').writeFileSync(${JSON.stringify(term)},'received'));`);register(f.s,p.child.pid);
-  const began=performance.now(),result=await stop(f.s,['a'],{force:true});
+  const began=performance.now(),result=await stop(f.s,['a'],{force:true,timeout:0});
   assert(existsSync(term),'provider handled SIGTERM before escalation');
   assert.deepEqual(result.signals.map(row=>[row.signal,row.status]),[['SIGTERM','sent'],['SIGKILL','sent']]);
-  assert(performance.now()-began>=900,'provider received the grace period');
-  assert(performance.now()-began<2500,'force remains bounded');assert.equal((await p.exit).signal,'SIGKILL');
+  assert(performance.now()-began>=4900,'provider received the grace period');
+  assert(performance.now()-began<7500,'force remains bounded');assert.equal((await p.exit).signal,'SIGKILL');
   assert.deepEqual(f.s.all("SELECT detail FROM events WHERE action='force-stop-signal' ORDER BY id").map(row=>JSON.parse(row.detail).signal),['SIGTERM','SIGKILL']);
 });
 
@@ -183,4 +183,15 @@ test('force does not kill a shared provider when another selected role resumes b
   const result=await stop(f.s,['a','b'],{force:true,onProgress(){resumeWork(f.s,['b']);}});
   assert(result.interrupted);assert(!result.complete);assert.equal(result.signals.length,1);assert.equal(result.signals[0].status,'refused');
   assert.match(result.signals[0].reason,/unselected role or workspace/);process.kill(p.child.pid,0);
+});
+
+
+test('an already-spent timeout cannot erase force shutdown grace',async t=>{
+  const f=fixture(t),term=join(f.dir,'term-delayed');
+  const p=await provider(f,t,'claude',`process.on('SIGTERM',()=>setTimeout(()=>{require('node:fs').writeFileSync(${JSON.stringify(term)},'flushed');process.exit(0);},1200));`);
+  register(f.s,p.child.pid);
+  const result=await stop(f.s,['a'],{force:true,timeout:1,onProgress(){Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,1100);}});
+  assert(existsSync(term),'provider had time to flush after SIGTERM despite the expired cooperative deadline');
+  assert.deepEqual(result.signals.map(row=>row.signal),['SIGTERM']);assert(result.complete);
+  assert.deepEqual(await p.exit,{code:0,signal:null});
 });

@@ -13,7 +13,11 @@ export interface WaitResult {
   /** Task version recorded by the workflow event, not a substitute for reading current work. */
   version?:number;
 }
-export interface WaitOptions { timeout?:number; stopFile?:string; since?:number }
+export interface WaitOptions {
+  timeout?:number; stopFile?:string; since?:number;
+  /** Internal watcher backoff only; does not acknowledge receipts or save progress. */
+  excludeUrgentIds?:number[];
+}
 const maximum=(s:Store):number=>Number(s.get('SELECT coalesce(max(id),0) n FROM events WHERE workspace_id=?',s.ws)!.n);
 function available(s:Store,actor:string,condition:string,params:Param[],includeDoing=false):string[] {
   // These are the same gates as tasks --available, applied to event candidates only.
@@ -58,10 +62,10 @@ function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
       // operators may review their own work; agents require an independent owner.
       // Updates that clear approval while keeping review open are new review requests.
       // An already settled or withdrawn submission no longer needs a reviewer.
-      if(task.status==='review'&&task.reviewed_by===null&&(task.owner!==actor||s.role(actor).kind==='human'))
+      if(task.status==='review'&&task.reviewed_by===null&&(task.owner!==actor||(!reviewRestored&&s.role(actor).kind==='human')))
         return {...base,reason:'review-submitted',task:event.entity_id,version};
-      // The owner still needs its blocker/answer notification below, even though
-      // an agent owner is not an eligible reviewer of the restored submission.
+      // Restored-review owners need the blocker/answer notification below,
+      // including human owners who are otherwise eligible to review their own work.
       if(!reviewRestored)return undefined;
     } else {
       if(task.owner!==actor)return undefined;
@@ -122,6 +126,7 @@ function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
 /** Read-only, non-consuming waiter. Save progress only after handling the returned notification. */
 export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitResult> {
   const actor=s.requireActor(),timeout=integer(options.timeout??0,'timeout seconds',0,2_147_483);
+  const excluded=(options.excludeUrgentIds??[]).map(value=>integer(value,'excluded urgent message ID',1));
   const configuredStopFile=options.stopFile??workspaceSettings(s).stop_file;
   const stopFile=configuredStopFile===null?null:resolve(configuredStopFile);
   const initial=s.snapshot(()=>{
@@ -156,7 +161,7 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
     const result=s.snapshot(():WaitResult|undefined=>{
       const stop=s.get('SELECT id,acknowledged_at FROM stop_requests WHERE workspace_id=? AND role=? AND cleared_at IS NULL',s.ws,actor);
       if(stop)return {reason:'stop',role:actor,cursor,stop:{id:`R${stop.id}`,acknowledged:!!stop.acknowledged_at}};
-      const message=s.get("SELECT m.id,m.sender,substr(m.body,1,2000) AS body,length(m.body)>2000 AS truncated FROM receipts r JOIN messages m ON m.workspace_id=r.workspace_id AND m.id=r.message_id WHERE r.workspace_id=? AND r.recipient=? AND r.state IN ('unread','read') AND m.urgent=1 AND m.sender!=? ORDER BY m.id LIMIT 1",s.ws,actor,actor);
+      const message=s.get(`SELECT m.id,m.sender,substr(m.body,1,2000) AS body,length(m.body)>2000 AS truncated FROM receipts r JOIN messages m ON m.workspace_id=r.workspace_id AND m.id=r.message_id WHERE r.workspace_id=? AND r.recipient=? AND r.state IN ('unread','read') AND m.urgent=1 AND m.sender!=?${excluded.length?` AND m.id NOT IN (${excluded.map(()=>'?').join(',')})`:''} ORDER BY m.id LIMIT 1`,s.ws,actor,actor,...excluded);
       if(message)return {reason:'urgent',role:actor,cursor,message:{id:`M${message.id}`,sender:message.sender,summary:String(message.body).replace(/[\x00-\x1f\x7f]/g,' ').replace(/\s+/g,' ').trim(),truncated:!!message.truncated,...(message.truncated?{inbox_command:`sassato inbox --peek --as ${actor} --workspace ${s.workspace}`}:{})}};
       const events=s.all('SELECT id,entity,entity_id,actor,action,detail FROM events WHERE workspace_id=? AND id>? ORDER BY id LIMIT 200',s.ws,cursor);
       more=events.length===200;
