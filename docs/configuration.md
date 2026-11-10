@@ -60,11 +60,26 @@ special priority. Any human may answer a question, regardless of its recipient.
 Markdown imports. New workspaces default to UTC. Explicit UTC, numeric offsets and IANA
 zones in source headers take precedence.
 
+`import_role_aliases` maps historical author labels to existing role names, for example
+`{"old reviewer": "reviewer"}`. `import_timezone_aliases` maps historical timezone
+labels to IANA zones, for example `{"local office": "Europe/Helsinki"}`. Both default
+to `{}` and accept up to 32 literal, case-insensitive keys (100 characters each).
+Role aliases cannot override another configured role. Timezone aliases cannot
+replace standard IANA zones, UTC, Z or numeric offsets. Targets are validated.
+Set these explicitly before importing old documents; preview again after changing them:
+
+```sh
+sassato workspace set --import-role-aliases '{"old reviewer":"reviewer"}' --import-timezone-aliases '{"local office":"Europe/Helsinki"}' --workspace demo --as alice
+```
+
 `import_answer_markers` adds up to 32 literal answer-heading prefixes, each at most
 200 characters. It defaults to `[]`; generic `Answer:`, `Answered` and `Decision:`
 labels still work. Matching ignores case and Markdown emphasis, and requires a word
 boundary after a marker that ends in a letter or digit. Markers are not regular
 expressions, and a human role name alone does not create an answer rule.
+
+Date-only answer lines are metadata, not answers; a substantive following line can
+still supply the answer.
 
 For example, `"import_answer_markers": ["Alice answered", "Alice's answers", "Alice:"]`
 recognizes those headings when followed by a substantive answer on the same line or
@@ -93,8 +108,8 @@ acknowledgements. The default is an empty list. Only a human can configure check
 ```json
 {
   "busy_checks": [
-    { "name": "gate", "type": "flock", "path": "/var/lib/project-gate/.gate-lock" },
-    { "name": "merge", "type": "flock", "path": "~/repos/.merge-lock" },
+    { "name": "worker", "type": "flock", "path": "./worker.flock" },
+    { "name": "gate", "type": "command", "argv": ["./scripts/gate-busy"], "cwd": "." },
     { "name": "jobs", "type": "command", "argv": ["./scripts/jobs-busy"], "cwd": ".", "timeout_ms": 1000 }
   ]
 }
@@ -105,7 +120,12 @@ unlocked file is idle; a missing file is idle and is never created by the check.
 The checker opens existing regular files without writing, requires the POSIX
 `flock` utility, and treats unreadable files, symlinks, unsupported systems and
 inspection failures as unknown. The producer must use compatible `flock` locking;
-this does not detect a process that merely creates a marker file.
+this does not detect a process that merely creates a marker or holder file containing
+a PID and hostname. Use a command check that understands that producer's protocol
+for holder files. An unlocked file containing a live PID still appears idle to `flock`.
+The probe briefly acquires the lock itself: a blocking taker waits momentarily, but
+a concurrent non-blocking taker can see busy during the probe. Choose a command
+check instead if that interference is unacceptable.
 
 A command receives its `argv` directly, without shell evaluation. Exit 0 means busy,
 exit 1 means idle, and other exits, signals, spawn errors or timeouts mean unknown.
@@ -125,16 +145,25 @@ config file; `cwd` defaults to that directory. Bare executable names use PATH.
 For an existing workspace, use a JSON array (paths resolve from the current folder):
 
 ```sh
-sassato workspace set --busy-checks '[{"name":"merge","type":"flock","path":"./.merge-lock"}]' --as alice
+sassato workspace set --busy-checks '[{"name":"worker","type":"flock","path":"./worker.flock"}]' --as alice
 sassato workspace set --busy-checks '[]' --as alice
 ```
 
-An unknown or busy check prevents completion and is included in progress and final
-output. `--no-wait` and `--force` leave configured checks unverified; they do not
-claim machine quiet. Named-role stops do not run workspace-wide busy checks.
-Quiet means the selected agents stopped cooperatively and configured checks were
-idle at observation time; it is not a machine-wide process inventory or a lock
-that prevents unrelated work from starting afterward.
+An unknown or busy check prevents waiting-stop completion and is included in progress
+and final output. Only non-idle checks are retried, with a 250 ms pause between rounds.
+An idle observation is retained for that stop invocation; another `stop` runs all
+checks anew. By default `--timeout 0` waits indefinitely, including when checks keep
+failing or timing out. Use a finite timeout, such as `stop --all --timeout 60`, for
+unattended scripts or checks that might remain unknown. A timeout leaves stop intent
+active and returns exit 4.
+
+`--no-wait` reports whether the selected roles have stopped independently of the
+unexecuted checks. Both `--no-wait` and `--force` leave checks unverified and return
+`machine_quiet: null`. Named-role stops do not run workspace-wide busy checks.
+Quiet means the selected agents stopped cooperatively and each configured check
+was observed idle during this invocation. Observations need not be simultaneous:
+producers should remain idle after observing stop intent. This is not a machine-wide
+process inventory or a lock preventing unrelated work from starting afterward.
 Interrupting a waiting stop with Ctrl-C or SIGTERM cancels and reaps its check
 processes, returns exit 4, and leaves durable stop requests active. SIGKILL cannot
 run cleanup handlers; read-only checks must not launch detached background jobs.

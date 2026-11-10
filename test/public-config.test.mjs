@@ -35,7 +35,7 @@ test('config supplies workspace and stable shared/per-role directories regardles
   assert.equal(roles.find(r=>r.name==='builder').working_dir,project);
   assert.equal(roles.find(r=>r.name==='reviewer').working_dir,other);
   assert.ok(roles.every(r=>r.model===null));
-  assert.deepEqual(f.run(['workspace','settings','--workspace','demo']),{default_human:'alice',import_timezone:'America/New_York',stop_file:join(project,'STOP'),busy_checks:[],import_answer_markers:['Alice answered']});
+  assert.deepEqual(f.run(['workspace','settings','--workspace','demo']),{default_human:'alice',import_timezone:'America/New_York',stop_file:join(project,'STOP'),busy_checks:[],import_answer_markers:['Alice answered'],import_role_aliases:{},import_timezone_aliases:{}});
   const task=f.run(['add','Choose','--workspace','demo','--as','builder']);
   assert.equal(f.run(['ask-human',task.id,'Ready?','--workspace','demo','--as','builder']).for_role,'alice');
   assert.equal(f.raw(['workspace','set','--default-human','bob','--workspace','demo','--as','builder']).status,3);
@@ -53,7 +53,7 @@ test('new defaults are generic, unpinned and independent of a machine-wide stop 
   assert.deepEqual(roles.map(r=>r.name),['builder','human','reviewer']);
   assert.ok(roles.every(r=>r.model===null&&r.permission_mode===null));
   assert.ok(roles.filter(r=>r.kind==='agent').every(r=>r.working_dir===tmpdir()));
-  assert.deepEqual(f.run(['workspace','settings','--workspace','demo']),{default_human:null,import_timezone:'UTC',stop_file:null,busy_checks:[],import_answer_markers:[]});
+  assert.deepEqual(f.run(['workspace','settings','--workspace','demo']),{default_human:null,import_timezone:'UTC',stop_file:null,busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{}});
   const help=spawnSync(process.execPath,[cli,'--help'],{encoding:'utf8'});
   assert.doesNotMatch(help.stdout,/ask-alice|ask-bob|project-specific-human/i);
 });
@@ -99,6 +99,9 @@ test('legacy databases route through their bootstrap human and export the generi
   s.event('workspace','old','created',{roles:['alice','bob','worker']});
   assert.equal(workspaceSettings(s).default_human,'alice');
   assert.equal(workspaceSettings(s).stop_file,null);
+  assert.equal(workspaceSettings(s).import_timezone,'UTC');
+  assert.deepEqual(workspaceSettings(s).import_role_aliases,{});
+  assert.deepEqual(workspaceSettings(s).import_timezone_aliases,{});
   s.actor='worker';const task=addTask(s,{title:'Compatibility'});
   assert.equal(askHuman(s,task.id,{question:'Default?'}).for_role,'alice');
   const out=join(f.dir,'export');exportMarkdown(s,out);
@@ -132,4 +135,75 @@ test('answer markers are explicit literal prefixes, and changes invalidate an im
   assert.deepEqual(after.items.filter(i=>i.answerEvidence).map(i=>i.source).sort(),['generic.md','literal.md','named.md','prefix.md'].map(name=>join(actions,name)).sort());
   applyImport(s,{actions},after.digest);
   assert.equal(s.get("SELECT count(*) n FROM questions WHERE status='pending'").n,4);
+});
+
+test('import alias configuration validates bounded literal maps and requires human authority',t=>{
+  const f=fixture(t);f.run(['init','--workspace','demo']);
+  const settings=['workspace','set','--workspace','demo','--as','human'];
+  f.run([...settings,'--import-role-aliases','{" Old Writer ":"builder"}','--import-timezone-aliases','{" Local Time ":"America/New_York"}']);
+  const configured=f.run(['workspace','settings','--workspace','demo']);
+  assert.deepEqual(configured.import_role_aliases,{'old writer':'builder'});
+  assert.deepEqual(configured.import_timezone_aliases,{'local time':'America/New_York'});
+  for(const [flag,value] of [
+    ['import-role-aliases',[]],['import-role-aliases',{' ':'builder'}],['import-role-aliases',{'Old':'builder',' old ':'builder'}],
+    ['import-role-aliases',{'line\nbreak':'builder'}],['import-role-aliases',{'tab\tlabel':'builder'}],
+    ['import-role-aliases',{'builder':'reviewer'}],['import-role-aliases',{'old':'missing'}],['import-role-aliases',{['x'.repeat(101)]:'builder'}],
+    ['import-role-aliases',Object.fromEntries(Array.from({length:33},(_,i)=>['alias'+i,'builder']))],
+    ['import-timezone-aliases',[]],['import-timezone-aliases',{'local':'Invalid/Zone'}],['import-timezone-aliases',{'UTC':'America/New_York'}],
+    ['import-timezone-aliases',{'+02:00':'UTC'}],['import-timezone-aliases',{'Local':'UTC',' local ':'UTC'}]
+  ]) {
+    const response=f.raw([...settings,'--'+flag,JSON.stringify(value)]);assert.notEqual(response.status,0,flag+' '+JSON.stringify(value));
+  }
+  assert.equal(f.raw(['workspace','set','--workspace','demo','--as','builder','--import-role-aliases','{}']).status,3);
+  const unchanged=f.run(['workspace','settings','--workspace','demo']);
+  assert.deepEqual(unchanged.import_role_aliases,configured.import_role_aliases);
+  assert.deepEqual(unchanged.import_timezone_aliases,configured.import_timezone_aliases);
+});
+
+test('role aliases are literal and explicit across backlog, WIP and session imports',t=>{
+  const f=fixture(t),s=new Store(f.db,'alice',{create:true});t.after(()=>s.close());
+  initWorkspace(s,'demo',{roles:[{name:'writer'},{name:'checker'},{name:'hassist'},{name:'alice',kind:'human'}]});
+  const backlog=join(f.dir,'backlog.md'),wip=join(f.dir,'wip.md'),sessions=join(f.dir,'sessions.md');
+  writeFileSync(backlog,'## human assistant\n1. Unmapped historical author\n## Reviewer[1].+\n1. Literal author\n## Reviewer1anything\n1. Similar spelling\n');
+  writeFileSync(wip,'- Reviewer[1].+ (2026-11-10 10:00): Literal work.\n- human assistant (2026-11-10 11:00): Historical work.\n');
+  writeFileSync(sessions,'claude --resume literal-session # role Reviewer[1].+\nclaude --resume historical-session # role human assistance\n');
+  const input={backlog,wip,sessions},before=previewImport(s,input);
+  assert(before.items.every(item=>item.owner===null));assert.equal(before.items.filter(item=>item.kind!=='task').length,0);
+  setWorkspaceSettings(s,{import_role_aliases:{'Reviewer[1].+':'checker','human assistant':'hassist','human assistance':'hassist'}});
+  const after=previewImport(s,input);
+  assert.deepEqual(after.items.filter(item=>item.source===backlog).map(item=>item.owner),['hassist','checker',null]);
+  assert.deepEqual(after.items.filter(item=>item.kind==='wip').map(item=>item.owner),['checker','hassist']);
+  assert.deepEqual(after.items.filter(item=>item.kind==='session').map(item=>item.owner),['checker','hassist']);
+  assert.throws(()=>applyImport(s,input,before.digest),/preview changed/);
+  setWorkspaceSettings(s,{import_role_aliases:{'Reviewer[1].+':'writer','human assistant':'hassist','human assistance':'hassist'}});
+  assert.throws(()=>applyImport(s,input,after.digest),/preview changed/);
+});
+
+test('time zone labels require explicit aliases, retain UTC default, and bind preview timestamps',t=>{
+  const f=fixture(t),s=new Store(f.db,'human',{create:true});t.after(()=>s.close());
+  initWorkspace(s,'demo',{roles:[{name:'writer'},{name:'checker'},{name:'human',kind:'human'}]});
+  const wip=join(f.dir,'wip.md');
+  writeFileSync(wip,'- writer (2026-11-10 10:00): No zone.\n- checker (2026-11-10 10:00 local time): Needs explicit alias.\n- checker (2026-11-10 11:00 unknown): Unknown label.\n- checker (stopped, 2026-11-10 12:00 unknown): Unknown stopped label.\n');
+  const before=previewImport(s,{wip});assert.equal(before.items.length,1);assert.equal(before.items[0].sourceUpdatedAt,'2026-11-10T10:00:00.000Z');
+  setWorkspaceSettings(s,{import_timezone_aliases:{'local time':'America/New_York'}});
+  const after=previewImport(s,{wip});assert.equal(after.items.length,2);
+  assert.equal(after.items.find(item=>item.owner==='checker').sourceUpdatedAt,'2026-11-10T15:00:00.000Z');
+  assert.throws(()=>applyImport(s,{wip},before.digest),/preview changed/);
+  setWorkspaceSettings(s,{import_timezone_aliases:{'local time':'UTC'}});
+  assert.throws(()=>applyImport(s,{wip},after.digest),/preview changed/);
+});
+
+test('complete explicit author aliases take precedence over generic session and role prefixes',t=>{
+  const f=fixture(t),s=new Store(f.db,'human',{create:true});t.after(()=>s.close());
+  initWorkspace(s,'demo',{roles:[{name:'writer'},{name:'checker'},{name:'human',kind:'human'}],import_role_aliases:{'session writer':'checker','role writer':'checker'}});
+  const wip=join(f.dir,'wip.md'),sessions=join(f.dir,'sessions.md');
+  writeFileSync(wip,'- session writer (2026-11-10 10:00): Explicit alias.\n');
+  assert.equal(previewImport(s,{wip}).items[0].owner,'checker');
+  for(const label of ['session writer','role writer']) {
+    writeFileSync(sessions,`claude --resume fixture-session # ${label}\n`);
+    assert.equal(previewImport(s,{sessions}).items[0].owner,'checker');
+  }
+  setWorkspaceSettings(s,{import_role_aliases:{}});
+  assert.equal(previewImport(s,{wip}).items[0].owner,'writer');
+  assert.equal(previewImport(s,{sessions}).items[0].owner,'writer');
 });

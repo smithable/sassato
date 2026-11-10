@@ -310,8 +310,8 @@ test('Claude bootstrap snapshots then arms one role-scoped background waiter bef
   assert.match(prompt,/sections.notification_progress\[0\].cursor as CURSOR/);
   assert.match(prompt,/preserving existing progress/);
   assert.match(prompt,/initial context's cursor as BOOTSTRAP_CURSOR, never snapshot_cursor or a later context cursor/);
-  assert.match(prompt,/read the full inbox and relevant task, review, blocker, question and answer records/);
-  assert.match(prompt,/page any truncated context delta with context --since/);
+  assert.match(prompt,/read the full inbox with sassato inbox --as a --workspace test and relevant task, review, blocker, question and answer records/);
+  assert.match(prompt,/page any truncated context delta with sassato context --since CURSOR --as a --workspace test/);
   assert.match(prompt,/Only after this reconciliation succeeds, initialize with sassato progress save --cursor BOOTSTRAP_CURSOR --expect 0 --as a --workspace test/);
   assert.match(prompt,/On failure or incomplete handling, leave progress absent/);
   assert.doesNotMatch(prompt,/otherwise use 0|save --cursor 0/);
@@ -319,6 +319,8 @@ test('Claude bootstrap snapshots then arms one role-scoped background waiter bef
     assert(prompt.includes(`sassato ${command} --as a --workspace test`));
   }
   assert.match(prompt,/progress save --cursor CURSOR --expect VERSION --as a --workspace test/);
+  assert.match(prompt,/sassato review TASK_ID --expect VERSION --as a --workspace test/);
+  assert.match(prompt,/When notified, run sassato context --as a --workspace test and sassato inbox --as a --workspace test/);
   assert.match(prompt,/BEFORE beginning work or going idle, start exactly one native Claude Code background tool-task/);
   assert.match(prompt,/If one waiter is already active, keep it/);
   assert.match(prompt,/Never use a foreground wait, shell &, nohup, or an outer shell loop/);
@@ -337,7 +339,8 @@ test('Codex bootstrap remains pull-based and no-prompt omits all startup instruc
   assert.match(codex,/sassato checkpoint show --as c --workspace test/);
   assert.match(codex,/sassato checkpoint save --as c --workspace test/);
   assert.match(codex,/sassato context --as c --workspace test --brief/);
-  assert(!codex.includes('sassato wait'));assert.match(codex,/inbox and task context between tasks/);
+  assert(!codex.includes('sassato wait'));assert.match(codex,/sassato inbox --as c --workspace test and sassato context --as c --workspace test between tasks/);
+  assert.match(codex,/sassato review TASK_ID --expect VERSION --as c --workspace test/);
   assert.match(codex,/No background wake-up is assumed/);
   assert.deepEqual(planLaunch(f.s,['a'],{fresh:true,noPrompt:true})[0].args,[]);
   assert.deepEqual(planLaunch(f.s,['c'],{fresh:true,noPrompt:true})[0].args,[]);

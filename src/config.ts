@@ -19,7 +19,7 @@ export function loadConfig(path: string): Row {
   const absolute=realpathSync(configPath(path)),base=dirname(absolute);
   const input=JSON.parse(readFileSync(absolute,'utf8'));
   check(input&&typeof input==='object'&&!Array.isArray(input),'Config must be an object');safe(input);
-  const allowed=['workspace','working_dir','default_human','import_timezone','stop_file','busy_checks','import_answer_markers','roles'];
+  const allowed=['workspace','working_dir','default_human','import_timezone','stop_file','busy_checks','import_answer_markers','import_role_aliases','import_timezone_aliases','roles'];
   for(const key of Object.keys(input))check(allowed.includes(key),`Unknown config field: ${key}`);
   const config:Row={...input};
   if(config.working_dir!==undefined)config.working_dir=workingDirectory(config.working_dir,base);

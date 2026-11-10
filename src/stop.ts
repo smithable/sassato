@@ -114,8 +114,15 @@ export async function stop(store:Store,selected:string[],options:StopOptions={})
   const update=()=>{
     result.statuses=statuses;
     result.interrupted=!!options.signal?.aborted||requests.some(request=>!statuses.some(row=>row.role===request.role&&row.id===ids.get(request.role)));
-    result.complete=!result.interrupted&&statuses.length===requests.length&&statuses.every(row=>finished.has(row.state))&&result.busy_checks.every(check=>check.state==='idle');
+    result.complete=!result.interrupted&&statuses.length===requests.length&&statuses.every(row=>finished.has(row.state))&&(options.noWait||result.busy_checks.every(check=>check.state==='idle'));
     result.machine_quiet=options.force||options.noWait||!(options.all||selected.length===0)?null:result.complete;
+  };
+  const refreshChecks=async()=>{
+    // Once idle is observed, retain that observation for this stop invocation.
+    // Starting another stop performs a new complete round of checks.
+    const pending=checks.filter((_,index)=>result.busy_checks[index].state!=='idle');
+    const observations=new Map((await observeBusyChecks(pending,deadline,options.signal)).map(row=>[row.name,row]));
+    result.busy_checks=result.busy_checks.map(row=>observations.get(row.name)??row);
   };
   update();options.onProgress?.(statuses,result.busy_checks);
   if(options.signal?.aborted){update();return result;}
@@ -128,7 +135,7 @@ export async function stop(store:Store,selected:string[],options:StopOptions={})
     return result;
   }
   if(options.noWait||result.interrupted)return result;
-  if(checks.length){result.busy_checks=await observeBusyChecks(checks,deadline,options.signal);statuses=stopStatus(store,roles);update();options.onProgress?.(statuses,result.busy_checks);}
+  if(checks.length){await refreshChecks();statuses=stopStatus(store,roles);update();options.onProgress?.(statuses,result.busy_checks);}
   let previous=JSON.stringify([statuses,result.busy_checks]);
   while(!result.complete&&!result.interrupted) {
     const remaining=deadline-performance.now();
@@ -140,7 +147,7 @@ export async function stop(store:Store,selected:string[],options:StopOptions={})
       if(options.signal?.aborted)done();
     });
     statuses=stopStatus(store,roles);update();
-    if(!result.interrupted&&checks.length){result.busy_checks=await observeBusyChecks(checks,deadline,options.signal);statuses=stopStatus(store,roles);update();}
+    if(!result.interrupted&&checks.length){await refreshChecks();statuses=stopStatus(store,roles);update();}
     const next=JSON.stringify([statuses,result.busy_checks]);
     if(next!==previous) {options.onProgress?.(statuses,result.busy_checks);previous=next;}
   }

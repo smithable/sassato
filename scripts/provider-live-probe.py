@@ -21,6 +21,10 @@ import threading
 import time
 import uuid
 
+from probe_processes import OwnedProcesses, ProbeCancelled
+
+PROCESSES = OwnedProcesses()
+
 SUPPORTED_VERSIONS = {'codex': {'0.167.0'}, 'claude': {'2.1.321'}}
 CODEX_RESTRICTIONS = {
     'sandbox_mode': 'read-only', 'approval_policy': 'on-request',
@@ -39,7 +43,7 @@ def config_args(values):
 
 
 def configured_mcp(cwd, overrides):
-    result = subprocess.run(['codex', *config_args(overrides), 'mcp', 'list', '--json'],
+    result = PROCESSES.run(['codex', *config_args(overrides), 'mcp', 'list', '--json'],
                             cwd=cwd, capture_output=True, text=True, timeout=15)
     if result.returncode or len(result.stdout) > 262144:
         raise RuntimeError('Cannot establish MCP confinement')
@@ -116,7 +120,7 @@ def validate_claude_init(item):
 
 
 def version(provider):
-    result=subprocess.run([provider,'--version'],capture_output=True,text=True,timeout=10)
+    result=PROCESSES.run([provider,'--version'],capture_output=True,text=True,timeout=10)
     if result.returncode != 0:
         raise RuntimeError('Provider version probe failed')
     match=re.search(r'\d+\.\d+\.\d+',result.stdout)
@@ -129,43 +133,7 @@ def version(provider):
 
 
 def close_owned(process):
-    try:
-        if process.stdin and not process.stdin.closed:
-            process.stdin.close()
-    except (BrokenPipeError, ValueError):
-        pass
-    exit_code = None
-    try:
-        exit_code = process.wait(timeout=8)
-    except subprocess.TimeoutExpired:
-        for sig in (signal.SIGTERM, signal.SIGKILL):
-            try:
-                os.killpg(process.pid, sig)
-            except ProcessLookupError:
-                pass
-            try:
-                exit_code = process.wait(timeout=8)
-                break
-            except subprocess.TimeoutExpired:
-                pass
-        if exit_code is None:
-            raise RuntimeError('Owned provider did not exit')
-    # A clean leader exit does not prove its children exited. The process was
-    # started in a new session; signal only that owned group, even after exit 0.
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(process.pid, 0)
-            os.killpg(process.pid, sig)
-        except ProcessLookupError:
-            return exit_code
-        deadline = time.monotonic()+2
-        while time.monotonic() < deadline:
-            try:
-                os.killpg(process.pid, 0)
-            except ProcessLookupError:
-                return exit_code
-            time.sleep(0.05)
-    raise RuntimeError('Owned process group cleanup could not be verified')
+    return PROCESSES.close(process)
 
 
 def run_codex():
@@ -173,8 +141,8 @@ def run_codex():
     try:
         installed_version=version('codex')
         command,restrictions=codex_command(root)
-        proc=subprocess.Popen(command,cwd=root,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1,start_new_session=True)
-    except Exception:
+        proc=PROCESSES.popen(command,cwd=root,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1,start_new_session=True)
+    except BaseException:
         shutil.rmtree(root,ignore_errors=True)
         raise
     q=queue.Queue()
@@ -282,7 +250,7 @@ def run_claude():
     class Session:
      def __init__(self):
       self.id=str(uuid.uuid4());self.q=queue.Queue();self.initialized=False
-      self.p=subprocess.Popen(claude_command(self.id),cwd=root,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1,start_new_session=True)
+      self.p=PROCESSES.popen(claude_command(self.id),cwd=root,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1,start_new_session=True)
       try:
        threading.Thread(target=self.pump,daemon=True).start();threading.Thread(target=self.errpump,daemon=True).start()
       except BaseException:
@@ -374,9 +342,19 @@ if __name__ == '__main__':
     args=parser.parse_args()
     if os.name != 'posix':
         parser.error('The live probe currently requires POSIX process-group cleanup')
+    exit_code = 1
     try:
-        report = run_codex() if args.provider == 'codex' else run_claude()
+        with PROCESSES:
+            report = run_codex() if args.provider == 'codex' else run_claude()
+        exit_code = 0 if report.get('ok') else 1
+    except ProbeCancelled as error:
+        report = {'provider':args.provider,'ok':False,'cancelled':True,
+                  'signal':error.signum,'stage':'cancelled after owned-group cleanup'}
+        exit_code = 128 + error.signum
     except Exception as error:
         report = {'provider':args.provider,'ok':False,'failure':type(error).__name__,'stage':'startup or cleanup'}
+    if PROCESSES.cleanup_failures:
+        report['cleanup_failures'] = PROCESSES.cleanup_failures
+        report['ok'] = False
     print(json.dumps(sanitized(report), indent=2))
-    raise SystemExit(0 if report.get('ok') else 1)
+    raise SystemExit(exit_code if report.get('cancelled') else (0 if report.get('ok') else 1))

@@ -76,8 +76,8 @@ test('answered action files become open human tasks, with no phantom pending que
 
 test('newest dated stopped block becomes WIP including continuation, never overwriting existing WIP',t=>{
   const f=fixture(t),wip=f.file('wip.md',[
-    '- 2026-11-09 13:38 (Opus A): (stopped, 2026-11-09 13:38) Latest A. Next: finish safely.',
-    '- (stopped, 2026-10-10 20:52 UTC) (Opus A): Older A appears later in the file.',
+    '- 2026-11-09 13:38 (session A): (stopped, 2026-11-09 13:38) Latest A. Next: finish safely.',
+    '- (stopped, 2026-10-10 20:52 UTC) (session A): Older A appears later in the file.',
     '- B (stopped, 2026-11-09 13:4x): B latest. NEXT, exactly:',
     '  (1) Commit work and preserve branch.','  (2) Wait for the review.',
     '- C (stopped, 2026-11-09 13:38) C newest.',
@@ -181,6 +181,32 @@ test('answer detection handles emphasis and refuses empty or pending answer temp
   assert.deepEqual(plan.items.filter(i=>i.answerEvidence).map(i=>i.source).sort(),['answered.md','no-space.md'].map(name=>join(actions,name)).sort());
 });
 
+test('date-only answer labels do not unblock actions while following decisions remain valid',t=>{
+  const f=fixture(t),actions=join(f.dir,'actions');mkdirSync(actions);
+  const records={
+    'named-date.md':'# Request\nHuman: 2026-11-10\n',
+    'answered-date.md':'# Request\nHuman answered: 2026-11-10\n',
+    'generic-date.md':'# Request\nAnswer: 2026-11-10\n',
+    'timestamp.md':'# Request\nHuman: 2026-11-10 08:45:10 UTC\n',
+    'fractional-time.md':'# Request\nHuman: 2026-11-10T08:45:10.000Z\n',
+    'adjacent-date-labels.md':'# Request\nHuman: 2026-11-10\nHuman answered: 2026-11-11\n',
+    'adjacent-generic-labels.md':'# Request\nHuman: 2026-11-10\nDecision: 2026-11-11\n',
+    'offset-date.md':'# Request\nDecision: 2026-11-10T08:45:10+02:00\n',
+    'emphasized-date.md':'# Request\n**Human answered:** (2026-11-10)\n',
+    'next-section.md':'# Request\nHuman: 2026-11-10\n## Work\nUnrelated notes.\n',
+    'pending.md':'# Request\nHuman: 2026-11-10\nPending.\n',
+    'followed-answer.md':'# Request\nHuman: 2026-11-10\nUse the first option.\n',
+    'following-marker-answer.md':'# Request\nHuman: 2026-11-10\nHuman answered: 2026-11-11\nUse the first option.\n',
+    'following-direct-answer.md':'# Request\nHuman: 2026-11-10\nDecision: Use the second option.\n',
+    'dated-decision.md':'# Request\nAnswer: 2026-11-10 is the approved launch date.\n'
+  };
+  for(const [name,body] of Object.entries(records))writeFileSync(join(actions,name),body);
+  const plan=previewImport(f.s,{actions});
+  assert.deepEqual(plan.items.filter(item=>item.answerEvidence).map(item=>item.source).sort(),['followed-answer.md','dated-decision.md','following-marker-answer.md','following-direct-answer.md'].map(name=>join(actions,name)).sort());
+  applyImport(f.s,{actions},plan.digest);
+  assert.equal(f.s.get("SELECT count(*) n FROM questions WHERE status='pending'").n,11);
+});
+
 test('fresh current-format imports are already reconciled and repair is a no-op',t=>{
   const f=fixture(t),backlog=f.file('backlog.md','## A\n1. Waiting on dependency\n2. (dropped) Cancelled work\n3. (done) Finished work\n');
   imported(f,{backlog});const plan=previewImport(f.s,{backlog,repair:true});
@@ -206,7 +232,7 @@ test('ordinary dated main-role WIP beats stopped history and preserves indented 
     '  (2) Keep this continuation.',
     '- 2026-11-09 23:52 (Lead payments-core agent): Subagent report, not Lead WIP.',
     '- C 2026-11-09 11:53: Ordinary role-first without parentheses.',
-    '- (Opus A, 2026-11-09 11:54, checkpoint) Main-role work.',
+    '- (session A, 2026-11-09 11:54, checkpoint) Main-role work.',
     '- 2026-11-09 11:3x (coordinator, for Lead): Read the handoff.',
     '- B (2026-11-09 13:40): Ordinary parenthesized date.',
     ''
@@ -225,7 +251,7 @@ test('ordinary dated main-role WIP beats stopped history and preserves indented 
 test('WIP ordering uses timestamps across time zones and later source line for ties',t=>{
   const f=fixture(t),wip=f.file('wip.md',[
     '- A (stopped, 2026-11-09 13:38 UTC) Latest A in UTC.',
-    '- 2026-11-09 14:00 (Opus A): Later line but earlier instant locally.',
+    '- 2026-11-09 14:00 (session A): Later line but earlier instant locally.',
     '- B (stopped, 2026-11-09 13:4x) Approximate minute.',
     '- B (2026-11-09 13:48): Earlier known minute.',
     '- 2026-11-08 19:18 (Lead): First equal time.',
@@ -293,9 +319,9 @@ test('entry header dates outrank quoted stopped dates and explicit Europe/Helsin
   const f=fixture(t),wip=f.file('wip.md',[
     '- Lead (2026-11-08 19:18): resumed from (stopped, 2026-11-03 18:40) checkpoint.',
     '- Lead (stopped, 2026-11-05 10:00) An older entry.',
-    '- 2026-11-09 11:00 (Opus A): resumed from (stopped, 2026-11-01 10:00) checkpoint.',
+    '- 2026-11-09 11:00 (session A): resumed from (stopped, 2026-11-01 10:00) checkpoint.',
     '- B (stopped, 2026-11-09 13:40 Europe/Helsinki): Local checkpoint.',
-    '- (stopped, 2026-11-09 13:38 UTC) (Opus C): UTC checkpoint.',
+    '- (stopped, 2026-11-09 13:38 UTC) (session C): UTC checkpoint.',
     ''
   ].join('\n'));
   const byRole=Object.fromEntries(previewImport(f.s,{wip}).items.map(i=>[i.owner,i]));

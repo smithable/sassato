@@ -148,3 +148,8 @@ workspaces and fixture provider processes. They do not launch real agents.
 
 [Commands](docs/commands.md) · [Architecture](docs/architecture.md) ·
 [Benchmarks](docs/benchmark.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+
+## Other projects by us:
+
+- [Smithable](https://github.com/smithable/smithable) turns plain-language and visual edits into full-stack web applications.
+- [sampleusers](https://github.com/smithable/sampleusers) uses simulated users to test a web product against its documentation, with evidence.
