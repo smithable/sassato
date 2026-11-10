@@ -22,6 +22,10 @@ deliberately; review old notes before carrying them forward. This also updates W
 so no duplicate WIP update is required. Do not checkpoint after every command or
 poll just to refresh its timestamp.
 
+Use `--evidence FILE` when structured validation results, artifact references or
+job dispositions help recovery. Sassato distinguishes its repository/task
+observations from those claims; job adoption and test results are not verified.
+
 After startup, resume or compaction, read current context and `sassato checkpoint show`,
 inspect relevant task and decision records, check inbox, and verify working files.
 A stale checkpoint is historical evidence, not permission to overwrite current state.
@@ -57,8 +61,11 @@ acknowledges that you have stopped working; it does not close your terminal. Rem
 idle until a human runs `sassato resume-work`. Check context before each new claim
 and at safe checkpoints during long tasks so a stop request is seen promptly.
 
-At session start/resume, before work or idle, run `sassato context --json` and keep
-its `snapshot_cursor`. Unless STOP is active, immediately start exactly one
+At session start/resume, before work or idle, run `sassato context --json` and
+`sassato progress show`. Use saved progress.cursor as CURSOR; if absent, initialize
+with `sassato progress save --cursor 0 --expect 0` to replay safely. Never replace
+saved progress with a context snapshot cursor. If stored progress is invalid,
+inspect its audit record; do not initialize or advance it. Unless STOP is active, start exactly one
 `sassato wait --since CURSOR` using Claude Code's native background task option.
 Do not block the foreground turn or detach it with shell `&`, nohup, or an outer
 shell loop: those do not provide the same tool-completion notification.
@@ -66,9 +73,11 @@ shell loop: those do not provide the same tool-completion notification.
 The waiter ends for urgent mail, your human answers, resolved blockers, assignment
 or handoff, eligible ready work, review submissions or results, or STOP. Ordinary mail alone does not wake it.
 After completion, inspect context/inbox and the reported IDs, handle the change,
-and re-arm one waiter with the returned cursor. One readiness event can name several
-tasks; inspect them all before claiming work. Keep the returned cursor on timeout
-as well. Never reset it to the latest event when re-arming, since that can miss an
+then save the returned cursor with `sassato progress save --cursor CURSOR --expect VERSION`
+using the latest progress version, and re-arm one waiter with that cursor. If handling
+fails, do not advance progress; the event will replay after recovery. One readiness event can name several
+tasks; inspect them all before claiming work. Save the returned cursor on timeout
+as well. Notification progress and WIP use separate versions. Never reset it to the latest event when re-arming, since that can miss an
 event committed between waits. Waiting never marks mail read. On STOP, follow the
 checkpoint instructions and do not re-arm until resumed. On errors, inspect the
 failure before retrying; do not create a tight restart loop.

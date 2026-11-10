@@ -99,6 +99,13 @@ resume or compaction, read current context and the checkpoint, then verify the
 working files. See [context management](docs/context-management.md) for checkpoint
 fields, freshness checks, STOP precedence and recovery instructions.
 
+Checkpoints capture repository identity, branch/commit, dirty-worktree status and
+current task versions where available. Optional `--evidence FILE` adds the agent's
+validation, artifact and job reports. `progress save` records notifications safely
+handled by the role, so a restarted waiter resumes without skipping intervening
+events. These are recovery foundations; provider transitions remain unimplemented.
+See the [provider capability report](docs/provider-capabilities.md) for tested scope.
+
 ```sh
 sassato launch builder --as alice --dry-run
 sassato launch builder --as alice

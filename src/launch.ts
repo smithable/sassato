@@ -80,12 +80,12 @@ function bootstrapPrompt(workspace:string,role:string,provider:'claude'|'codex')
   if(provider==='codex')return `You are the ${workspace} worker role ${role}. First run sassato context ${identity} --brief. ${shared} ${stopping} Check your inbox and task context between tasks. No background wake-up is assumed.`;
   return [
     `You are the ${workspace} worker role ${role}.`,
-    `First run sassato context --json ${identity}. Read its STOP status and retain its numeric snapshot_cursor as CURSOR.`,
+    `First run sassato context --json ${identity}. Read its STOP status. If notification_progress is invalid, inspect the audit record and do not initialize or advance it. Otherwise use sections.notification_progress[0].cursor as CURSOR when present; otherwise use 0 to replay safely. Read sassato progress show for its version; initialize absent progress with sassato progress save --cursor 0 --expect 0.`,
     stopping,
-    `Otherwise, BEFORE beginning work or going idle, start exactly one native Claude Code background tool-task running: sassato wait --since CURSOR ${identity}. Replace CURSOR with that snapshot_cursor. If one waiter is already active, keep it instead of creating a duplicate.`,
+    `Otherwise, BEFORE beginning work or going idle, start exactly one native Claude Code background tool-task running: sassato wait --since CURSOR ${identity}. Replace CURSOR with the saved notification cursor (or 0), never a new context snapshot cursor. If one waiter is already active, keep it instead of creating a duplicate.`,
     'Use the native background tool-task option so its completion wakes this session. Never use a foreground wait, shell &, nohup, or an outer shell loop.',
     'The waiter reports urgent unread mail, human answers, resolved blockers, assignments or handoffs, newly ready tasks, and review submissions or results; ordinary mail does not wake it.',
-    `When notified, inspect fresh context and inbox, act on the relevant items, then rearm exactly one sassato wait --since CURSOR ${identity} using the cursor returned by wait, not a newer context cursor, so changes during your work are not skipped. On timeout, rearm with the cursor returned by wait too. On STOP, do not rearm until a human resumes your role.`,
+    `When notified, inspect fresh context and inbox, safely handle the relevant items, persist the returned cursor with sassato progress save --cursor CURSOR --expect VERSION using the current progress version, then rearm exactly one sassato wait --since CURSOR ${identity} using the cursor returned by wait, not a newer context cursor, so changes during your work are not skipped. On timeout, save and rearm with the cursor returned by wait too. If handling fails, leave progress unchanged so recovery replays the event. On STOP, do not rearm until a human resumes your role.`,
     shared,
   ].join('\n');
 }

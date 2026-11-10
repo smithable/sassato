@@ -31,7 +31,10 @@
     "SECURITY.md",
     "docs/configuration.md",
     "docs/compatibility.md",
-    "docs/context-management.md"
+    "docs/context-management.md",
+    "docs/provider-capabilities.md",
+    "docs/provider-capability-evidence.json",
+    "examples/recovery-evidence.example.json"
   ],
   "scripts": {
     "build": "node scripts/clean-build.mjs && tsc && node scripts/build-info.mjs",

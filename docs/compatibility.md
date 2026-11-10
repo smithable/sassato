@@ -40,8 +40,21 @@ Pending questions on already closed tasks are cancelled during migration; answer
 questions and original audit history are preserved. Reopening a task requires a new
 question when a decision is still needed. Nothing is answered on the human's behalf.
 
-Recovery checkpoints saved with the older fingerprint format remain readable but
-report `unsupported`; review the current state and save a new checkpoint. Ordinary
-WIP remains intact. Checkpoint saving and reading require no additional destructive
-migration; historical checkpoint text is retained even when its freshness format
-is unsupported.
+New recovery checkpoints use format 3. Format-2 records retain their existing
+freshness checks and remain readable, with `missing_evidence` explaining that they
+have no structured recovery metadata. Format-1 and unknown formats retain readable
+historical text but report `unsupported`; review current state and save a new
+checkpoint. Ordinary WIP remains intact. Neither checkpoint evidence nor notification
+progress requires another database schema migration or rewrites historical events.
+
+Existing checkpoint commands still work without `--evidence`; missing agent reports
+are explicit, not interpreted as successful validation or no running jobs. Older
+CLIs that only understand format 2 may show format-3 records as unsupported; their
+WIP text is still readable. Use the new CLI to inspect the complete record.
+
+Wait's explicit `--since` behavior is unchanged. Without it, a role with saved
+notification progress now resumes there; a role without progress still starts at
+the latest event. The updated worker instructions initialize absent progress to 0
+for conservative replay. Progress versions are separate from WIP versions, and
+progress does not consume inbox receipts. An older CLI does not use these progress
+records automatically, so supply the recorded cursor explicitly when mixing versions.

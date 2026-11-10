@@ -81,10 +81,19 @@ never deletes an external stop signal.
 
 ## Notifications
 
-`sassato wait --since CURSOR --as ROLE` is a read-only notification command. It returns
+`sassato wait [--since CURSOR] --as ROLE` is a read-only notification command. It returns
 for urgent unread mail, a human answer, resolved blockers, assignments/handoffs, newly
 available work, review submissions/results, stop, or timeout. Ordinary mail does not wake it. Reads do not consume
-inbox receipts. Use the returned cursor when rearming so intervening events are not lost.
+inbox receipts. Without `--since` it uses the role's saved notification progress if
+present, otherwise the latest event at invocation. The explicit cursor always wins.
+Updated worker instructions initialize absent progress to 0 for safe historical replay.
+
+Read `progress show` for the progress version. Only after safely handling a result,
+save its returned cursor with `progress save --cursor CURSOR --expect VERSION`, then
+re-arm. Save returned timeout cursors too. Failed or interrupted handling leaves
+progress unchanged for replay. Never replace it with the latest context snapshot.
+Checkpoint evidence includes a historical progress copy; use the independent latest
+record for recovery. See [durable progress](context-management.md#durable-notification-progress).
 
 The Claude launch prompt instructs the worker to keep exactly one provider-native background
 tool task waiting. It does not install a daemon or use private messaging APIs. A session

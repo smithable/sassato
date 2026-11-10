@@ -1,0 +1,73 @@
+{
+  "evidence_version": 1,
+  "observed_on": "2026-11-10",
+  "scope": "Bounded isolated conversation probes; synthetic recovery text, no actual task or job handoff",
+  "configuration_changes": false,
+  "credentials_copied": false,
+  "existing_sessions_controlled": false,
+  "codex": {
+    "version": "0.167.0",
+    "authentication_mode": "existing ChatGPT login",
+    "transport": "owned app-server stdio",
+    "ephemeral_threads": true,
+    "model_reported": "gpt-6-astra",
+    "sandbox_reported": "readOnly",
+    "approval_policy_reported": "on-request",
+    "history_turns": 2,
+    "history_reply_characters": 6498,
+    "compaction_accepted": true,
+    "compaction_item_started": true,
+    "compaction_item_completed": true,
+    "compaction_turn_completed": true,
+    "post_compaction_recall": "passed",
+    "distinct_fresh_thread_recovery": "passed",
+    "process_exit_code": 0,
+    "separate_interruption_probe": "turn/completed with interrupted status",
+    "unknown_thread_request": "rejected",
+    "invalid_option_exit_code": 2,
+    "source_script_reproduction": {
+      "passed": true,
+      "distinct_fresh_identity": true,
+      "all_owned_processes_exited_zero": true,
+      "final_cleanup_postconditions_checked_locally": true
+    }
+  },
+  "claude": {
+    "version": "2.1.321",
+    "authentication_mode": "existing claude.ai login",
+    "transport": "owned native CLI print mode with stream-json input/output",
+    "session_persistence": false,
+    "model_reported": "claude-opus-5-5",
+    "permission_mode_reported": "default",
+    "history_turns": 2,
+    "history_reply_characters": 5594,
+    "compact_boundary_observed": true,
+    "compaction_result": "success",
+    "pre_compaction_tokens_reported": 30082,
+    "post_compaction_tokens_reported": 10290,
+    "post_compaction_recall": "passed",
+    "distinct_fresh_session_recovery": "passed",
+    "process_exit_codes": [
+      0,
+      0
+    ],
+    "invalid_option_exit_code": 1,
+    "sdk_library_tested": false,
+    "interruption_tested": false,
+    "source_script_reproduction": {
+      "passed": true,
+      "distinct_fresh_identity": true,
+      "all_owned_processes_exited_zero": true,
+      "final_cleanup_postconditions_checked_locally": true
+    }
+  },
+  "not_established": [
+    "actual Sassato database and task handoff",
+    "live tools and durable service adoption",
+    "notification delivery across managed replacement",
+    "permission, hook and tool continuity",
+    "interactive TUI reconnection",
+    "Windows Terminal/WSL launcher integration",
+    "supervisor crash reconciliation and lost acknowledgments"
+  ]
+}

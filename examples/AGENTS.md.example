@@ -22,9 +22,17 @@ deliberately; review old notes before carrying them forward. This also updates W
 so no duplicate WIP update is required. Do not checkpoint after every command or
 poll just to refresh its timestamp.
 
+Use `--evidence FILE` when structured validation results, artifact references or
+job dispositions help recovery. Sassato records repository/task observations
+separately from those claims; it does not execute or verify the reported work.
+
 After startup, resume or compaction, read current context and `sassato checkpoint show`,
 inspect relevant task and decision records, check inbox, and verify working files.
 A stale checkpoint is historical evidence, not permission to overwrite current state.
+Read `sassato progress show` for current notification progress; a checkpoint's copy
+is historical. If using a supported waiter, save its returned cursor with
+`progress save --cursor CURSOR --expect VERSION` only after safely handling the
+notification. Leave progress unchanged on failure so recovery can replay it.
 Record running tools and notification waiters; settle them and retain the last
 safely handled waiter cursor before a planned transition. Respect STOP and restore
 at most one waiter only when the runtime supports background completion notifications.

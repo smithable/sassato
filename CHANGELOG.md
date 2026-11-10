@@ -4,6 +4,13 @@
 
 Review and recovery fixes:
 
+- Checkpoints capture bounded repository/task evidence and optional validation,
+  artifact and job reports, separating observations from agent claims.
+- Durable notification progress resumes waiters after restart; advancing it requires
+  an explicit version-checked save after handling a notification. Waiters remain read-only.
+- Older format-2 checkpoints remain readable with missing-evidence notices; new
+  recovery records use format 3 without another database schema migration.
+
 - Reviews now require `--expect VERSION`; stale approval and rejection fail atomically.
 - Review submissions and results wake eligible waiting roles, preserving event cursors.
 - Dropped tasks cancel pending questions with retained history; reopening requires new
