@@ -10,10 +10,13 @@ from pathlib import Path
 import queue
 import re
 import signal
+import stat
 import subprocess
 import threading
 import time
 import uuid
+
+from managed_probe_config import ConfigurationError, INSPECT_COMMAND, prepare
 
 
 SUPPORTED_VERSION = '2.1.321'
@@ -33,10 +36,10 @@ def _private_diagnostic(code, value):
         return
     record = json.dumps({'code': code, 'value': str(value)[:2048]}) + '\n'
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        fd = os.open(path, os.O_WRONLY | os.O_EXCL | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
         try:
-            os.fchmod(fd, 0o600)
-            if os.fstat(fd).st_size < 16384:
+            os.fchmod(fd, 0o600)  # Only the newly created exclusive file is changed.
+            if stat.S_ISREG(os.fstat(fd).st_mode) and stat.S_IMODE(os.fstat(fd).st_mode) == 0o600:
                 os.write(fd, record.encode('utf8'))
         finally:
             os.close(fd)
@@ -57,60 +60,14 @@ def _tool_failure_code(content):
     return 'provider-tool-error'
 
 
-def _version():
-    result = subprocess.run(['claude', '--version'], capture_output=True, text=True, timeout=10)
+def _version(policy, processes):
+    result = processes.run([policy['executable'], '--version'], capture_output=True, text=True, timeout=10, env=policy['env'])
     match = re.search(r'\b(\d+\.\d+\.\d+)\b', result.stdout)
     if result.returncode != 0 or not match:
         raise ProbeFailure('unrecognized-provider-version')
     if match.group(1) != SUPPORTED_VERSION:
         raise ProbeFailure('unsupported-provider-version')
     return match.group(1)
-
-
-def _close_owned(process):
-    """Reap this adapter's process; never use registry metadata as exit proof."""
-    def group_exists():
-        try:
-            os.killpg(process.pid, 0)
-            return True
-        except ProcessLookupError:
-            return False
-
-    def outcome(code, forced):
-        if not group_exists():
-            return {'exit_code': code, 'forced': forced, 'process_group_empty': True}
-        # An exited parent is not enough when tool children can still act. Clean
-        # only the group created by this adapter, and do not proceed to a handoff.
-        for sig in (signal.SIGTERM, signal.SIGKILL):
-            try:
-                os.killpg(process.pid, sig)
-            except ProcessLookupError:
-                pass
-            deadline = time.monotonic() + 2
-            while group_exists() and time.monotonic() < deadline:
-                time.sleep(0.05)
-            if not group_exists():
-                return {'exit_code': code, 'forced': True, 'process_group_empty': True}
-        raise ProbeFailure('owned-process-group-exit-unconfirmed')
-
-    try:
-        if process.stdin and not process.stdin.closed:
-            process.stdin.close()
-    except (BrokenPipeError, ValueError):
-        pass
-    try:
-        return outcome(process.wait(timeout=8), False)
-    except subprocess.TimeoutExpired:
-        for sig in (signal.SIGTERM, signal.SIGKILL):
-            try:
-                os.killpg(process.pid, sig)
-            except ProcessLookupError:
-                pass
-            try:
-                return outcome(process.wait(timeout=8), True)
-            except subprocess.TimeoutExpired:
-                continue
-        raise ProbeFailure('owned-process-exit-unconfirmed')
 
 
 class Session:
@@ -127,26 +84,21 @@ class Session:
         self.interrupted = False
         self.output_bytes = 0
         self.hooks = []
-        command = ['claude', '--print', '--input-format', 'stream-json', '--output-format',
+        policy = fixture['policy']
+        self.turn_count = 0
+        self.processes = fixture['processes']
+        command = [policy['executable'], '--print', '--input-format', 'stream-json', '--output-format',
                    'stream-json', '--verbose', '--include-partial-messages', '--include-hook-events',
-                   '--session-id', self.identity, '--no-session-persistence', '--tools', 'Bash,Read',
-                   '--permission-prompts', 'none']
-        if fixture.get('model'):
-            command += ['--model', fixture['model']]
-        if fixture.get('permission_mode'):
-            mode = fixture['permission_mode']
-            if mode not in ('manual', 'plan', 'dontAsk', 'acceptEdits', 'auto'):
-                raise ProbeFailure('unsupported-configured-permission-mode')
-            command += ['--permission-mode', mode]
-        if fixture.get('claude_settings_path'):
-            settings = Path(fixture['claude_settings_path']).resolve()
-            if not settings.is_relative_to(self.directory):
-                raise ProbeFailure('settings-outside-disposable-fixture')
-            command += ['--settings', str(settings)]
-        self.process = subprocess.Popen(command, cwd=self.directory,
-            env={**os.environ, **fixture.get('env', {})}, stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,
-            start_new_session=True)
+                   '--session-id', self.identity, '--no-session-persistence', '--tools', 'Bash',
+                   '--allowedTools', 'Bash(' + INSPECT_COMMAND + ')',
+                   '--permission-mode', 'dontAsk', '--permission-prompts', 'none',
+                   '--setting-sources', '', '--settings', policy['settings'],
+                   '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+                   '--restricted', '--disable-slash-commands', '--no-chrome',
+                   '--max-turns', str(policy['max_turns']), '--model', policy['model']]
+        self.process = self.processes.popen(command, cwd=self.directory,
+            env=policy['env'], stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
         self.readers = []
         try:
             self.readers = [threading.Thread(target=self._pump, daemon=True),
@@ -228,11 +180,15 @@ class Session:
                 raise ProbeFailure('provider-working-directory-mismatch')
             if not isinstance(event.get('model'), str) or not isinstance(event.get('permissionMode'), str):
                 raise ProbeFailure('missing-provider-settings-evidence')
-            if event['permissionMode'] == 'bypassPermissions':
-                raise ProbeFailure('inherited-permission-bypass-not-supported')
+            if event['permissionMode'] not in ('dontAsk',):
+                raise ProbeFailure('unsupported-inherited-permission-mode')
             tools = event.get('tools')
             if not isinstance(tools, list) or not all(isinstance(tool, str) for tool in tools):
                 raise ProbeFailure('missing-provider-tools-evidence')
+            if tools != ['Bash'] or event.get('mcp_servers') or event.get('plugins'):
+                raise ProbeFailure('unexpected-provider-integrations')
+            if event['model'] != self.fixture['policy']['model']:
+                raise ProbeFailure('requested-model-not-retained')
             self.init = {'model': event['model'], 'permission_mode': event['permissionMode'],
                          'tools': sorted(tools)}
         if kind == 'system' and subtype in ('hook_started', 'hook_progress', 'hook_response'):
@@ -250,15 +206,6 @@ class Session:
                     if values.get('command', '').strip() != self.fixture['required_tool_command']:
                         _private_diagnostic('unexpected-shell-command', values.get('command'))
                         raise ProbeFailure('unexpected-shell-command')
-                elif name == 'Read':
-                    requested = values.get('file_path')
-                    if not isinstance(requested, str):
-                        raise ProbeFailure('malformed-read-request')
-                    path = Path(requested)
-                    if not path.is_absolute():
-                        path = self.directory / path
-                    if not path.resolve().is_relative_to(self.directory):
-                        raise ProbeFailure('read-outside-disposable-fixture')
                 else:
                     raise ProbeFailure('unexpected-provider-tool')
                 self.tool_calls[ident] = name
@@ -281,6 +228,9 @@ class Session:
             raise ProbeFailure('provider-permission-denied')
 
     def turn(self, prompt, expected=(), compact=False, interrupt=False):
+        self.turn_count = getattr(self, 'turn_count', 0) + 1
+        if self.turn_count > self.fixture.get('policy', {}).get('max_turns', 4):
+            raise ProbeFailure('provider-turn-cap-exceeded')
         if not isinstance(prompt, str) or len(prompt.encode('utf8')) > 131072:
             raise ProbeFailure('invalid-or-oversized-prompt')
         request = {'type': 'user', 'message': {'role': 'user', 'content': prompt},
@@ -326,7 +276,9 @@ class Session:
             return {'compact_boundary': boundary, 'reply_characters': len(response)}
 
     def close(self):
-        outcome = _close_owned(self.process)
+        code = self.processes.close(self.process)
+        outcome = {'exit_code': code, 'forced': code != 0 or self.process in self.processes.forced_cleanup,
+                   'process_group_empty': True}
         for reader in self.readers:
             if reader.ident is not None:
                 reader.join(timeout=2)
@@ -339,8 +291,8 @@ class Session:
 def run(fixture):
     """Run a real disposable handoff; before_fresh executes only after old exit."""
     report = {'provider': 'claude', 'ok': False, 'adapter': 'native-stream-json',
-              'version': None, 'stages': [], 'tools_restricted_to': ['Bash', 'Read'],
-              'permission_prompts': 'none', 'authentication': 'inherited',
+              'version': None, 'stages': [], 'tools_restricted_to': ['exact inspector Bash command with deny-only hook'],
+              'permission_prompts': 'none', 'authentication': 'operator-provisioned isolated claude.ai login',
               'hook_continuity': 'unproved', 'interruption': 'not-run',
               'ui_reconnection': 'unproved', 'supervisor_supported': False,
               'cleanup_scope': 'owned process and process group; detached descendants remain unproved'}
@@ -348,7 +300,20 @@ def run(fixture):
     try:
         if os.name != 'posix':
             raise ProbeFailure('unsupported-process-platform')
-        report['version'] = _version()
+        policy = prepare(fixture, 'claude')
+        fixture = {**fixture, 'policy': policy}
+        report['version'] = _version(policy, fixture['processes'])
+        report['requested_model'] = policy['model']
+        report['max_turns_per_process'] = policy['max_turns']
+        auth = fixture['processes'].run([policy['executable'], '--setting-sources', '',
+            '--settings', policy['settings'], '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+            'auth', 'status'], capture_output=True, text=True, timeout=10, env=policy['env'])
+        try:
+            state = json.loads(auth.stdout)
+        except (ValueError, TypeError):
+            raise ProbeFailure('isolated-native-authentication-unavailable') from None
+        if auth.returncode or not state.get('loggedIn') or state.get('authMethod') != 'claude.ai':
+            raise ProbeFailure('isolated-native-authentication-unavailable')
         if not callable(fixture.get('before_fresh')) or fixture.get('required_tool_command') != 'node ./inspect-state.mjs':
             raise ProbeFailure('invalid-managed-recovery-fixture')
         old = Session(fixture)
@@ -393,7 +358,7 @@ def run(fixture):
             raise ProbeFailure('fresh-process-did-not-exit-cleanly')
         report['ok'] = True
     except Exception as error:
-        report['failure'] = str(error) if isinstance(error, ProbeFailure) else type(error).__name__
+        report['failure'] = str(error) if isinstance(error, (ProbeFailure, ConfigurationError)) else type(error).__name__
         if getattr(error, 'cleanup_failure', None):
             report.setdefault('cleanup_failures', []).append(error.cleanup_failure)
     finally:

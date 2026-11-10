@@ -25,7 +25,7 @@ class RunTests(unittest.TestCase):
         owner = self
 
         class FakeServer:
-            def __init__(self, cwd, env, model):
+            def __init__(self, cwd, env, model, **kwargs):
                 self.thread_id = "private-thread-" + str(len(owner.servers))
                 self.index = len(owner.servers)
                 self.closed = False
@@ -59,7 +59,9 @@ class RunTests(unittest.TestCase):
         self.version_patch = patch.object(adapter, "_version", return_value="0.167.0")
         self.version_patch.start()
         self.addCleanup(self.version_patch.stop)
-        self.fixture = {
+        mocked=patch.object(adapter, "prepare", return_value={"env":{},"model":"model","max_turns":4,"executable":"/fixture/codex"})
+        mocked.start();self.addCleanup(mocked.stop)
+        self.fixture = {"processes": Mock(),
             "directory": self.temp.name, "env": {}, "initial_prompt": "inspect",
             "expected_initial_tokens": ["TASK"], "instruction_marker": "INSTRUCTION",
             "tool_marker": "OUTPUT", "required_tool_command": "node ./inspect-state.mjs",
@@ -89,25 +91,13 @@ class RunTests(unittest.TestCase):
         self.assertEqual(len(self.servers), 1)
 
     def test_forced_descendant_cleanup_blocks_handoff_even_with_leader_exit_zero(self):
-        process = Mock(pid=43210, stdin=io.StringIO())
-        process.wait.return_value = 0
-        alive = True
-
-        def killpg(pid, sig):
-            nonlocal alive
-            if sig == signal.SIGTERM:
-                alive = False
-            elif sig == 0 and not alive:
-                raise ProcessLookupError()
-
-        with patch.object(adapter.AppServer, "close", side_effect=lambda: adapter._close(process)), patch.object(adapter.os, "killpg", side_effect=killpg) as kill:
+        with patch.object(adapter.AppServer, "close", side_effect=adapter.ProbeFailure("owned_process_required_forced_cleanup")):
             result = adapter.run(self.fixture)
         self.assertFalse(result["ok"])
         self.assertEqual(result["failure"], "owned_process_required_forced_cleanup")
         self.assertNotIn("checkpoint", self.events)
         self.assertEqual(len(self.servers), 1)
         self.assertNotIn("old_process_exited_before_replacement", result)
-        self.assertIn((43210, signal.SIGTERM), [call.args for call in kill.call_args_list])
 
     def test_settings_drift_stops_before_fresh_turn(self):
         self.drift = True
@@ -164,7 +154,7 @@ class ProtocolTests(unittest.TestCase):
         return server
 
     def item(self, kind="commandExecution", **overrides):
-        item = {"type": kind, "command": "node ./inspect-state.mjs",
+        item = {"type": kind, "id":"command", "command": "node ./inspect-state.mjs",
                 "cwd": str(Path.cwd()), "status": "completed", "exitCode": 0,
                 "aggregatedOutput": "OUTPUT"}
         item.update(overrides)
@@ -238,32 +228,25 @@ class ProtocolTests(unittest.TestCase):
         with patch.object(adapter.subprocess, "run", return_value=subprocess.CompletedProcess(
                 ["codex", "--version"], 0, "codex-cli 999.0.0", "")):
             with self.assertRaisesRegex(adapter.ProbeFailure, "unsupported_version"):
-                adapter._version()
+                adapter._version({"executable":"codex","env":{}}, type("Owner",(),{"run":lambda self,*args,**kwargs:adapter.subprocess.run(*args,**kwargs)})())
 
 
 class CleanupTests(unittest.TestCase):
-    def test_leader_exit_also_checks_and_cleans_owned_group(self):
-        process = Mock(pid=43210, stdin=io.StringIO())
-        process.wait.return_value = 0
-        with patch.object(adapter.os, "killpg", side_effect=[None, None, ProcessLookupError()]) as kill:
-            with self.assertRaisesRegex(adapter.ProbeFailure, "owned_process_required_forced_cleanup"):
-                adapter._close(process)
-        self.assertEqual(kill.call_args_list[0].args, (43210, 0))
-        self.assertEqual(kill.call_args_list[1].args, (43210, signal.SIGTERM))
+    def test_shared_owner_forced_cleanup_is_not_clean_handoff(self):
+        server=adapter.AppServer.__new__(adapter.AppServer)
+        server.process=Mock();server.closed=False
+        server.processes=Mock(forced_cleanup={server.process})
+        server.processes.close.return_value=0
+        with self.assertRaisesRegex(adapter.ProbeFailure,'owned_process_required_forced_cleanup'):
+            server.close()
 
-    def test_forced_leader_cleanup_is_not_a_clean_exit_when_signal_handler_returns_zero(self):
-        process = Mock(pid=43210, stdin=io.StringIO())
-        process.wait.side_effect = [subprocess.TimeoutExpired("provider", 8), 0]
-        with patch.object(adapter.os, "killpg", side_effect=[None, ProcessLookupError()]):
-            with self.assertRaisesRegex(adapter.ProbeFailure, "owned_process_required_forced_cleanup"):
-                adapter._close(process)
-
-    def test_closed_stdin_and_empty_group(self):
-        process = Mock(pid=43210, stdin=io.StringIO())
-        process.stdin.close()
-        process.wait.return_value = 0
-        with patch.object(adapter.os, "killpg", side_effect=ProcessLookupError()):
-            self.assertEqual(adapter._close(process), 0)
+    def test_clean_close_is_idempotent(self):
+        server=adapter.AppServer.__new__(adapter.AppServer)
+        server.process=Mock();server.closed=False
+        server.processes=Mock(forced_cleanup=set())
+        server.processes.close.return_value=0
+        self.assertEqual(server.close(),0);self.assertEqual(server.close(),0)
+        server.processes.close.assert_called_once_with(server.process)
 
 
 if __name__ == "__main__":

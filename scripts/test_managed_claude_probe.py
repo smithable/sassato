@@ -15,11 +15,29 @@ spec.loader.exec_module(probe)
 
 
 class AdapterTest(unittest.TestCase):
+    def setUp(self):
+        policy={'executable':'/fixture/claude','env':{},'model':'test-model','max_turns':4,'settings':'{}'}
+        self.policy=policy
+        self.close_outcome=Mock(return_value={'exit_code':0,'forced':False,'process_group_empty':True})
+        mocked=patch.object(probe,'prepare',return_value=policy);mocked.start();self.addCleanup(mocked.stop)
+
+    def owner(self):
+        test=self
+        class Owner:
+            forced_cleanup=()
+            def run(self, args, **kwargs):
+                if args[-2:]==['auth','status']:
+                    return types.SimpleNamespace(returncode=0,stdout=json.dumps({'loggedIn':True,'authMethod':'claude.ai'}))
+                return probe.subprocess.run(args,**kwargs)
+            def popen(self,*args,**kwargs):return probe.subprocess.Popen(*args,**kwargs)
+            def close(self,process):return test.close_outcome(process)['exit_code']
+        return Owner()
+
     def fixture(self, events):
         def handoff():
             events.append('handoff')
             return {'recovery_prompt': 'fresh prompt', 'expected_recovery_tokens': ['fresh-token']}
-        return {'directory': '/tmp/sassato-test-fixture', 'env': {},
+        return {'directory': '/tmp/sassato-test-fixture', 'env': {}, 'processes':self.owner(), 'policy':self.policy,
                 'required_tool_command': 'node ./inspect-state.mjs',
                 'initial_prompt': 'initial prompt', 'expected_initial_tokens': ['initial-token'],
                 'instruction_marker': 'project-marker', 'tool_marker': 'real-tool-marker',
@@ -28,7 +46,7 @@ class AdapterTest(unittest.TestCase):
     def fake_session(self, label, events, exit_code=0, forced=False, model='test-model', tool_proof=True):
         session = types.SimpleNamespace(identity=label, tool_marker_seen=tool_proof,
             tool_calls={'tool': 'Bash'}, successful_tools={'tool'} if tool_proof else set(),
-            init={'model': model, 'permission_mode': 'default', 'tools': ['Bash', 'Read']},
+            init={'model': model, 'permission_mode': 'dontAsk', 'tools': ['Bash']},
             process=types.SimpleNamespace(poll=lambda: exit_code))
         def turn(prompt, expected):
             events.append(label + '-turn')
@@ -91,7 +109,7 @@ class AdapterTest(unittest.TestCase):
                 readers[failed_reader].start.side_effect = failure
                 if failed_reader:
                     readers[0].ident = 1
-                with patch.object(probe, '_version', return_value=probe.SUPPORTED_VERSION), patch.object(probe.subprocess, 'Popen', return_value=process) as launch, patch.object(probe.threading, 'Thread', side_effect=readers), patch.object(probe, '_close_owned', return_value={'exit_code': 0, 'forced': False, 'process_group_empty': True}) as close:
+                with patch.object(probe, '_version', return_value=probe.SUPPORTED_VERSION), patch.object(probe.subprocess, 'Popen', return_value=process) as launch, patch.object(probe.threading, 'Thread', side_effect=readers), patch.object(self, 'close_outcome', return_value={'exit_code': 0, 'forced': False, 'process_group_empty': True}) as close:
                     report = probe.run(self.fixture(events))
                 close.assert_called_once_with(process)
                 self.assertEqual(launch.call_count, 1)
@@ -106,7 +124,7 @@ class AdapterTest(unittest.TestCase):
     def test_interrupted_reader_start_also_cleans_owned_group(self):
         process = types.SimpleNamespace(stdin=io.StringIO(), stdout=io.StringIO(), stderr=io.StringIO())
         reader = Mock(ident=None); reader.start.side_effect = KeyboardInterrupt()
-        with patch.object(probe.subprocess, 'Popen', return_value=process), patch.object(probe.threading, 'Thread', return_value=reader), patch.object(probe, '_close_owned', return_value={'exit_code': 0, 'forced': False, 'process_group_empty': True}) as close:
+        with patch.object(probe.subprocess, 'Popen', return_value=process), patch.object(probe.threading, 'Thread', return_value=reader), patch.object(self, 'close_outcome', return_value={'exit_code': 0, 'forced': False, 'process_group_empty': True}) as close:
             with self.assertRaises(KeyboardInterrupt):
                 probe.Session(self.fixture([]))
         close.assert_called_once_with(process)
@@ -116,7 +134,7 @@ class AdapterTest(unittest.TestCase):
         events = []
         process = types.SimpleNamespace(stdin=io.StringIO(), stdout=io.StringIO(), stderr=io.StringIO())
         reader = Mock(ident=None); reader.start.side_effect = ValueError('private startup error')
-        with patch.object(probe, '_version', return_value=probe.SUPPORTED_VERSION), patch.object(probe.subprocess, 'Popen', return_value=process), patch.object(probe.threading, 'Thread', return_value=reader), patch.object(probe, '_close_owned', side_effect=RuntimeError('private cleanup error')) as close:
+        with patch.object(probe, '_version', return_value=probe.SUPPORTED_VERSION), patch.object(probe.subprocess, 'Popen', return_value=process), patch.object(probe.threading, 'Thread', return_value=reader), patch.object(self, 'close_outcome', side_effect=RuntimeError('private cleanup error')) as close:
             report = probe.run(self.fixture(events))
         close.assert_called_once_with(process)
         self.assertEqual(report['failure'], 'ValueError')
@@ -135,7 +153,7 @@ class AdapterTest(unittest.TestCase):
 
     def init(self, session):
         return {'type': 'system', 'subtype': 'init', 'session_id': session.identity,
-                'cwd': str(session.directory), 'model': 'test-model', 'permissionMode': 'default', 'tools': ['Bash', 'Read']}
+                'cwd': str(session.directory), 'model': 'test-model', 'permissionMode': 'dontAsk', 'tools': ['Bash']}
 
     def result(self, session, text='initial-token project-marker'):
         return {'type': 'result', 'subtype': 'success', 'is_error': False, 'session_id': session.identity, 'result': text}
@@ -205,20 +223,13 @@ class AdapterTest(unittest.TestCase):
         with self.assertRaisesRegex(probe.ProbeFailure, 'success-without-compaction-boundary'):
             session.turn('/compact', compact=True)
 
-    def test_clean_parent_exit_with_remaining_group_children_requires_cleanup(self):
-        process = types.SimpleNamespace(stdin=io.StringIO(), pid=12345, wait=lambda timeout: 0)
-        calls = []
-        alive = {'value': True}
-        def killpg(pid, sig):
-            calls.append(sig)
-            if sig == signal.SIGTERM:
-                alive['value'] = False
-            elif sig == 0 and not alive['value']:
-                raise ProcessLookupError()
-        with patch.object(probe.os, 'killpg', side_effect=killpg):
-            outcome = probe._close_owned(process)
-        self.assertEqual(outcome, {'exit_code': 0, 'forced': True, 'process_group_empty': True})
-        self.assertIn(signal.SIGTERM, calls)
+    def test_shared_owner_forced_cleanup_is_not_clean_handoff(self):
+        session=probe.Session.__new__(probe.Session)
+        session.process=Mock(stdout=io.StringIO(),stderr=io.StringIO())
+        session.processes=Mock(forced_cleanup={session.process})
+        session.processes.close.return_value=0
+        session.readers=[]
+        self.assertTrue(session.close()['forced'])
 
 
 if __name__ == '__main__':

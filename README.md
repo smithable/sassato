@@ -105,9 +105,11 @@ validation, artifact and job reports. `progress save` records notifications safe
 handled by the role, so a restarted waiter resumes without skipping intervening
 events. These are recovery foundations; provider transitions remain unimplemented.
 See the [provider capability report](https://github.com/smithable/sassato/blob/main/docs/provider-capabilities.md) for tested scope.
-The source-only [managed recovery probe](https://github.com/smithable/sassato/blob/feat/managed-recovery-validation/docs/managed-recovery-validation.md)
+The source-only [managed recovery probe](docs/managed-recovery-validation.md)
 tests real disposable task, checkpoint, file and notification state across provider
 replacement. It does not enable automatic transitions or control existing sessions.
+The guide is kept in source; npm readers can use the
+[repository documentation](https://github.com/smithable/sassato/tree/main/docs).
 
 ```sh
 sassato launch builder --as alice --dry-run

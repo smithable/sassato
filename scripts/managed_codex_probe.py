@@ -9,10 +9,11 @@ from pathlib import Path
 import queue
 import re
 import shlex
-import signal
 import subprocess
 import threading
 import time
+
+from managed_probe_config import CODEX_RESTRICTIONS, ConfigurationError, prepare
 
 
 SUPPORTED_VERSIONS = {"0.167.0"}
@@ -37,9 +38,9 @@ def _tool_failure_diagnostic(output):
     return None
 
 
-def _version():
-    result = subprocess.run(["codex", "--version"], capture_output=True,
-                            text=True, timeout=10)
+def _version(policy, processes):
+    result = processes.run([policy["executable"], "--version"], capture_output=True,
+                           text=True, timeout=10, env=policy["env"])
     match = re.search(r"\b\d+\.\d+\.\d+\b", result.stdout)
     if result.returncode or not match:
         raise ProbeFailure("version_probe_failed")
@@ -47,58 +48,6 @@ def _version():
     if value not in SUPPORTED_VERSIONS:
         raise ProbeFailure("unsupported_version")
     return value
-
-
-def _close(process):
-    try:
-        if process.stdin and not process.stdin.closed:
-            process.stdin.close()
-    except (OSError, ValueError):
-        pass
-    exit_code = None
-    forced = False
-
-    def finished():
-        if forced:
-            raise ProbeFailure("owned_process_required_forced_cleanup")
-        return exit_code
-
-    try:
-        exit_code = process.wait(timeout=8)
-    except subprocess.TimeoutExpired:
-        for sig in (signal.SIGTERM, signal.SIGKILL):
-            forced = True
-            try:
-                os.killpg(process.pid, sig)
-            except ProcessLookupError:
-                pass
-            try:
-                exit_code = process.wait(timeout=8)
-                break
-            except subprocess.TimeoutExpired:
-                pass
-        if exit_code is None:
-            raise ProbeFailure("owned_process_cleanup_timeout")
-    # start_new_session makes this PID our group ID. A clean leader exit alone
-    # does not establish that its tool descendants have stopped.
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(process.pid, 0)
-        except ProcessLookupError:
-            return finished()
-        forced = True
-        try:
-            os.killpg(process.pid, sig)
-        except ProcessLookupError:
-            return finished()
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline:
-            try:
-                os.killpg(process.pid, 0)
-            except ProcessLookupError:
-                return finished()
-            time.sleep(0.05)
-    raise ProbeFailure("owned_process_group_cleanup_timeout")
 
 
 def _command_tokens(command):
@@ -111,11 +60,18 @@ def _command_tokens(command):
 
 
 class AppServer:
-    def __init__(self, cwd, env, model=None):
+    def __init__(self, cwd, env, model=None, *, processes=None, max_turns=4, executable=None):
         self.cwd = str(Path(cwd).resolve())
         self.model = model
-        self.process = subprocess.Popen(
-            ["codex", "app-server", "--stdio"], cwd=self.cwd, env=env,
+        self.processes = processes
+        self.max_turns = max_turns
+        self.turn_count = 0
+        if processes is None or not executable:
+            raise ProbeFailure("isolated_process_owner_required")
+        restrictions = [arg for key, value in CODEX_RESTRICTIONS.items()
+                        for arg in ("-c", key + "=" + json.dumps(value))]
+        self.process = processes.popen(
+            [executable, *restrictions, "app-server", "--stdio"], cwd=self.cwd, env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, bufsize=1, start_new_session=True)
         self.queue = queue.Queue()
@@ -127,8 +83,8 @@ class AppServer:
         try:
             threading.Thread(target=self._pump, daemon=True).start()
             threading.Thread(target=self._discard_errors, daemon=True).start()
-        except Exception:
-            _close(self.process)
+        except BaseException:
+            self.processes.close(self.process)
             raise
 
     def _pump(self):
@@ -183,7 +139,21 @@ class AppServer:
             "name": "sassato-managed-recovery-probe", "version": "0.1.2"}})
         self.process.stdin.write(json.dumps({"method": "initialized", "params": {}}) + "\n")
         self.process.stdin.flush()
-        params = {"cwd": self.cwd, "ephemeral": True}
+        config = self.call("config/read", {"includeLayers": False}).get("config", {})
+        for key, expected in CODEX_RESTRICTIONS.items():
+            value = config
+            for part in key.split("."):
+                value = value.get(part) if isinstance(value, dict) else None
+            if value != expected:
+                raise ProbeFailure("effective_provider_confinement_unverified")
+        account = self.call("account/read", {"refreshToken": False}).get("account")
+        if not isinstance(account, dict) or account.get("type") != "chatgpt":
+            raise ProbeFailure("isolated_chatgpt_authentication_required")
+        catalog = self.call("model/list", {"limit": 100, "includeHidden": False})
+        if not any(item.get("model") == self.model for item in catalog.get("data", [])):
+            raise ProbeFailure("requested_model_unavailable_no_fallback")
+        params = {"cwd": self.cwd, "ephemeral": True, "sandbox": "read-only",
+                  "approvalPolicy": "on-request", "approvalsReviewer": "user"}
         if self.model is not None:
             params["model"] = self.model
         result = self.call("thread/start", params)
@@ -195,9 +165,14 @@ class AppServer:
         sandbox = result.get("sandbox", {})
         if sandbox.get("type") != "readOnly" or sandbox.get("networkAccess", False):
             raise ProbeFailure("unsupported_default_sandbox")
+        if result["approvalPolicy"] != "on-request" or result["approvalsReviewer"] != "user" or result["model"] != self.model:
+            raise ProbeFailure("explicit_startup_policy_not_retained")
         return result
 
     def turn(self, prompt, allowed_commands, tool_marker):
+        self.turn_count = getattr(self, "turn_count", 0) + 1
+        if self.turn_count > getattr(self, "max_turns", 4):
+            raise ProbeFailure("provider_turn_cap_exceeded")
         result = self.call("turn/start", {"threadId": self.thread_id,
                                          "input": [{"type": "text", "text": prompt}]})
         turn_id = result["turn"]["id"]
@@ -205,6 +180,7 @@ class AppServer:
         texts = []
         commands = 0
         marker_seen = False
+        started_commands = set()
         allowed = [_command_tokens(value) for value in allowed_commands]
         while True:
             if time.monotonic() >= deadline:
@@ -226,6 +202,12 @@ class AppServer:
                 if kind not in ("userMessage", "agentMessage", "reasoning", "plan", "commandExecution"):
                     raise ProbeFailure("unsupported_provider_item")
                 if kind == "commandExecution":
+                    command_id = item.get("id")
+                    if not isinstance(command_id, str) or not command_id:
+                        raise ProbeFailure("missing_tool_call_identity")
+                    started_commands.add(command_id)
+                    if len(started_commands) > getattr(self, "max_turns", 4):
+                        raise ProbeFailure("provider_tool_turn_cap_exceeded")
                     if _command_tokens(item.get("command", "")) not in allowed:
                         raise ProbeFailure("unexpected_tool_command")
                     if str(Path(item.get("cwd", "")).resolve()) != self.cwd:
@@ -249,8 +231,10 @@ class AppServer:
 
     def close(self):
         if not self.closed:
-            self.exit_code = _close(self.process)
+            self.exit_code = self.processes.close(self.process)
             self.closed = True
+            if self.process in self.processes.forced_cleanup:
+                raise ProbeFailure("owned_process_required_forced_cleanup")
         return self.exit_code
 
 
@@ -261,7 +245,7 @@ def run(fixture):
     instruction_marker, tool_marker, required_tool_command, and before_fresh.
     before_fresh runs only after verified old-process exit; it returns a
     recovery_prompt and expected_recovery_tokens. Optional codex_model pins an
-    explicitly selected model; otherwise both processes inherit the defaults.
+    explicitly selected model; otherwise a documented efficient model is selected explicitly.
     The caller owns fixture cleanup and independent DB/file mutation checks.
     """
     report = {"provider": "codex", "ok": False, "process_exit_codes": [],
@@ -274,12 +258,17 @@ def run(fixture):
     try:
         if os.name != "posix":
             raise ProbeFailure("unsupported_process_cleanup_platform")
-        report["version"] = _version()
+        policy = prepare(fixture, "codex")
+        processes = fixture["processes"]
+        report["version"] = _version(policy, processes)
+        report["requested_model"] = policy["model"]
+        report["max_turns_per_process"] = policy["max_turns"]
+        report["authentication"] = "operator-provisioned isolated ChatGPT login"
+        report["confinement"] = "isolated CODEX_HOME; read-only; on-request user approvals; no MCP"
         directory = Path(fixture["directory"]).resolve()
         if not directory.is_dir():
             raise ProbeFailure("missing_fixture_directory")
-        env = dict(os.environ)
-        env.update(fixture["env"])
+        env = policy["env"]
         instruction_marker = fixture["instruction_marker"]
         tool_marker = fixture["tool_marker"]
         initial_prompt = fixture["initial_prompt"]
@@ -290,7 +279,8 @@ def run(fixture):
         if command != "node ./inspect-state.mjs":
             raise ProbeFailure("unsupported_fixture_tool_command")
         report["stage"] = "initial_process"
-        old = AppServer(directory, env, fixture.get("codex_model"))
+        old = AppServer(directory, env, policy["model"], processes=processes,
+                        max_turns=policy["max_turns"], executable=policy["executable"])
         servers.append(old)
         settings = old.start()
         report["model"] = settings["model"]
@@ -316,7 +306,8 @@ def run(fixture):
         if instruction_marker in recovery_prompt or tool_marker in recovery_prompt:
             raise ProbeFailure("recovery_marker_leaked")
         report["stage"] = "fresh_process"
-        fresh = AppServer(directory, env, fixture.get("codex_model"))
+        fresh = AppServer(directory, env, policy["model"], processes=processes,
+                        max_turns=policy["max_turns"], executable=policy["executable"])
         servers.append(fresh)
         fresh_settings = fresh.start()
         report["distinct_provider_identity"] = old.thread_id != fresh.thread_id
@@ -335,7 +326,7 @@ def run(fixture):
         report["ok"] = True
         report["stage"] = "completed"
     except Exception as error:
-        report["failure"] = str(error) if isinstance(error, ProbeFailure) else type(error).__name__
+        report["failure"] = str(error) if isinstance(error, (ProbeFailure, ConfigurationError)) else type(error).__name__
         if isinstance(error, ProbeFailure) and error.diagnostic:
             report["diagnostic"] = error.diagnostic
     finally:

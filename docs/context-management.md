@@ -227,5 +227,7 @@ installed by checkpoint saving or recovery.
 
 See [provider capabilities](https://github.com/smithable/sassato/blob/main/docs/provider-capabilities.md) for the compatibility evidence
 and limits of future managed-session work. No supervisor command is implemented here.
-The [managed recovery validation guide](https://github.com/smithable/sassato/blob/feat/managed-recovery-validation/docs/managed-recovery-validation.md) documents
+The [managed recovery validation guide](managed-recovery-validation.md) documents
 the opt-in actual-state probe and the remaining lifecycle release gates.
+The guide is kept in source; npm readers can use the
+[repository documentation](https://github.com/smithable/sassato/tree/main/docs).

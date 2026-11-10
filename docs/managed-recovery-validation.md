@@ -136,7 +136,7 @@ pressure-based transition policy comes only after execution reliability is prove
 
 ## Current result: supervisor gate closed
 
-Checked on 2026-11-10. The disposable fixture checks and non-model `--fixture-only`
+Historical live attempts on 2026-11-10, before the isolation changes below. The disposable fixture checks and non-model `--fixture-only`
 path passed. Neither live provider completed the real-state recovery proof. These
 outcomes are narrower than general provider incompatibility: they identify failures
 in the tested host, configuration and restricted probe path. No production worker
@@ -168,17 +168,35 @@ The source-checkout reproduction entry point is:
 
 ```sh
 npm run build
-python3 scripts/managed-recovery-probe.py --provider codex
-python3 scripts/managed-recovery-probe.py --provider claude
+python3 scripts/managed-recovery-probe.py --provider codex --provider-home /path/to/dedicated-codex-home
+python3 scripts/managed-recovery-probe.py --provider claude --provider-home /path/to/dedicated-claude-home
 # No provider or model calls:
 python3 scripts/managed-recovery-probe.py --provider codex --fixture-only
 ```
 
-It requires Python 3, POSIX process groups and the selected installed provider. It
-is an opt-in live-model test using existing authentication, not part of normal unit
-tests or package smoke. `scripts/managed-recovery-fixture.mjs` creates a scratch Git
-repository and Sassato database. The intended inspection command reads actual task, checkpoint, progress, inbox and
-file state; neither provider completed that command in the recorded live runs.
+Live runs currently require Linux, Python 3, POSIX process groups and the selected
+installed provider; other platforms fail preflight until their policy isolation is
+validated. These
+commands spend real model quota or charges and are never run by CI, normal unit
+tests or package smoke. `--fixture-only` launches no provider. The runner creates a
+scratch repository and database; the inspector reads real coordination and file state.
+
+Live runs require an operator-provisioned, dedicated native authentication directory
+via `--provider-home`. It must be an owned, private directory containing only the
+provider's private native auth file (`auth.json` or `.credentials.json`). The harness
+never copies credentials, logs in, changes billing modes or falls back to API keys.
+Normal provider homes and inherited configuration are rejected. A missing or
+incompatible home is a preflight failure, not a request to weaken these checks.
+Provider-generated files may require operator inspection before a subsequent run.
+
+The selected low-cost defaults are `gpt-6-luna` for Codex and `claude-haiku-5-5` for
+Claude; `--model NAME` selects an explicit alternative. Defaults follow the official
+[Codex model documentation](https://learn.chatgpt.com/docs/models) and
+[Claude model configuration](https://code.claude.com/docs/en/model-config).
+Availability on the test account and compatibility with the pinned provider versions
+remain unproved until a live run passes; there is no automatic model fallback.
+`--max-turns N` defaults to 4 and accepts 1–8. Turns also have a 120-second deadline;
+these are execution limits, not a guaranteed currency budget.
 
 When initial inspection succeeds, the runner requires clean old-process/group exit
 without forced cleanup before its
@@ -188,16 +206,29 @@ the controller checks file bytes, full Git status, HEAD, task ownership/version,
 role configuration, event state, progress, mail and job exit independently. The live
 attempts above stopped before this path; only the fixture checks exercised it.
 
-The fixture expects read-only inspection, but the managed adapters' command/path
-checks validate provider protocol events after a tool request has been emitted.
-They are not a sandbox or a security boundary and do not establish that a rejected
-command never ran. The runner created only scratch provider sessions; it did not
-attach to existing workers. Configured permissions were preserved, including
-Claude's default mode. Inherited hooks and MCP remain outside the proof: no tool
-isolation or freedom from their side effects is established. This differs from the
-separate hardened conversation-only runner, which disables tools before startup
-and has not been live revalidated. Hooks, interactive UI and arbitrary
-tools/settings continuity remain unproved. The adapters accept only the versions
-named above and reject other versions until validated. Scripts are source-checkout
-tools and are not included in the npm package. A future passing probe would still
-need the supervisor lifecycle and failure tests listed above before release.
+The hardened adapters request these local startup restrictions before model work.
+Centrally managed hosts (including cloud-delivered or WSL/host policy) are unsupported:
+local isolation and known managed-file checks cannot establish freedom from those
+policies. Live enforcement remains unproved for the hardened adapters.
+
+- Both use a clean environment and temporary HOME, a dedicated provider auth home,
+  and owned process groups for discovery, model execution and the fixture job.
+  SIGINT/SIGTERM stop and reap owned groups; a cancellation remains a failure.
+- Codex pins read-only sandbox and on-request/user approval settings at startup and
+  thread creation. Local inherited configuration, skills, plugins and MCP are disabled;
+  requests for approval fail the probe without receiving an approval response.
+- Claude loads only generated settings, exposes only Bash, and declares the exact
+  `node ./inspect-state.mjs` command. A generated deny-only PreToolUse hook is configured to reject
+  every other tool/command before execution. It never emits an approval response.
+  The selected mode is `dontAsk`; broader modes such as `acceptEdits`, `auto` and
+  `bypassPermissions` are rejected. Local inherited hooks and MCP are disabled.
+- Optional private diagnostics use exclusive creation of a new mode-600 regular
+  file. Existing files, symlinks and special files are not overwritten.
+
+These restrictions and cancellation paths have deterministic regression coverage;
+the hardened adapters have not been live revalidated. Historical failures above do
+not establish their current behavior, and no passing recovery result is claimed.
+The adapters accept only the provider versions named above. Hooks, interactive UI
+and arbitrary user tools/settings continuity remain unproved. Source-checkout probes
+and maintainer reports are not included in the npm package. A future passing probe
+still needs the supervisor lifecycle and failure tests listed above before release.
