@@ -11,21 +11,25 @@ Context is a bounded snapshot and does not mark messages read. Use the IDs to re
 full items before making decisions. Keep task ownership and your WIP accurate.
 Expired leases do not authorize taking another role's work; use an explicit handoff.
 
-Before a handoff or intended reset, read `sassato wip`, then save
-`sassato checkpoint save --current 'objective and progress' --next 'next action'
---notes 'constraints, discoveries, rejected approaches, files, tests, open questions and jobs'
---expect VERSION` using the WIP version (omit --expect on first WIP). Supply all
-three fields and review their contents rather than carrying old notes forward.
+Keep native automatic compaction enabled. Save a complete checkpoint after
+meaningful progress, important decisions and significant test results, and before
+a handoff or planned session transition. Read `sassato wip`, then save:
 
-Keep native auto-compaction as the default. `sassato context advise` is optional
-when a human is considering a manual reset, not a check to run after every task.
-Its relation, pressure and job reports must be honest; use unknown when unavailable.
-A running waiter counts as a job. Save discoveries, settle jobs and retain the waiter
-cursor before an intended reset. Advice never executes a reset or grants permission.
-Ask the human to use supported controls; never mark a live session ended to enable
-a fresh launch, inject keystrokes, or modify provider transcripts.
-After recovery, read current context and `sassato checkpoint show`, inspect full
-records and verify working files. Re-establish a waiter only if STOP is absent.
+    sassato checkpoint save --current 'objective and progress' --next 'exact next action' --notes 'constraints, discoveries, changed files, validation, unresolved work and jobs' --expect VERSION
+
+Use the WIP version (omit --expect or use 0 on first WIP). Supply all three fields
+deliberately; review old notes before carrying them forward. This also updates WIP,
+so no duplicate WIP update is required. Do not checkpoint after every command or
+poll just to refresh its timestamp.
+
+After startup, resume or compaction, read current context and `sassato checkpoint show`,
+inspect relevant task and decision records, check inbox, and verify working files.
+A stale checkpoint is historical evidence, not permission to overwrite current state.
+Record running tools and notification waiters; settle them and retain the last
+safely handled waiter cursor before a planned transition. Respect STOP and restore
+at most one waiter through the supported workflow below. Never terminate your own
+session for routine context maintenance, mark a live session ended to enable a new
+launch, inject terminal keystrokes, or manipulate provider transcripts.
 
 Before approving or rejecting a review, read `sassato show T123` and retain its
 version. Supply `sassato review T123 --approve --expect VERSION --note 'evidence'`

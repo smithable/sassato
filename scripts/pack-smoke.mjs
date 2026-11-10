@@ -13,7 +13,7 @@ try {
   const packed=JSON.parse(run('npm',['pack','--json','--ignore-scripts','--pack-destination',dir],root))[0];
   const tarball=join(dir,packed.filename);run('tar',['-xzf',tarball,'-C',dir]);
   const pkg=join(dir,'package');assert.ok(existsSync(join(pkg,'dist','cli.js')));assert.ok(!existsSync(join(pkg,'node_modules')));
-  for(const required of ['dist/build-info.json','dist/context-advice.js','dist/checkpoints.js','docs/commands.md','docs/architecture.md','docs/permissions.md','docs/benchmark.md','docs/integrations.md','examples/claude-hook.mjs','examples/team.config.json','docs/configuration.md','docs/compatibility.md','docs/context-management.md','CONTRIBUTING.md','SECURITY.md','LICENSE'])assert.ok(packed.files.some(f=>f.path===required),`Missing package resource ${required}`);
+  for(const required of ['dist/build-info.json','dist/recovery-write.js','dist/checkpoints.js','docs/commands.md','docs/architecture.md','docs/permissions.md','docs/benchmark.md','docs/integrations.md','examples/claude-hook.mjs','examples/team.config.json','docs/configuration.md','docs/compatibility.md','docs/context-management.md','CONTRIBUTING.md','SECURITY.md','LICENSE'])assert.ok(packed.files.some(f=>f.path===required),`Missing package resource ${required}`);
   assert.ok(!packed.files.some(f=>/docs\/checkpoint|HANDOFF|implementation-plan|\.artifacts|smithable.config|\.db$|node_modules/.test(f.path)));
   const info=JSON.parse(run(process.execPath,[join(pkg,'bin','sassato.js'),'--version','--json']));assert.match(info.build,/^[0-9a-f]{16}$/);
   const clean=join(dir,'clean'),cache=join(dir,'cache');mkdirSync(clean);
@@ -29,9 +29,10 @@ try {
   run('npm',[...npx,'sas','resume-work','--as','human','--json'],clean,env);
   const checkpoint=JSON.parse(run('npm',[...npx,'sas','checkpoint','save','--current','Package verified','--next','Review next task','--notes','No jobs; CLI smoke passed','--as','builder','--json'],clean,env));
   assert.equal(checkpoint.wip_version,1);
-  const advice=JSON.parse(run('npm',[...npx,'sas','context','advise','--relation','same','--pressure','high','--jobs','idle','--as','builder','--json'],clean,env));
-  assert.equal(advice.recommendation,'compact');assert.equal(advice.advisory,true);
+  const recovery=JSON.parse(run('npm',[...npx,'sas','checkpoint','show','--as','builder','--json'],clean,env));
+  assert.equal(recovery.id,checkpoint.id);assert.equal(recovery.current,'Package verified');
+  assert.ok(!packed.files.some(f=>f.path.startsWith('dist/context-advice.')));
   run('npm',[...npx,'sas','send','reviewer','Packed urgent message','--urgent','--as','builder','--json'],clean,env);
   const notification=JSON.parse(run('npm',[...npx,'sas','wait','--urgent','--as','reviewer','--timeout','1','--stop-file',join(clean,'no-stop'),'--json'],clean,env));assert.equal(notification.reason,'urgent');
-  console.log(JSON.stringify({ok:true,tarball:packed.filename,files:packed.files.length,size:packed.size,node:process.version,tests:['unpacked Node CLI','offline npx sassato','offline npx sas alias','packaged stop/resume','build identity','packaged checkpoint/advice','packaged urgent wait','no compiler/runtime dependencies']},null,2));
+  console.log(JSON.stringify({ok:true,tarball:packed.filename,files:packed.files.length,size:packed.size,node:process.version,tests:['unpacked Node CLI','offline npx sassato','offline npx sas alias','packaged stop/resume','build identity','packaged checkpoint recovery','packaged urgent wait','no compiler/runtime dependencies']},null,2));
 }finally{rmSync(dir,{recursive:true,force:true});}

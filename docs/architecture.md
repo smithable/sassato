@@ -39,9 +39,9 @@ linked blockers; reopening requires new questions rather than reviving old reque
 Recovery checkpoints use append-only `checkpoint` events and the existing WIP row;
 no schema change is required. Saving both is atomic and uses WIP optimistic version
 checks. A fingerprint of relevant durable state and a 24-hour age check mark old
-recovery records stale. Session heartbeats do not affect freshness. `context advise`
-is an optional human-facing hint that combines saved state with explicit agent reports
-in a read-only snapshot; it never measures provider context or invokes compaction. See [context management](context-management.md).
+recovery records stale. Session heartbeats do not affect freshness. Checkpoint reads
+use a consistent snapshot and expose freshness in bounded context. They do not
+measure provider context or invoke compaction. See [context management](context-management.md).
 
 A shared documents table feeds an external-content FTS5 index with unicode61 and prefix
 indexes. SQLite triggers update the index in the source mutation transaction. Search ranks

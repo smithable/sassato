@@ -132,14 +132,12 @@ atomically updates your WIP and saves a recovery record. All text fields are req
 read WIP first and supply its version for updates. `checkpoint show [ROLE]` reads the
 latest record and its freshness (`null` if absent).
 
-`context advise [--relation same|related|unrelated|unknown]
-[--pressure low|high|unknown] [--jobs idle|running|unknown] [--unsaved]`
-returns read-only advice (`continue`, `compact`, `fresh`, or STOP override `stop`).
-Inputs default to unknown; pressure and job status are reported, not measured.
-Except for STOP, every unknown input yields continue. Advice is optional and intended
-for a human considering a reset; native auto-compaction remains the default. It does
-not invoke provider controls or end a session. See [context management](context-management.md)
-for the decision policy, freshness rules and recovery workflow.
+Save checkpoints after meaningful progress, decisions and significant validation,
+and before a handoff or planned session transition. Keep native automatic compaction
+enabled. After startup, resume or compaction, read current context and the checkpoint,
+inspect relevant records and verify files. These commands do not invoke provider
+controls or end a session. See [context management](context-management.md) for
+freshness rules and the recovery workflow.
 
 ```sh
 sas session register --provider codex --session-id UUID --as c

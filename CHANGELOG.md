@@ -10,13 +10,13 @@ Review and recovery fixes:
   questions. Database upgrades preserve existing records and are transactional.
 - Checkpoint freshness covers targeted task dependencies, avoids workspace-wide fact
   invalidation, and is visible in brief context. Old checkpoint formats need refreshing.
-- Context advice remains optional, requires known reports, and leaves manual resets
-  to the human. Native auto-compaction remains the default.
+- Milestone checkpoints and recovery guidance preserve work across session changes.
+  Native auto-compaction remains the default; Sassato does not execute transitions.
 
 First public source release preparation:
 
-- Recovery checkpoints and advisory continue/compact/fresh recommendations with STOP
-  precedence, explicit agent reports, saved-state freshness and provider guidance.
+- Recovery checkpoints atomically update WIP, preserve historical snapshots and
+  expose freshness without changing provider sessions.
 
 - Generic builder/reviewer/human defaults with inherited provider settings.
 - Configurable human roles, default decision recipient, directories, import time zone

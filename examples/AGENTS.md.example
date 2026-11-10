@@ -11,21 +11,26 @@ Keep task state and your own WIP current. Renew a lease while doing the work and
 explicitly hand off work when another role should continue. A stale lease is not
 permission to take it.
 
-Before a handoff or intended reset, read `sassato wip`, then save
-`sassato checkpoint save --current 'objective and progress' --next 'next action'
---notes 'constraints, discoveries, rejected approaches, files, tests, open questions and jobs'
---expect VERSION` using the WIP version (omit --expect on first WIP). Supply all
-three fields; do not copy old notes without reviewing them.
+Keep native automatic compaction enabled. Save a complete checkpoint after
+meaningful progress, important decisions and significant test results, and before
+a handoff or planned session transition. Read `sassato wip`, then save:
 
-Keep native auto-compaction as the default. `sassato context advise` is optional
-when a human is considering a manual reset, not a check to run after every task.
-Its relation, pressure and job reports must be honest; use unknown when unavailable.
-A running waiter counts as a job. Save discoveries, settle jobs and retain the waiter
-cursor before an intended reset. Advice never executes a reset or grants permission.
-Ask the human to use supported controls; never mark a live session ended to enable
-a fresh launch, inject keystrokes, or modify provider transcripts.
-After recovery, read current context and `sassato checkpoint show`, inspect full
-records and verify working files. Re-establish a waiter only if STOP is absent.
+    sassato checkpoint save --current 'objective and progress' --next 'exact next action' --notes 'constraints, discoveries, changed files, validation, unresolved work and jobs' --expect VERSION
+
+Use the WIP version (omit --expect or use 0 on first WIP). Supply all three fields
+deliberately; review old notes before carrying them forward. This also updates WIP,
+so no duplicate WIP update is required. Do not checkpoint after every command or
+poll just to refresh its timestamp.
+
+After startup, resume or compaction, read current context and `sassato checkpoint show`,
+inspect relevant task and decision records, check inbox, and verify working files.
+A stale checkpoint is historical evidence, not permission to overwrite current state.
+Record running tools and notification waiters; settle them and retain the last
+safely handled waiter cursor before a planned transition. Respect STOP and restore
+at most one waiter only when the runtime supports background completion notifications.
+Never terminate your own session for routine context maintenance, mark a live
+session ended to enable a new launch, inject terminal keystrokes, or manipulate
+provider transcripts.
 
 Before approving or rejecting a review, read `sassato show T123` and retain its
 version. Supply `sassato review T123 --approve --expect VERSION --note 'evidence'`
@@ -43,8 +48,8 @@ For a new Codex session, explicitly register its session ID when known:
 
 A registration without a verified PID is shown as unknown, not proof of liveness.
 Session end records an exit; it does not terminate the provider. Keep a live
-session registered, including while idle or awaiting human reset. The optional
-launcher supplies a verified process identity on Linux/WSL. No Codex hook is assumed.
+session registered, including while idle. The optional launcher supplies a verified
+process identity on Linux/WSL. No Codex hook is assumed.
 
 When context shows a STOP request, start no new work. Finish or safely checkpoint
 current work, wait for your own tools and background jobs to stop, save task/WIP

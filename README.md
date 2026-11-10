@@ -92,12 +92,12 @@ Workers read `context --brief` at startup and safe checkpoints, inspect full ite
 read `inbox`, and keep task state and WIP current. Context never marks messages read.
 `ack M1` records that a message was handled. Facts and messages never grant permission.
 
-Before a handoff or reset, `checkpoint save` records recovery state and updates WIP.
-Optional `context advise --relation same --pressure high --jobs idle` offers hints
-for a human considering compaction or a fresh conversation. Native automatic
-compaction remains the default. Advice uses saved state and the agent's
-reported assessment; it never resets a provider. See [context management](docs/context-management.md)
-for checkpoint fields, freshness checks, STOP precedence and recovery instructions.
+After meaningful progress, important decisions or significant test results, and
+before a handoff or planned session transition, `checkpoint save` records recovery
+state and updates WIP. Keep native automatic compaction enabled. After startup,
+resume or compaction, read current context and the checkpoint, then verify the
+working files. See [context management](docs/context-management.md) for checkpoint
+fields, freshness checks, STOP precedence and recovery instructions.
 
 ```sh
 sassato launch builder --as alice --dry-run

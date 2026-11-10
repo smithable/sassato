@@ -34,7 +34,7 @@
     "docs/context-management.md"
   ],
   "scripts": {
-    "build": "tsc && node scripts/build-info.mjs",
+    "build": "node scripts/clean-build.mjs && tsc && node scripts/build-info.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "node scripts/lint.mjs",
     "test": "npm run build && node --test --test-concurrency=3 test/*.test.mjs",

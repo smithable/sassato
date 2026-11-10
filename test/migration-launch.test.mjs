@@ -303,6 +303,8 @@ test('startup success response must match a verified live registry process',asyn
 test('Claude bootstrap snapshots then arms one role-scoped background waiter before work',t=>{
   const f=fixture(t),plan=planLaunch(f.s,['a'],{fresh:true})[0],prompt=plan.args.at(-1);
   const context='sassato context --json --as a --workspace test';
+  assert.doesNotMatch(prompt,/context advise|Ask the human.*(?:compact|fresh)/i);
+  assert.match(prompt,/After meaningful progress/);assert.match(prompt,/Keep native automatic compaction enabled/);
   const waiter='sassato wait --since CURSOR --as a --workspace test';
   assert(prompt.indexOf(context)>=0);assert(prompt.indexOf(context)<prompt.indexOf(waiter));
   assert.match(prompt,/numeric snapshot_cursor as CURSOR/);assert.match(prompt,/Replace CURSOR with that snapshot_cursor/);
@@ -320,6 +322,8 @@ test('Claude bootstrap snapshots then arms one role-scoped background waiter bef
 
 test('Codex bootstrap remains pull-based and no-prompt omits all startup instructions',t=>{
   const f=fixture(t),codex=planLaunch(f.s,['c'],{fresh:true})[0].args.at(-1);
+  assert.doesNotMatch(codex,/context advise|Ask the human.*(?:compact|fresh)/i);
+  assert.match(codex,/sassato checkpoint show/);
   assert.match(codex,/sassato context --as c --workspace test --brief/);
   assert(!codex.includes('sassato wait'));assert.match(codex,/inbox and task context between tasks/);
   assert.match(codex,/No background wake-up is assumed/);

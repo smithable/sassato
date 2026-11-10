@@ -47,13 +47,14 @@ bounded context. Merge `examples/claude-settings.example.json` into your own set
 after editing its script path. Existing settings are never overwritten. No Codex hook
 configuration is installed; Codex workers read context and inbox between tasks.
 
-Before a handoff or reset, save recovery state with `checkpoint save` (this also
-updates WIP). `context advise` is optional when a human considers a manual reset;
-use honest reports of task relatedness, context pressure and running jobs. Native
-automatic compaction remains the default. After clearing or compaction, read `checkpoint show` and current
-context, then verify the working files. The hook reloads context but does not save
-discoveries before a reset. See [context management](context-management.md) for
-commands, provider limits and the conservative recommendation policy.
+Save recovery state with `checkpoint save` after meaningful progress, important
+decisions and significant test results, and before a handoff or planned session
+transition. This also updates WIP; no duplicate update or per-command checkpoint is
+required. Keep native automatic compaction enabled. After startup, resume or
+compaction, read `checkpoint show` and current context, inspect relevant records,
+then verify the working files. The hook reloads context but does not save discoveries
+before a reset. See [context management](context-management.md) for commands,
+freshness limits and recovery steps. Sassato does not execute session transitions.
 
 ## Stop and resume work
 

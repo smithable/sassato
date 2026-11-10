@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -10,10 +10,11 @@ import * as c from '../dist/coordination.js';
 import * as t from '../dist/tasks.js';
 import { requestStop, acknowledgeStop, resumeWork } from '../dist/control.js';
 import { setWorkspaceSettings } from '../dist/workspace-settings.js';
-import { saveCheckpoint, getCheckpoint, contextAdvice } from '../dist/context-advice.js';
+import { saveCheckpoint } from '../dist/recovery-write.js';
+import { getCheckpoint } from '../dist/checkpoints.js';
 
 function setup(test) {
-  const dir=mkdtempSync(join(tmpdir(),'sassato-context-advice-')), db=join(dir,'state.db');
+  const dir=mkdtempSync(join(tmpdir(),'sassato-checkpoints-')), db=join(dir,'state.db');
   const s=new Store(db,'builder',{create:true});initWorkspace(s,'demo');
   test.after(()=>{s.close();rmSync(dir,{recursive:true,force:true});});
   return {s,dir,db};
@@ -22,8 +23,6 @@ function as(s,actor,fn) {const old=s.actor;s.actor=actor;try{return fn();}finall
 function save(s) {
   return saveCheckpoint(s,{current:'Implement parser; changes in src/parser.ts',next:'Run parser tests',notes:'Keep the public interface; rejected a regex-only parser. Tests not run yet; no open questions.',expected_version:c.getWip(s).version});
 }
-const compact={relation:'same',pressure:'high',jobs:'idle'};
-const fresh={relation:'unrelated',pressure:'low',jobs:'idle'};
 
 test('checkpoint atomically updates WIP, preserves history and rejects stale or incomplete writes',test=>{
   const {s}=setup(test),first=save(s);
@@ -55,55 +54,20 @@ test('checkpoint recovery is role/workspace scoped and survives provider session
   assert.equal(c.context(s).sections.checkpoint[0].id,saved.id);
 });
 
-test('advice chooses continue, compact or fresh from explicit reports without mutating state',test=>{
-  const {s,db}=setup(test);save(s);
-  const before=s.get('SELECT max(id) AS n FROM events').n;
-  const reader=new Store(db,'builder',{readonly:true});reader.use('demo');
-  try {
-    assert.equal(contextAdvice(reader,compact).recommendation,'compact');
-    assert.equal(contextAdvice(reader,{...compact,relation:'related'}).recommendation,'compact');
-    assert.equal(contextAdvice(reader,fresh).recommendation,'fresh');
-    const freshAdvice=contextAdvice(reader,fresh);
-    assert.match(freshAdvice.next_steps.join(' '),/human/i);
-    assert.doesNotMatch(freshAdvice.next_steps.join(' '),/end the current provider session|start a fresh provider session|exit (?:the|your) session/i);
-    const unknownPressure=contextAdvice(reader,{relation:'unrelated',jobs:'idle'});
-    assert.equal(unknownPressure.recommendation,'continue');
-    assert.match(unknownPressure.reasons.join(' '),/pressure is unknown/i);
-    assert.equal(contextAdvice(reader,{...compact,pressure:'low'}).recommendation,'continue');
-    const unknown=contextAdvice(reader);assert.equal(unknown.recommendation,'continue');
-    assert.deepEqual(unknown.reported,{relation:'unknown',pressure:'unknown',jobs:'unknown',unsaved:false});
-    assert.match(unknown.limitations,/No provider telemetry/);
-  } finally {reader.close();}
-  assert.equal(s.get('SELECT max(id) AS n FROM events').n,before);
-});
-
-test('missing checkpoint, unrecorded discoveries and unknown/running jobs defer reset advice',test=>{
-  const {s}=setup(test);
-  assert.equal(contextAdvice(s,compact).recommendation,'continue');save(s);
-  for (const input of [{...compact,unsaved:true},{...compact,jobs:'unknown'},{...fresh,jobs:'running'},{...compact,relation:'unknown'}]) {
-    assert.equal(contextAdvice(s,input).recommendation,'continue');
-  }
-  for (const input of [{relation:'different'},{pressure:'80%'},{jobs:'probably-idle'}]) assert.throws(()=>contextAdvice(s,input),/must be/);
-});
-
-test('task transitions and WIP edits stale checkpoints; unfinished work prevents unrelated fresh advice',test=>{
+test('task transitions and WIP edits stale checkpoints',test=>{
   const {s}=setup(test),task=t.addTask(s,{title:'Implement parser'});t.takeTask(s,task.id);save(s);
-  assert.equal(contextAdvice(s,fresh).recommendation,'continue');
-  assert.equal(contextAdvice(s,compact).recommendation,'compact');
   t.noteTask(s,task.id,'Parser implemented');assert.equal(getCheckpoint(s).state,'stale');
-  save(s);t.doneTask(s,task.id);assert.equal(contextAdvice(s,fresh).recommendation,'continue');
-  save(s);assert.equal(contextAdvice(s,fresh).recommendation,'fresh');
+  save(s);t.doneTask(s,task.id);assert.equal(getCheckpoint(s).state,'stale');
+  save(s);assert.equal(getCheckpoint(s).state,'current');
   c.setWip(s,{notes:'A new constraint',expected_version:c.getWip(s).version});assert.equal(getCheckpoint(s).state,'stale');
 });
 
-test('unread mail prevents reset even when saved; reads and acknowledgments change checkpoint freshness',test=>{
+test('mail delivery, reads and acknowledgments change checkpoint freshness',test=>{
   const {s}=setup(test);save(s);
   const mail=as(s,'reviewer',()=>c.send(s,['builder'],'Review this constraint'));
   assert.equal(getCheckpoint(s).state,'stale');save(s);
-  assert.equal(contextAdvice(s,fresh).recommendation,'continue');
   c.inbox(s);assert.equal(getCheckpoint(s).state,'stale');save(s);
   c.acknowledge(s,mail.id);assert.equal(getCheckpoint(s).state,'stale');save(s);
-  assert.equal(contextAdvice(s,fresh).recommendation,'fresh');
 });
 
 test('human answers, dependencies and configuration invalidate saved recovery assumptions; unrelated facts do not',test=>{
@@ -126,22 +90,6 @@ test('unrelated workspace activity does not invalidate a checkpoint',test=>{
   assert.equal(getCheckpoint(s).state,'current');
 });
 
-for (const relation of ['owned','targeted']) for (const status of ['doing','blocked','review']) {
-  test(`${relation} ${status} work prevents fresh advice with a current checkpoint`,test=>{
-    const {s}=setup(test);
-    as(s,relation==='owned'?'builder':'human',()=>{
-      const task=t.addTask(s,{title:`${relation} ${status}`,owner:relation==='owned'?'builder':'human'});
-      if(status!=='blocked')t.takeTask(s,task.id);
-      if(status==='blocked')t.blockTask(s,task.id,{kind:'external',waitingOn:'deployment',body:'Wait for deployment'});
-      if(status==='review')t.submitTask(s,task.id,'Ready for review');
-      if(relation==='targeted')t.updateTask(s,task.id,{version:t.showTask(s,task.id).version,forRole:'builder'});
-    });
-    save(s);
-    assert.equal(getCheckpoint(s).state,'current');
-    const advice=contextAdvice(s,fresh);assert.equal(advice.recommendation,'continue');assert.equal(advice.active_tasks,1);
-  });
-}
-
 test('targeted work dependencies, blockers and questions invalidate checkpoints without ownership',test=>{
   const {s}=setup(test);
   const task=as(s,'reviewer',()=>t.addTask(s,{title:'Work targeted to builder',owner:'reviewer',forRole:'builder'}));
@@ -162,7 +110,6 @@ test('unsupported checkpoint format explains recovery and is consistently shown 
   const {s}=setup(test);save(s);
   s.tx(()=>s.event('checkpoint','builder','saved',{format:999,wip:{current:'Legacy recovery',version:1},fingerprint:'unknown'}));
   const shown=getCheckpoint(s);assert.equal(shown.state,'unsupported');assert.match(shown.reasons.join(' '),/format 999 is unsupported/i);
-  const advice=contextAdvice(s,fresh);assert.equal(advice.recommendation,'continue');assert.match(advice.reasons.join(' '),/unsupported/i);
   const visible=c.context(s).sections.checkpoint[0];assert.equal(visible.state,shown.state);assert.equal(visible.stale,true);
 });
 
@@ -172,36 +119,36 @@ test('malformed recovery fields are explicit and safe to show',test=>{
   s.tx(()=>s.event('checkpoint','builder','saved',{...detail,wip:{current:42,version:-1}}));
   const shown=getCheckpoint(s);assert.equal(shown.state,'stale');assert.equal(shown.current,null);assert.equal(shown.next,null);assert.equal(shown.notes,null);assert.equal(shown.wip_version,null);
   assert.match(shown.reasons.join(' '),/incomplete|malformed|invalid/i);
-  assert.equal(contextAdvice(s,fresh).recommendation,'continue');
 });
 
 test('old checkpoints require review even when durable state is unchanged',test=>{
   const {s}=setup(test);save(s);
   const clock=Date.now;Date.now=()=>clock()+25*60*60_000;
-  try {assert.equal(getCheckpoint(s).state,'stale');assert.match(getCheckpoint(s).reasons.join(' '),/24 hours/);assert.equal(contextAdvice(s,compact).recommendation,'continue');const entry=c.context(s).sections.checkpoint[0];assert.equal(entry.state,getCheckpoint(s).state);assert.equal(entry.stale,true);}
+  try {assert.equal(getCheckpoint(s).state,'stale');assert.match(getCheckpoint(s).reasons.join(' '),/24 hours/);const entry=c.context(s).sections.checkpoint[0];assert.equal(entry.state,getCheckpoint(s).state);assert.equal(entry.stale,true);}
   finally {Date.now=clock;}
 });
 
-test('durable STOP, acknowledged STOP and configured stop files override all reset advice',test=>{
-  const {s,dir}=setup(test);save(s);
+test('saving recovery under STOP preserves requests and does not acknowledge or resume',test=>{
+  const {s}=setup(test);
   const request=as(s,'human',()=>requestStop(s,['builder']))[0];
-  assert.equal(contextAdvice(s,fresh).recommendation,'stop');
-  save(s);acknowledgeStop(s,request.id);assert.equal(contextAdvice(s,compact).recommendation,'stop');
-  as(s,'human',()=>resumeWork(s,['builder']));assert.equal(contextAdvice(s,fresh).recommendation,'fresh');
-  const path=join(dir,'STOP');as(s,'human',()=>setWorkspaceSettings(s,{stop_file:path}));save(s);
-  writeFileSync(path,'stop');assert.equal(contextAdvice(s,fresh).recommendation,'stop');
+  save(s);assert.equal(c.context(s).sections.stop[0].acknowledged,false);
+  acknowledgeStop(s,request.id);save(s);
+  assert.equal(c.context(s).sections.stop[0].acknowledged,true);
+  as(s,'human',()=>resumeWork(s,['builder']));
+  assert.equal(c.context(s).sections.stop,undefined);
 });
 
-test('CLI supports checkpoint recovery and readable/JSON advice with strict input validation',test=>{
+test('CLI preserves checkpoint recovery and rejects removed advice syntax',test=>{
   const {db}=setup(test),cli=resolve('bin/sassato.js');
   const run=(args,json=true)=>spawnSync(process.execPath,[cli,'--db',db,'--workspace','demo','--as','builder',...(json?['--json']:[]),...args],{encoding:'utf8',timeout:5000});
   const saved=run(['checkpoint','save','--current','Completed parser','--next','Review API','--notes','Tests passed']);
   assert.equal(saved.status,0,saved.stderr);assert.equal(JSON.parse(saved.stdout).wip_version,1);
-  const unknownPressure=run(['context','advise','--relation','unrelated','--jobs','idle']);
-  assert.equal(JSON.parse(unknownPressure.stdout).recommendation,'continue');
-  const advice=run(['context','advise','--relation','unrelated','--pressure','low','--jobs','idle']);
-  assert.equal(advice.status,0,advice.stderr);assert.equal(JSON.parse(advice.stdout).recommendation,'fresh');
-  assert.match(run(['context','advise','--relation','same','--pressure','high','--jobs','idle'],false).stdout,/Context advice: compact/);
+  const removed=run(['context','advise']);
+  assert.equal(removed.status,2);assert.match(removed.stderr,/Unexpected argument: advise/);assert.equal(removed.stdout,'');
+  for(const flag of ['--pressure','--relation','--jobs','--unsaved']) {
+    const result=run(['context',flag,'unknown']);assert.equal(result.status,2);assert.match(result.stderr,/Unknown option/);
+  }
+  assert.doesNotMatch(run(['--help'],false).stdout,/context advise|--pressure|--relation|--jobs|--unsaved/);
   assert.equal(JSON.parse(run(['checkpoint','show']).stdout).current,'Completed parser');
   assert.equal(run(['context','advise','--pressure','90']).status,2);
   assert.equal(run(['context','advise','unexpected']).status,2);

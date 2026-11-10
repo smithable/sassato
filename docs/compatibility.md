@@ -42,5 +42,6 @@ question when a decision is still needed. Nothing is answered on the human's beh
 
 Recovery checkpoints saved with the older fingerprint format remain readable but
 report `unsupported`; review the current state and save a new checkpoint. Ordinary
-WIP remains intact. Optional context advice now returns `continue` whenever an input
-is unknown, unless STOP takes precedence.
+WIP remains intact. Checkpoint saving and reading require no additional destructive
+migration; historical checkpoint text is retained even when its freshness format
+is unsupported.
