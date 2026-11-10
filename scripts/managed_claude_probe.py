@@ -1,9 +1,10 @@
 """Bounded opt-in native Claude adapter for the disposable managed-recovery probe.
 
-Importing this module performs no provider work. run(fixture) performs isolated
-startup checks, but model turns remain disabled until loaded PreToolUse guards
-can be attested before a prompt. It never controls another terminal, changes
-account settings, or approves requests.
+Importing this module performs no provider work. run(fixture) refuses before
+configuration preparation or provider startup until loaded PreToolUse guards
+can be attested before a prompt. This adapter is parked; deterministic protocol
+tests mock that future proof explicitly. It never controls another terminal,
+changes account settings, or approves requests.
 """
 import json
 import os
@@ -319,7 +320,7 @@ class Session:
 
 
 def run(fixture):
-    """Run a real disposable handoff; before_fresh executes only after old exit."""
+    """Refuse unsupported startup; retain the dormant handoff for fixture tests."""
     report = {'provider': 'claude', 'ok': False, 'adapter': 'native-stream-json',
               'version': None, 'stages': [], 'tools_restricted_to': ['exact inspector Bash command with deny-only hook'],
               'permission_prompts': 'none', 'authentication': 'operator-provisioned isolated claude.ai login',
@@ -329,6 +330,9 @@ def run(fixture):
               'cleanup_scope': 'owned process and process group; detached descendants remain unproved'}
     sessions = []
     try:
+        # This gate always fails today. Check before touching configuration,
+        # discovering a CLI, checking authentication, or starting a provider.
+        _require_loaded_guard()
         if os.name != 'posix':
             raise ProbeFailure('unsupported-process-platform')
         policy = prepare(fixture, 'claude')

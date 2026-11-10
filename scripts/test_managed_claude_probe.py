@@ -241,6 +241,22 @@ class AdapterTest(unittest.TestCase):
 class StartupTests(unittest.TestCase):
     """Exercise actual startup refusal without the protocol-test gate mock."""
 
+    def test_run_refuses_before_configuration_authentication_or_process_startup(self):
+        processes = Mock()
+        with patch.object(probe, 'prepare') as prepare, \
+                patch.object(probe, '_version') as version, \
+                patch.object(probe, 'Session') as session, \
+                patch.object(probe.subprocess, 'run') as run, \
+                patch.object(probe.subprocess, 'Popen') as popen:
+            report = probe.run({'processes': processes})
+        self.assertFalse(report['ok'])
+        self.assertEqual(report['failure'], 'provider-guard-loading-unverified')
+        self.assertEqual(report['stages'], [])
+        self.assertIsNone(report['version'])
+        for operation in (prepare, version, session, run, popen):
+            operation.assert_not_called()
+        self.assertEqual(processes.mock_calls, [])
+
     def session(self):
         session = probe.Session.__new__(probe.Session)
         session.fixture = {'policy': {'model': 'test-model', 'max_turns': 4}}

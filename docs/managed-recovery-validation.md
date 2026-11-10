@@ -1,14 +1,31 @@
 # Managed recovery validation
 
+**Parked / deferred.** The application fixes have been extracted from this
+experimental branch for independent delivery. Disposable state continuity belongs
+in the ordinary Node test suite; those tests verify Sassato persistence and replay,
+not live provider recovery. The Python adapters remain here for future investigation
+and are not a supported execution path. Neither adapter has passed a live recovery
+proof, and the supervisor gate remains closed.
+
+The Claude adapter now refuses at the start of `run`, before configuration
+preparation, version discovery, authentication checks or provider startup. Protocol
+tests explicitly mock that gate; their successes do not establish live support.
+Literal fields in dormant paths, including `process_group_empty` and
+`project_instructions_continued`, are not independent observations and must not be
+used as evidence that process cleanup or instruction continuity has been proved.
+Any future work must replace those claims with measured evidence before reopening
+the adapter gate.
+
 This document defines the proof required before implementing an optional session
 supervisor. A conversational probe can establish native compaction or fresh-context
 behavior. It does not establish recovery of actual Sassato work or permission to
 replace an independently running worker. The existing
 [capability report](provider-capabilities.md) records those narrower observations.
 
-This batch validates disposable managed sessions against real Sassato state. It
-does not add a supervisor, transition command, automatic reset policy or production
-worker replacement. Live results must name the exact provider version, transport,
+The parked design below describes proposed validation of disposable managed sessions
+against real Sassato state. It does not add a supervisor, transition command,
+automatic reset policy or production worker replacement. Future live results must
+name the exact provider version, transport,
 authentication mode and scope tested. Untested dimensions remain explicit.
 
 ## Disposable proof fixture
@@ -209,8 +226,9 @@ attempts above stopped before this path; only the fixture checks exercised it.
 
 The current native live adapters stop before model work. Codex's read-only policy
 has no verified fixture-only readable roots, so it fails before provider startup.
-Claude verifies required CLI flags and reads init before any prompt; init does not
-attest that the PreToolUse guard loaded, so its model turns remain gated as well.
+Claude refuses before configuration preparation or provider startup because init
+cannot attest that the PreToolUse guard loaded. Required-flag and init validation
+remain only in dormant paths exercised with explicit test mocks.
 These are explicit unsupported results, not successful isolation or recovery proofs.
 
 The adapter implementations retain these requested startup restrictions for future
