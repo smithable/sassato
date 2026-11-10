@@ -15,16 +15,24 @@ Keep native automatic compaction enabled. Save a complete checkpoint after
 meaningful progress, important decisions and significant test results, and before
 a handoff or planned session transition. Read `sassato wip`, then save:
 
-    sassato checkpoint save --current 'objective and progress' --next 'exact next action' --notes 'constraints, discoveries, changed files, validation, unresolved work and jobs' --expect VERSION
+    sassato checkpoint save --as "$SASSATO_ROLE" --workspace "$SASSATO_WORKSPACE" --current 'objective and progress' --next 'exact next action' --notes 'constraints, discoveries, changed files, validation, unresolved work and jobs' --expect VERSION
 
 Use the WIP version (omit --expect or use 0 on first WIP). Supply all three fields
 deliberately; review old notes before carrying them forward. This also updates WIP,
 so no duplicate WIP update is required. Do not checkpoint after every command or
 poll just to refresh its timestamp.
 
-After startup, resume or compaction, read current context and `sassato checkpoint show`,
+Use `--evidence FILE` when structured validation results, artifact references or
+job dispositions help recovery. Sassato records repository/task observations
+separately from those claims; it does not execute or verify the reported work.
+
+After startup, resume or compaction, read current context and `sassato checkpoint show --as "$SASSATO_ROLE" --workspace "$SASSATO_WORKSPACE"`,
 inspect relevant task and decision records, check inbox, and verify working files.
 A stale checkpoint is historical evidence, not permission to overwrite current state.
+Read `sassato progress show --as "$SASSATO_ROLE" --workspace "$SASSATO_WORKSPACE"` for current notification progress; a checkpoint's copy
+is historical. If using a supported waiter, save its returned cursor with
+`sassato progress save --cursor CURSOR --expect VERSION --as "$SASSATO_ROLE" --workspace "$SASSATO_WORKSPACE"` only after safely handling the
+notification. Leave progress unchanged on failure so recovery can replay it.
 Record running tools and notification waiters; settle them and retain the last
 safely handled waiter cursor before a planned transition. Respect STOP and restore
 at most one waiter only when the runtime supports background completion notifications.

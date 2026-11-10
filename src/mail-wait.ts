@@ -2,8 +2,9 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { Store, type Row, type Param } from './storage.js';
-import { check, integer } from './errors.js';
+import { AppError, check, integer } from './errors.js';
 import { workspaceSettings } from './workspace-settings.js';
+import { getNotificationProgress } from './notification-progress.js';
 
 export interface WaitResult {
   reason:'urgent'|'stop'|'timeout'|'answer'|'blocker-resolved'|'task-assigned'|'task-ready'|'review-submitted'|'review-approved'|'review-rejected';
@@ -42,7 +43,7 @@ function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
     // submission/result. Metadata notes may advance the task version without
     // replacing that transition, so compare workflow events rather than versions.
     const superseded=s.get(`SELECT 1 FROM events WHERE workspace_id=? AND entity='task' AND entity_id=? AND id>?
-      AND (action IN ('submitted','review-approved','review-rejected') OR
+      AND (action IN ('submitted','review-approved','review-rejected','completed','dropped','reopened') OR
         (?='review' AND action='updated' AND CASE WHEN json_valid(detail) THEN json_type(detail,'$.after.reviewed_by')='null' ELSE 0 END))
       LIMIT 1`,s.ws,event.entity_id,event.id,task.status);
     if(superseded)return undefined;
@@ -88,14 +89,32 @@ function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
   if(tasks.length)return {...base,reason,task:tasks[0],tasks};
   return undefined;
 }
-/** Read-only, non-consuming waiter. Persist the returned cursor when rearming to cover the gap. */
+/** Read-only, non-consuming waiter. Save progress only after handling the returned notification. */
 export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitResult> {
   const actor=s.requireActor(),timeout=integer(options.timeout??0,'timeout seconds',0,2_147_483);
-  const latest=maximum(s);
-  let cursor=options.since===undefined?latest:integer(options.since,'event cursor',0,Number.MAX_SAFE_INTEGER);
-  check(cursor<=latest,`Event cursor ${cursor} is ahead of this workspace's latest event ${latest}; use a cursor from this workspace`,4);
   const configuredStopFile=options.stopFile??workspaceSettings(s).stop_file;
   const stopFile=configuredStopFile===null?null:resolve(configuredStopFile);
+  const initial=s.snapshot(()=>{
+    const latest=maximum(s);
+    const request=s.get('SELECT id,acknowledged_at FROM stop_requests WHERE workspace_id=? AND role=? AND cleared_at IS NULL',s.ws,actor);
+    const stopped=stopFile&&existsSync(stopFile)?{file:stopFile}:request?{id:`R${request.id}`,acknowledged:!!request.acknowledged_at}:undefined;
+    let cursor:number;
+    if(options.since!==undefined) cursor=integer(options.since,'event cursor',0,Number.MAX_SAFE_INTEGER);
+    else {
+      try {cursor=getNotificationProgress(s)?.cursor??latest;}
+      catch(error) {
+        // Corrupt progress must not hide STOP. Cursor zero preserves all replayable
+        // events and is returned only with STOP, never as a work/recovery fallback.
+        if(!stopped || !(error instanceof AppError) || error.code!==4) throw error;
+        cursor=0;
+      }
+    }
+    return {latest,cursor,stopped};
+  });
+  const latest=initial.latest;
+  let cursor=initial.cursor;
+  check(cursor<=latest,`Event cursor ${cursor} is ahead of this workspace's latest event ${latest}; use a cursor from this workspace`,4);
+  if(initial.stopped)return {reason:'stop',role:actor,cursor,stop:initial.stopped};
   const deadline=timeout?performance.now()+timeout*1000:Infinity;
   for(;;) {
     if(stopFile&&existsSync(stopFile))return {reason:'stop',role:actor,cursor,stop:{file:stopFile}};

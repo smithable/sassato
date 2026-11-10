@@ -127,10 +127,25 @@ fields clear that field. Fact keys may contain path-like components.
 
 ## Sessions and context
 
-`checkpoint save --current TEXT --next TEXT --notes TEXT [--expect WIP_VERSION]`
+`checkpoint save --current TEXT --next TEXT --notes TEXT [--expect WIP_VERSION] [--evidence FILE]`
 atomically updates your WIP and saves a recovery record. All text fields are required;
 read WIP first and supply its version for updates. `checkpoint show [ROLE]` reads the
 latest record and its freshness (`null` if absent).
+
+Saving observes repository/worktree, branch, commit and dirty status with bounded
+read-only Git probes, then snapshots current owned/targeted task versions and durable
+notification progress. `--evidence` accepts a version-1 JSON object with `validation`,
+`artifacts` and `jobs` arrays, up to 20 entries each and 32,768 input bytes. These
+are agent reports: commands and jobs are not executed or adopted. See the
+[evidence example](../examples/recovery-evidence.example.json) and
+[field limits](context-management.md#structured-recovery-evidence).
+
+`progress show [ROLE]` reads the latest notification progress (`null` if absent).
+`progress save --cursor N --expect VERSION` saves the current role's safely handled
+event cursor. Use `--expect 0` for the first save; later use the progress record's
+version, which is independent of the WIP version. Progress is monotonic and cannot
+exceed this workspace's latest event; stale writes fail. Identical retries return
+the existing result. Saving never acknowledges inbox receipts or STOP.
 
 Save checkpoints after meaningful progress, decisions and significant validation,
 and before a handoff or planned session transition. Keep native automatic compaction
@@ -157,8 +172,9 @@ show last activity; they alone do not establish liveness. Expired usage notes re
 with their date until explicitly updated. Ended metadata cannot override a verified live PID.
 
 Context is always bounded; --brief is accepted for bootstrap compatibility. It never
-changes receipts. Save `cursor` for the next --since; `snapshot_cursor` is informational,
-not the continuation point. Truncation can cause repeat delivery when paging; use stable IDs
+changes receipts. Save its `cursor` for the next `context --since`; `snapshot_cursor`
+is informational, not the continuation point. Waiter recovery uses its own returned
+cursor and durable progress, not context pagination. Truncation can cause repeat delivery when paging; use stable IDs
 for deduplication. Cursor tracks changed facts and answered questions; current work, pending
 mail and blockers remain visible regardless of --since. Non-inbox counts are lower bounds.
 Detailed commands show full records. JSON context is limited to roughly 5800 characters;
@@ -203,12 +219,32 @@ bound, and no-match is never confused with a permission failure.
 | `stop [ROLE...] --no-wait --as alice` | Request stop and return immediately |
 | `stop [ROLE...] --force --as alice` | SIGKILL verified registered provider PIDs and return immediately |
 | `stop-status [ROLE...]` | Read active stop requests and their observed state |
+| `stop-status [ROLE...] --quiet [--stop-file PATH]` | Print no normal output; exit 4 if stop intent or the optional stop file is active, otherwise 0 |
 | `stopped R123 --as ROLE` | Acknowledge this exact current request after tools stop and WIP is saved |
 | `resume-work [ROLE...] [--all] --as alice` | Clear requests, allowing new claims and launches; does not launch sessions |
 
 See [integration details](integrations.md#stop-and-resume-work) for cooperative agent
 setup, verification limits, and the separate legacy stop file. Stop and resume require
 a human role. Acknowledgment is limited to the role addressed by the request.
+
+An all-role stop (explicit `--all`, or no role arguments) also waits for the
+workspace's configured [busy checks](configuration.md#busy-checks-before-an-all-role-stop-completes).
+The same `--timeout` covers both agent acknowledgements and checks. Busy and unknown
+checks are reported by name and prevent successful completion; a timeout leaves
+stop intent active. `--no-wait` and `--force` return without executing checks, with
+`machine_quiet: null` in JSON. Force still only signals verified provider PIDs.
+
+`stop-status --quiet` reads stop intent, including acknowledged requests that have
+not been cleared, and the optional configured `stop_file`. `--stop-file` overrides
+that file for this check. It does not run busy commands. Storage or inspection
+failures return an error, never exit 0; scripts should proceed only on exit 0.
+It suppresses normal output even with `--json`; errors still go to stderr.
+
+```sh
+if sassato stop-status --quiet --workspace my-project; then
+  ./scheduled-job
+fi
+```
 
 ## Feedback improvements (0.1.1)
 
@@ -238,6 +274,14 @@ Edits that clear approval while work remains in review request another review
 (`review-submitted`). Review notifications include the event's task `version`;
 read the current task and supply that inspected version to `review --expect`. Notifications do not claim or
 review anything. Every result includes `cursor`; human output prints it too.
-Use context's `snapshot_cursor` for the initial `--since`, then each wait result's
-cursor when re-arming. Without `--since`, workflow monitoring begins at invocation;
-existing urgent unread mail and stop requests still return immediately.
+Without `--since`, wait resumes from durable notification progress when present;
+otherwise it preserves the legacy behavior of starting at the latest event at
+invocation. Explicit `--since` always overrides progress. When progress is absent, retain the initial context `cursor`, inspect the full inbox
+and relevant records (including truncated items), and reconcile pending work before
+initializing that captured cursor with `--expect 0`. Do not use `snapshot_cursor`
+or a later context cursor; leave progress absent if handling is incomplete.
+After safely handling each result, save that result's cursor, then re-arm the waiter.
+Timeout cursors can also be saved. If handling fails or the session crashes, leave
+progress unchanged so recovery replays the event. Never substitute a newer context
+`snapshot_cursor` for the last safely handled waiter cursor. Existing urgent unread
+mail and STOP still return independently of progress. See [notification recovery](context-management.md#durable-notification-progress).

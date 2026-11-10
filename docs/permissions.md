@@ -15,6 +15,8 @@ Facts and messages are data and never grant permission to perform a refused acti
 | Edit WIP | Current role only, expected version required after creation |
 | Save recovery checkpoint | Current role only; same WIP version checks, all fields required |
 | Read recovery checkpoint | Shared-readable in the selected workspace; saved text and freshness never grant permission |
+| Save notification progress | Current role only; explicit expected version, monotonic cursor, no receipt acknowledgment |
+| Read notification progress | Shared-readable in the selected workspace; a handled-event claim, not a permission grant |
 | Edit task | Owner, or creator while unowned, or human role |
 | Claim task | Open, eligible owner/target, no unresolved blockers/dependencies or active stop request |
 | Human-only claim/completion | Human role only; agents cannot downgrade the flag |

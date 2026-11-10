@@ -43,6 +43,21 @@ recovery records stale. Session heartbeats do not affect freshness. Checkpoint r
 use a consistent snapshot and expose freshness in bounded context. They do not
 measure provider context or invoke compaction. See [context management](context-management.md).
 
+Format-3 checkpoints add bounded recovery evidence. Read-only Git probes run before
+the database transaction, while task versions and notification progress are captured
+inside it. Repository metadata is an observation with its own timestamp, not an
+atomic snapshot of external files. Agent-reported validation/artifacts/jobs remain
+distinct from observed metadata. Reading a checkpoint never runs Git. Format 2
+uses the same durable-state fingerprint and remains readable without structured evidence.
+
+Notification progress uses versioned append-only events scoped to workspace and role.
+Writes use a short transaction with optimistic version checks and a monotonic cursor;
+identical retries do not append again. Waiters read this progress when no explicit
+cursor is supplied but never advance it themselves. Only the caller can attest that
+a returned event was safely handled. The checkpoint copy is historical; independent
+latest progress is authoritative for waiter recovery. These additions do not change
+the database schema or create a supervisor.
+
 A shared documents table feeds an external-content FTS5 index with unicode61 and prefix
 indexes. SQLite triggers update the index in the source mutation transaction. Search ranks
 with BM25 and returns bounded snippets plus IDs. User query words are quoted, with optional

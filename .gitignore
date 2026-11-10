@@ -12,3 +12,5 @@ HANDOFF.md
 docs/checkpoint-*.md
 docs/implementation-plan.md
 *.local.json
+__pycache__/
+*.pyc

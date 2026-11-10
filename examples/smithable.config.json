@@ -1,0 +1,19 @@
+{
+  "workspace": "smithable",
+  "working_dir": ".",
+  "default_human": "johan",
+  "import_timezone": "Europe/Mariehamn",
+  "import_answer_markers": [
+    "Johan answered",
+    "Johan's answers",
+    "Johan’s answers",
+    "Johan:",
+    "Johan,",
+    "Johan ("
+  ],
+  "roles": [
+    { "name": "builder", "kind": "agent", "provider": "claude" },
+    { "name": "reviewer", "kind": "agent", "provider": "codex" },
+    { "name": "johan", "kind": "human" }
+  ]
+}

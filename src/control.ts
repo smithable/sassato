@@ -1,8 +1,9 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { Store, type Row } from './storage.js';
-import { check, id, name, now } from './errors.js';
+import { check, id, name, now, text } from './errors.js';
 import { processIdentity, sessionState } from './coordination.js';
+import { workspaceSettings } from './workspace-settings.js';
 
 export type StopState = 'acknowledged' | 'exited' | 'inactive' | 'waiting';
 export interface StopRequest {
@@ -93,6 +94,16 @@ export function stopStatus(s: Store, selected: string[] = []): StopRequest[] {
       return row ? [view(s,row)] : [];
     });
   });
+}
+/** Scriptable stop intent includes acknowledged requests until a human resumes work. */
+export function activeStop(s:Store,selected:string[]=[],stopFile?:string):boolean {
+  const active=stopStatus(s,selected).length>0;
+  const path=stopFile??workspaceSettings(s).stop_file;
+  if(active)return true;
+  if(path!==null)try{statSync(text(path,'stop file',4096));return true;}catch(error){
+    if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;
+  }
+  return false;
 }
 /** A role confirms it has saved a resumable checkpoint; it must name this exact active generation. */
 export function acknowledgeStop(s: Store, requestId: string): StopRequest {

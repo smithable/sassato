@@ -307,14 +307,25 @@ test('Claude bootstrap snapshots then arms one role-scoped background waiter bef
   assert.match(prompt,/After meaningful progress/);assert.match(prompt,/Keep native automatic compaction enabled/);
   const waiter='sassato wait --since CURSOR --as a --workspace test';
   assert(prompt.indexOf(context)>=0);assert(prompt.indexOf(context)<prompt.indexOf(waiter));
-  assert.match(prompt,/numeric snapshot_cursor as CURSOR/);assert.match(prompt,/Replace CURSOR with that snapshot_cursor/);
+  assert.match(prompt,/sections.notification_progress\[0\].cursor as CURSOR/);
+  assert.match(prompt,/preserving existing progress/);
+  assert.match(prompt,/initial context's cursor as BOOTSTRAP_CURSOR, never snapshot_cursor or a later context cursor/);
+  assert.match(prompt,/read the full inbox and relevant task, review, blocker, question and answer records/);
+  assert.match(prompt,/page any truncated context delta with context --since/);
+  assert.match(prompt,/Only after this reconciliation succeeds, initialize with sassato progress save --cursor BOOTSTRAP_CURSOR --expect 0 --as a --workspace test/);
+  assert.match(prompt,/On failure or incomplete handling, leave progress absent/);
+  assert.doesNotMatch(prompt,/otherwise use 0|save --cursor 0/);
+  for(const command of ['checkpoint save','checkpoint show','progress show']) {
+    assert(prompt.includes(`sassato ${command} --as a --workspace test`));
+  }
+  assert.match(prompt,/progress save --cursor CURSOR --expect VERSION --as a --workspace test/);
   assert.match(prompt,/BEFORE beginning work or going idle, start exactly one native Claude Code background tool-task/);
   assert.match(prompt,/If one waiter is already active, keep it/);
   assert.match(prompt,/Never use a foreground wait, shell &, nohup, or an outer shell loop/);
   assert.match(prompt,/human answers, resolved blockers, assignments or handoffs, newly ready tasks, and review submissions or results/);
   assert.match(prompt,/ordinary mail does not wake/);
   assert.match(prompt,/cursor returned by wait, not a newer context cursor/);
-  assert.match(prompt,/On timeout, rearm with the cursor returned by wait/);
+  assert.match(prompt,/On timeout, save and rearm with the cursor returned by wait/);
   assert.match(prompt,/On STOP, do not rearm until a human resumes/);
   assert.equal(plan.args.filter(arg=>arg.includes(context)).length,1,'all bootstrap text remains one literal provider argv value');
   assert(!plan.args.includes('--since'),'watcher flags are instructions, not provider CLI flags');
@@ -323,7 +334,8 @@ test('Claude bootstrap snapshots then arms one role-scoped background waiter bef
 test('Codex bootstrap remains pull-based and no-prompt omits all startup instructions',t=>{
   const f=fixture(t),codex=planLaunch(f.s,['c'],{fresh:true})[0].args.at(-1);
   assert.doesNotMatch(codex,/context advise|Ask the human.*(?:compact|fresh)/i);
-  assert.match(codex,/sassato checkpoint show/);
+  assert.match(codex,/sassato checkpoint show --as c --workspace test/);
+  assert.match(codex,/sassato checkpoint save --as c --workspace test/);
   assert.match(codex,/sassato context --as c --workspace test --brief/);
   assert(!codex.includes('sassato wait'));assert.match(codex,/inbox and task context between tasks/);
   assert.match(codex,/No background wake-up is assumed/);

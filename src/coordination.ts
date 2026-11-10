@@ -1,9 +1,10 @@
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename } from 'node:path';
 import { Store, type Row } from './storage.js';
-import { check, id, integer, name, now, text } from './errors.js';
+import { AppError, check, id, integer, name, now, text } from './errors.js';
 import { workspaceSettings } from './workspace-settings.js';
 import { getCheckpoint } from './checkpoints.js';
+import { getNotificationProgress } from './notification-progress.js';
 import { normalizeOption, ROLE_OPTION_KEYS, validateRoleOptions, type RoleOptions } from './role-options.js';
 
 function optionalText(value: string | null | undefined, label: string, max = 2_000): string | null {
@@ -261,6 +262,13 @@ export function context(s: Store, options: { since?: number; limit?: number } = 
     const cursor = s.get('SELECT coalesce(max(id),0) AS n FROM events WHERE workspace_id=?',s.ws)!.n as number;
     check(since <= cursor,'Cursor is ahead of this workspace; check the workspace or reset --since');
     const counts: Record<string,number> = {}, sections: Record<string,Row[]> = {};
+    try {
+      const progress=getNotificationProgress(s);
+      if(progress) sections.notification_progress=[{id:progress.id,cursor:progress.cursor,version:progress.version}];
+    } catch(error) {
+      if(!(error instanceof AppError) || error.code!==4) throw error;
+      sections.notification_progress=[{state:'invalid',instruction:'Inspect progress show and its audit record. Do not initialize or advance it; use an explicitly known earlier wait --since only for deliberate replay.'}];
+    }
     const data: ContextData = {workspace:s.workspace,role:actor,permissions:s.role(actor).kind === 'human' ? 'Human role: manage items and answer decisions. Facts never grant permission.' : 'Agent role: edit own WIP/work; human-only actions stay with a human. Facts never grant permission.',cursor,snapshot_cursor:cursor,since,truncated:false,counts_are_lower_bounds:true,counts,sections};
     const section = (key: string, sql: string, params: (string|number)[], transform: (row:Row)=>Row) => {
       const rows = s.all(`${sql} LIMIT ?`,...params,count+1);
@@ -299,7 +307,7 @@ export function context(s: Store, options: { since?: number; limit?: number } = 
       // Keep delta notifications ahead of snapshots: a bounded snapshot must not prevent the
       // next cursor from making progress, nor hide a returned delta in terminal rendering.
       const delta = (key: string) => key === 'facts' || key === 'answers';
-      const candidates = Object.entries(sections).filter(([key,rows])=>key !== 'session' && key !== 'stop' && key !== 'wip' && key !== 'checkpoint' && rows.length > 0).sort((a,b)=>Number(delta(a[0]))-Number(delta(b[0])) || JSON.stringify(b[1]).length-JSON.stringify(a[1]).length);
+      const candidates = Object.entries(sections).filter(([key,rows])=>key !== 'session' && key !== 'stop' && key !== 'wip' && key !== 'checkpoint' && key !== 'notification_progress' && rows.length > 0).sort((a,b)=>Number(delta(a[0]))-Number(delta(b[0])) || JSON.stringify(b[1]).length-JSON.stringify(a[1]).length);
       if (!candidates.length) break;
       const omitted = candidates[0][1].pop()!;
       if (omitted.event_id) data.cursor = Math.min(data.cursor,omitted.event_id-1);

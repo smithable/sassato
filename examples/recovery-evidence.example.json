@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "validation": [
+    {
+      "command": "npm test -- parser",
+      "result": "Parser tests passed; API integration tests remain to run."
+    }
+  ],
+  "artifacts": ["reports/parser-tests.txt"],
+  "jobs": [
+    {
+      "id": "parser-test-server",
+      "description": "Local server used by the pending API integration tests",
+      "state": "running",
+      "disposition": "stop",
+      "reference": "Provider tool job ID recorded in the task notes"
+    }
+  ]
+}

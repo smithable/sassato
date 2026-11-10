@@ -31,7 +31,9 @@
     "SECURITY.md",
     "docs/configuration.md",
     "docs/compatibility.md",
-    "docs/context-management.md"
+    "docs/context-management.md",
+    "examples/recovery-evidence.example.json",
+    "examples/smithable.config.json"
   ],
   "scripts": {
     "build": "node scripts/clean-build.mjs && tsc && node scripts/build-info.mjs",

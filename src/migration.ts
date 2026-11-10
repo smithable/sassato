@@ -5,7 +5,7 @@ import { Store, type Row } from './storage.js';
 import { check, now, safe, text } from './errors.js';
 import { humanRole } from './humans.js';
 import { workspaceSettings, validateTimezone } from './workspace-settings.js';
-import { legacyHuman, legacyRoleAliases, legacyTimezoneAliases } from './legacy.js';
+import { legacyRoleAliases, legacyTimezoneAliases } from './legacy.js';
 
 export interface ImportOptions { backlog?: string; wip?: string; actions?: string; sessions?: string; repair?: boolean }
 interface Source { path: string; kind: 'backlog' | 'wip' | 'action' | 'sessions'; digest: string; raw: string }
@@ -55,19 +55,28 @@ function completion(body: string): Item['status'] | undefined {
   }
   return undefined;
 }
-function answeredAction(raw: string, humanNames: string[]): Item['answerEvidence'] {
+function answeredAction(raw: string, markers: string[]): Item['answerEvidence'] {
   const lines=raw.split(/\r?\n/);
-  const person='(?:'+humanNames.join('|')+')';
   const normalize=(value:string):string=>value.trim().replace(/^(?:[-*]\s+)?(?:#{1,6}\s+)?/,'').replace(/[*_~`]/g,'').trim();
+  const prefixes=markers.map(normalize).filter(Boolean).sort((a,b)=>b.length-a.length);
   const substantive=(value:string):boolean=>!!value&&!/^(?:[-*]\s*)?(?:tbd|todo|pending|not yet|not answered|unanswered|awaiting|please (?:answer|decide)|write (?:your|the) answer|<[^>]*>|\[(?:(?:your\s+)?answer|yes.no|pending|todo|tbd)[^\]]*\])(?:\b|$)/i.test(value)&&!/^[-—.\s]+$/.test(value);
   for(let i=0;i<lines.length;i++) {
-    const line=normalize(lines[i]);
-    if(!new RegExp(`^(?:Answered\\b|Answer\\s*:|Decision\\s*:|${person}(?:['’]s\\s+answers?\\b|\\s+answered\\b|\\s*:\\s*|\\s*[,(]\\s*(?:\\d|["“'])|\\s+(?:\\d{4}-\\d{2}-\\d{2}|\\d{1,2}:\\d|yesterday\\b|today\\b)))`,'i').test(line))continue;
+    const line=normalize(lines[i]),lower=line.toLowerCase();
+    // Custom markers are literal prefixes, never regular expressions or names
+    // inferred from roles. Generic answer labels remain available by default.
+    const marker=prefixes.find(prefix=>lower.startsWith(prefix.toLowerCase())&&
+      (!/[\p{L}\p{N}]$/u.test(prefix)||!line[prefix.length]||/^[\s:,(]/.test(line.slice(prefix.length))));
+    if(!/^(?:Answered\b|Answer\s*:|Decision\s*:)/i.test(line)&&marker===undefined)continue;
     let evidence='';
-    const direct=new RegExp(`^(?:Answer(?:ed)?|Decision|${person})\\s*:\\s*(.*)$`,'i').exec(line);
+    const direct=/^(?:Answer(?:ed)?|Decision)\s*:\s*(.*)$/i.exec(line);
     if(direct)evidence=direct[1];
-    else if(new RegExp(`^${person}\\s+answered\\b`,'i').test(line))evidence=line.replace(new RegExp(`^${person}\\s+answered\\s*`,'i'),'');
+    else if(marker?.endsWith(':'))evidence=line.slice(marker.length).trim();
     else if(/:\s/.test(line))evidence=line.split(/:\s+/).at(-1)!.trim();
+    else if(marker!==undefined) {
+      const remainder=line.slice(marker.length).trim().replace(/^:\s*/,'');
+      // A date attached to an answer heading is metadata, not an answer.
+      if(!/^[,(]|^\d{4}-\d{2}-\d{2}(?:\b|$)/.test(remainder))evidence=remainder;
+    }
     if(!evidence) {
       const next=lines.slice(i+1).find(value=>value.trim());
       if(next&&!/^\s*#{1,6}\s/.test(next))evidence=normalize(next);
@@ -126,10 +135,9 @@ function parse(store: Store, sources: Source[]): {items:Item[]; warnings:string[
   const role=(value:string):string|null=>{const normalized=legacyRoleAliases[value.toLowerCase()]??value.toLowerCase();return roles.has(normalized)?normalized:null;};
   const labels=[...roles,...Object.keys(legacyRoleAliases).filter(alias=>roles.has(legacyRoleAliases[alias]))].sort((a,b)=>b.length-a.length).join('|');
   const roleLabel='(?:Opus\\s+|session\\s+)?('+labels+')';
-  const humanNames=store.all("SELECT name FROM roles WHERE workspace_id=? AND kind='human'",store.ws).map(r=>String(r.name));
-  const timezone=workspaceSettings(store).import_timezone;
+  const settings=workspaceSettings(store),timezone=settings.import_timezone;
   const add=(source:Source,line:number,key:string,body:string,owner:string|null,flags:string[]=[],kind:Item['kind']='task',externalId?:string):Item=>{
-    const trimmed=body.trim(),finished=completion(trimmed),answerEvidence=source.kind==='action'?answeredAction(source.raw,humanNames):undefined;
+    const trimmed=body.trim(),finished=completion(trimmed),answerEvidence=source.kind==='action'?answeredAction(source.raw,settings.import_answer_markers):undefined;
     let status:Item['status']=finished??'open';
     if(kind==='task'&&!finished) {
       if(source.kind==='action') {status=answerEvidence?'open':'blocked';if(!answerEvidence)flags.push('Legacy human action: review the remaining decision in the preserved source');}
@@ -218,7 +226,12 @@ function planRepair(store:Store,item:Item,prior:Row):void {
     const last=JSON.parse(repairs.at(-1)!.detail);
     if(JSON.stringify(last.after)!==JSON.stringify(item.before)){refuse('Imported metadata changed since its last repair');return;}
   } else {
-    if(blockers.length>1||questions.length>1||blockers.some(b=>b.created_by!==task.creator||b.created_at!==task.created_at||b.status!=='open'||!((b.kind==='human'&&b.waiting_on===task.creator&&store.role(task.creator).kind==='human')||(b.kind===route(store,item).kind&&b.waiting_on===route(store,item).waiting_on))||b.body!==(detail.warnings?.join('; ')||'Reconcile imported item'))||questions.some(q=>!item.humanOnly||q.asked_by!==task.creator||q.created_at!==task.created_at||q.status!=='pending'||q.answer!==null||q.question!==importedQuestion(item)||q.options!=='[]'||q.recommendation!==null||q.command!==null)){refuse('Blockers or questions changed after import; preserve them');return;}
+    const importedHumanBlocker=(blocker:Row):boolean=>blocker.kind==='human'&&(
+      blocker.waiting_on===workspaceSettings(store).default_human ||
+      // Historical import provenance can identify its human creator without
+      // selecting a new default or requiring the preview actor to be human.
+      blocker.waiting_on===task.creator&&!!store.get("SELECT 1 FROM roles WHERE workspace_id=? AND name=? AND kind='human'",store.ws,task.creator));
+    if(blockers.length>1||questions.length>1||blockers.some(b=>b.created_by!==task.creator||b.created_at!==task.created_at||b.status!=='open'||!(importedHumanBlocker(b)||(b.kind===route(store,item).kind&&b.waiting_on===route(store,item).waiting_on))||b.body!==(detail.warnings?.join('; ')||'Reconcile imported item'))||questions.some(q=>!item.humanOnly||q.asked_by!==task.creator||q.created_at!==task.created_at||q.status!=='pending'||q.answer!==null||q.question!==importedQuestion(item)||q.options!=='[]'||q.recommendation!==null||q.command!==null)){refuse('Blockers or questions changed after import; preserve them');return;}
   }
   const target=route(store,item),after:Row=structuredClone(item.before);
   after.task.status=item.status;after.task.completed_at=terminal(item.status)?task.completed_at??task.created_at:null;
@@ -371,7 +384,6 @@ export function exportMarkdown(store: Store, outDirectory: string): {directory:s
       'wip.md':`# ${store.workspace}: work in progress\n\n`+tasks.filter(t=>['doing','blocked','review'].includes(t.status)).map(markdownTask).join('\n')+'\n'+wip.map(w=>`## ${w.role}\n\nCurrent: ${w.current}\n\nNext: ${w.next}\n\n${w.notes}\n`).join('\n'),
       'humans.md':`# ${store.workspace}: human decisions\n\n`+questions.filter(q=>q.status==='pending').map(q=>`## H${q.id} · T${q.task_id}\n\nFor: ${q.for_role}\n\n${q.question}\n\nOptions: ${q.options}\n\nRecommendation: ${q.recommendation??'none'}\n\nCommand (reference only):\n\n\`\`\`text\n${q.command??'none'}\n\`\`\`\n`).join('\n'),
     };
-    if(store.get("SELECT name FROM roles WHERE workspace_id=? AND name=? AND kind='human'",store.ws,legacyHuman))out[`${legacyHuman}.md`]=out['humans.md'];
     const eventsByTask=new Map<string,Row[]>(), questionsByTask=new Map<number,Row[]>();
     for(const event of events) {const group=eventsByTask.get(event.entity_id)??[];group.push(event);eventsByTask.set(event.entity_id,group);}
     for(const question of questions) {const group=questionsByTask.get(question.task_id)??[];group.push(question);questionsByTask.set(question.task_id,group);}
