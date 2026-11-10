@@ -71,8 +71,8 @@ the current step, wait for their tools/jobs, save WIP and run the exact `stopped
 command shown in context. Acknowledgment leaves them stopped until a human resumes them.
 A timeout leaves the request active. Resume permits new work; it does not start sessions.
 
-Force stop sends SIGTERM only to verified registered provider PIDs, waits up to one
-second, then rechecks identities and stop intent before sending SIGKILL to survivors.
+Force stop sends SIGTERM only to verified registered provider PIDs, waits up to five
+seconds, then rechecks identities and stop intent before sending SIGKILL to survivors.
 It reports refusals for uncertain identities. It does not guarantee termination of every detached child process. Acknowledgment
 and process termination are distinct states.
 
@@ -105,6 +105,9 @@ already idle without a waiter needs an initial human nudge. Codex startup assume
 background wake-up and checks the inbox between tasks. When no actionable work remains, its
 default is an ordinary foreground `sassato wait --timeout 60`, using reconciled notification
 progress. It handles the result and waits again; it should continue existing work before waiting.
+For a Codex role listed in `codex_watch`, the launch prompt instead tells the worker to finish
+actionable work and end its turn idle. It must not also run a foreground waiter: that would
+handle an event once from the wait and again from the watcher's queued message.
 
 ## Import legacy Markdown
 
@@ -181,8 +184,15 @@ sassato watch reviewer --as human
 sassato launch reviewer --watch --new-window --as human
 ```
 
-Setting `codex_watch` does not start anything. Ordinary `launch` keeps its existing behavior;
-`--watch` selects the foreground watcher. A watcher holds the same exclusive role lock as a
+Setting `codex_watch` does not start anything. Ordinary `launch` still launches the provider,
+but its bootstrap prompt now uses the watched idle workflow for the configured role:
+finish actionable work, acknowledge handled urgent mail, save a recovery checkpoint and
+handled notification progress, then end
+the turn idle without a foreground waiter. `--watch` selects the separate foreground watcher.
+A human must explicitly start that watcher and confirm it is running; configuration alone
+is not evidence of a live watcher. A worker should report a missing or failed watcher rather
+than start one itself. Native approval prompts stay with the human; a pending approval does
+not authorize a switch to foreground waiting or bypassing provider checks. A watcher holds the same exclusive role lock as a
 normal launcher, so two cannot own a role at once. An already open launcher must exit before
 a separate watcher can acquire that lock; do not remove a live lock. The remote Codex TUI may
 attach separately to the same daemon with `codex --remote ENDPOINT resume THREAD_ID`.
@@ -208,3 +218,13 @@ result cannot provide exactly-once delivery.
 The configured endpoint must own the registered thread. Attach any interactive TUI to that
 same daemon; do not aim a watcher at a thread being driven by a separate standalone TUI.
 Sassato's role lock coordinates Sassato launchers, not independently started provider processes.
+
+
+Before a supervised rollout, confirm **one event produces one worker turn**: with the watcher
+running and the remote thread idle, create one actionable notification, observe one queued
+message and one processing turn, and verify the worker handles it, records progress (and
+acknowledges urgent mail), then ends the turn idle. Keep the observation shorter than the
+urgent retry interval and confirm there is no worker-owned foreground waiter or second empty
+turn. This checks the ordinary delivery path; a crash between queue acceptance and its audit
+write still does not guarantee exactly-once delivery. Also verify that a stopped or failed
+watcher is visible to the human and that the worker does not silently start a competing waiter.

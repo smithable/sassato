@@ -7,6 +7,7 @@ import { check, id, integer, name, now, safe, text } from './errors.js';
 import { normalizeOption, ROLE_OPTION_KEYS, validateRoleOptions } from './role-options.js';
 import { loadConfig, workingDirectory } from './config.js';
 import { validateSettings } from './workspace-settings.js';
+import { latestWatchStatuses } from './watch-status.js';
 
 export function initWorkspace(s: Store, workspace: string, configPath?: string | Row, humans?: string[]): Row {
   name(workspace);
@@ -58,6 +59,7 @@ export function attachWorkspace(s: Store, path: string): Row {
 }
 export function status(s: Store): Row {
   return s.snapshot(() => ({workspace:s.workspace,
+    watchers:latestWatchStatuses(s),
     stop_requests:s.all('SELECT id,role,requested_at,acknowledged_at FROM stop_requests WHERE workspace_id=? AND cleared_at IS NULL ORDER BY role',s.ws).map(row=>({...row,id:`R${row.id}`})),
     tasks:s.all('SELECT status,count(*) AS count FROM tasks WHERE workspace_id=? GROUP BY status',s.ws),
     open_blockers:s.get("SELECT count(*) AS n FROM blockers WHERE workspace_id=? AND status='open'",s.ws)!.n,

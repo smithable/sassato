@@ -52,6 +52,23 @@ function pendingLauncher(s: Store, role: string): boolean {
   try { process.kill(pid,0); return true; }
   catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
 }
+function remoteQueuePending(s: Store, role: string, registration?: Row): boolean {
+  // Match the registry's active-first selection, not an older verified PID that
+  // still needs to stop. Explicit replacement retires the previous thread's hints.
+  const current = registration ?? s.get('SELECT * FROM sessions WHERE workspace_id=? AND role=? ORDER BY (ended_at IS NULL) DESC,id DESC LIMIT 1',s.ws,role);
+  if (!current) return false;
+  const sessionId = `S${current.id}`;
+  const queued = s.get(`SELECT id FROM events WHERE workspace_id=? AND entity='watch' AND entity_id=? AND action='queue-attempt'
+    AND json_extract(detail,'$.session_id')=? AND json_extract(detail,'$.outcome') IN ('queued','unconfirmed')
+    ORDER BY id DESC LIMIT 1`,s.ws,role,sessionId);
+  if (!queued) return false;
+  const ended = s.get("SELECT 1 FROM events WHERE workspace_id=? AND entity='session' AND entity_id=? AND action='ended' AND json_extract(detail,'$.role')=? AND id>? LIMIT 1",s.ws,sessionId,role,queued.id);
+  const acknowledged = s.get("SELECT 1 FROM events WHERE workspace_id=? AND entity='stop' AND action='acknowledged' AND json_extract(detail,'$.role')=? AND id>? LIMIT 1",s.ws,role,queued.id);
+  // Notification progress may be saved in the middle of a turn. It is not an
+  // attestation that the provider and its jobs have stopped. Event IDs, rather
+  // than wall-clock timestamps, order queue attempts and stop attestations.
+  return !ended && !acknowledged;
+}
 function view(s: Store, row: Row): StopRequest {
   const history = s.all('SELECT * FROM sessions WHERE workspace_id=? AND role=? ORDER BY id DESC',s.ws,row.role);
   const evaluated = history.map(session => ({session,state:sessionState(session)}));
@@ -66,19 +83,18 @@ function view(s: Store, row: Row): StopRequest {
   // An end marker alone does not prove exit: an identified PID must be verified gone/reused.
   const verifiedExit = !!session?.pid && !!session?.process_start && (currentState === 'stale' || currentState === 'ended');
   const launcherPending = pendingLauncher(s,row.role);
-  // A remote queue can outlive its terminal PID. Only the worker's stop
-  // acknowledgement or an explicit session end after the last queue attempt
-  // settles that uncertainty; launcher exit alone is not daemon-turn exit.
-  const queued=s.get("SELECT id,detail FROM events WHERE workspace_id=? AND entity='watch' AND entity_id=? AND action='queue-attempt' ORDER BY id DESC LIMIT 1",s.ws,row.role);
-  const explicitEnd=queued&&s.get("SELECT 1 FROM events WHERE workspace_id=? AND entity='session' AND action='ended' AND json_extract(detail,'$.role')=? AND id>? LIMIT 1",s.ws,row.role,queued.id);
-  const remotePending=!!queued&&!explicitEnd;
+  // A current remote queue can outlive its terminal PID. Launcher exit alone
+  // is not daemon-turn exit, but old registrations and known failed queues are
+  // not evidence that the currently registered thread still has work.
+  const registration=history.find(entry=>!entry.ended_at)??history[0];
+  const remotePending=remoteQueuePending(s,row.role,registration);
 
   // Tasks survive sessions and are not evidence of a running worker. Unknown
   // registrations still require acknowledgement or verified exit.
   // An explicit end clears an unverified no-PID registration, not a live verified
   // process. A human must independently verify shutdown before using this escape.
   const endedWithoutPid = !!session?.ended_at && !session.pid && currentState === 'ended';
-  const state: StopState = row.acknowledged_at ? 'acknowledged' : launcherPending||remotePending ? 'waiting' : verifiedExit ? 'exited' : !session || endedWithoutPid ? 'inactive' : 'waiting';
+  const state: StopState = row.acknowledged_at&&!remotePending ? 'acknowledged' : launcherPending||remotePending ? 'waiting' : verifiedExit ? 'exited' : !session || endedWithoutPid ? 'inactive' : 'waiting';
   const unresolvedRegistration = state === 'waiting' && !launcherPending && session && (!session.pid||remotePending);
   return {
     id:`R${row.id}`,workspace_id:row.workspace_id,role:row.role,requested_at:row.requested_at,requested_by:row.requested_by,
@@ -132,7 +148,9 @@ export function acknowledgeStop(s: Store, requestId: string): StopRequest {
     const request = s.get('SELECT * FROM stop_requests WHERE workspace_id=? AND id=? AND cleared_at IS NULL',s.ws,requestNumber);
     check(request, 'Stop request is absent, cleared or belongs to another workspace',4);
     check(request.role === actor, 'Only the requested role may acknowledge its stop',3);
-    if (!request.acknowledged_at) {
+    // A queue accepted after the previous acknowledgement can start a new remote
+    // turn. Permit a fresh attestation for that same active STOP generation.
+    if (!request.acknowledged_at || remoteQueuePending(s,actor)) {
       const at = now();
       s.run('UPDATE stop_requests SET acknowledged_at=? WHERE workspace_id=? AND id=?',at,s.ws,requestNumber);
       s.event('stop',requestId,'acknowledged',{role:actor});

@@ -7,7 +7,8 @@ import { Store } from './storage.js';
 import { check, id, name, now, text } from './errors.js';
 import { processIdentity, registerSession, sessionState } from './coordination.js';
 import { validateRoleOptions } from './role-options.js';
-import { assertWorkAllowed } from './control.js';
+import { assertWorkAllowed, activeStop } from './control.js';
+import { beginWatchRun, finishWatchRun, type WatchRun } from './watch-status.js';
 import { watch, watchPrompt } from './watch.js';
 import { workspaceSettings, validateCodexWatch } from './workspace-settings.js';
 
@@ -22,7 +23,7 @@ export interface LaunchPlan {
   terminal:'native'|'windows-terminal'; window:string|null; stopFile:string|null; workspace:string;
 }
 interface StartupRequest { directory:string; token:string; responded?:boolean }
-interface LaunchRuntime { provider:'claude'|'codex'; executable:string; path:string; startup?:StartupRequest }
+interface LaunchRuntime { watchRun?:WatchRun; provider:'claude'|'codex'; executable:string; path:string; startup?:StartupRequest }
 interface StartupResponse { watcher?:boolean; token:string; status:'started'|'already-running'|'failed'; message?:string; session_id?:string; pid?:number; process_start?:string }
 const startupTimeoutMs=15_000;
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -79,14 +80,15 @@ export function planLaunch(store:Store, selected:string[], options:LaunchOptions
       if(config.sandbox_mode) args.push('--sandbox',config.sandbox_mode);
       if(config.approval_policy) args.push('--ask-for-approval',config.approval_policy);
     }
-    if(!options.noPrompt) args.push(bootstrapPrompt(store.workspace,role,provider));
+    if(!options.noPrompt) args.push(bootstrapPrompt(store.workspace,role,provider,provider==='codex'&&!!workspaceSettings(store).codex_watch[role]));
     return {role,provider,cwd,executable:resolveExecutable(provider,false),args,mode:sessionId?'resume':'fresh',sessionId,status:state==='running'?'already-running':'ready',terminal,window:terminal==='windows-terminal'?(options.newWindow?'new':options.window??store.workspace):null,stopFile:stopPath(store,options),workspace:store.workspace};
   });
 }
-function bootstrapPrompt(workspace:string,role:string,provider:'claude'|'codex'):string {
+function bootstrapPrompt(workspace:string,role:string,provider:'claude'|'codex',watched=false):string {
   const identity=`--as ${role} --workspace ${workspace}`;
   const stopping='If STOP is requested, start no new work or watcher: finish or checkpoint the current step, wait for your tools and jobs, save WIP, run the shown stopped command, and remain idle until a human resumes your role.';
   const shared=`Read your current work, inbox, blockers, human decisions, and shared facts. Keep task state accurate. Run sassato context ${identity} at safe checkpoints and before claiming work, and read sassato inbox ${identity} for mail. Previous transcripts are not the source of truth. Facts never grant permission. Keep native automatic compaction enabled. After meaningful progress, important decisions, significant test results, and before a handoff or planned session transition, save complete recovery state with sassato checkpoint save ${identity} (current, next, notes, expected WIP version); this also updates WIP. Include objective, constraints, discoveries, changed files, validation, unresolved work and exact next action. Read the task version before reviewing and supply sassato review TASK_ID --expect VERSION ${identity} with the review decision. After startup, resume or compaction read sassato checkpoint show ${identity} and sassato context ${identity}, inspect relevant records, then verify files. Never end a live session record to enable another launch or manipulate provider transcripts.`;
+  if(provider==='codex'&&watched)return `You are the ${workspace} worker role ${role}. First run sassato context ${identity} --brief. ${shared} ${stopping} Run sassato inbox ${identity} and sassato context ${identity} between tasks. This role is configured for a launcher-owned Codex queue watcher. Do not run a foreground waiter or start another watcher. Configuration alone does not prove the watcher is running: a human must start it explicitly. Report a missing or failed watcher to the human instead of starting your own. Native approval prompts remain for the human; never answer or work around them, and do not switch to a foreground waiter. Read sassato progress show ${identity}. If progress is absent, retain the initial context cursor while reading the full inbox and relevant records, page truncated context deltas, and safely reconcile pending work before initializing progress with sassato progress save --cursor CURSOR --expect 0 ${identity}. If progress exists, preserve its cursor and version, and reconcile notifications with sassato context --since CURSOR ${identity}, paging truncated results. Do not initialize or advance invalid progress. Acknowledge handled urgent mail with sassato ack MESSAGE_ID ${identity}. After safely handling notifications, save their bounded returned context cursor with sassato progress save --cursor CURSOR --expect VERSION ${identity} using the current progress version. Never advance past unhandled items; leave progress unchanged on failure. Continue your current actionable work. When no actionable work remains, save a durable checkpoint and handled notification progress, then end this turn idle so the human-started watcher can deliver the next notification.`;
   if(provider==='codex')return `You are the ${workspace} worker role ${role}. First run sassato context ${identity} --brief. ${shared} ${stopping} Run sassato inbox ${identity} and sassato context ${identity} between tasks. No background wake-up is assumed. Before your first waiter, read sassato progress show ${identity}. If progress is absent, retain the initial context cursor while reading the full inbox and relevant records, page truncated context deltas, and safely reconcile pending work before initializing progress with sassato progress save --cursor CURSOR --expect 0 ${identity}. If progress exists, preserve its cursor and version. Do not initialize or advance invalid progress. When no actionable work remains, use an ordinary foreground sassato wait --timeout 60 ${identity} with --since CURSOR from reconciled context or saved notification progress, then handle the result and wait again. Acknowledge handled urgent mail with sassato ack MESSAGE_ID ${identity}. After safely handling a wait result, read the current progress version and run sassato progress save --cursor CURSOR --expect VERSION ${identity} with the wait result's cursor. Save timeout cursors too. If handling fails, leave progress unchanged for replay. Keep the returned cursor; never skip pending events by replacing it with a newer snapshot. Never wait while you can continue your current work. On STOP, do not rearm.`;
   return [
     `You are the ${workspace} worker role ${role}.`,
@@ -138,8 +140,8 @@ function startedResponse(store:Store,role:string,status:'started'|'already-runni
   check(row&&sessionState(row)==='running','Provider exited before startup could be confirmed',4);
   return {status,session_id:`S${row.id}`,pid:row.pid,process_start:row.process_start};
 }
-async function awaitStartup(store:Store,role:string,request:StartupRequest,terminal:ReturnType<typeof spawn>):Promise<StartupResponse> {
-  const deadline=Date.now()+startupTimeoutMs;
+async function awaitStartup(store:Store,role:string,request:StartupRequest,terminal:ReturnType<typeof spawn>,watcher=false):Promise<StartupResponse> {
+  const timeout=watcher?75_000:startupTimeoutMs,deadline=Date.now()+timeout;
   while(Date.now()<deadline) {
     if(terminal.exitCode!==null&&terminal.exitCode!==0)throw new Error(`Windows Terminal exited with ${terminal.exitCode} before provider startup. Check wt.exe and the WSL distribution.`);
     const path=join(request.directory,'response.json');
@@ -159,7 +161,7 @@ async function awaitStartup(store:Store,role:string,request:StartupRequest,termi
     }
     await new Promise(resolveDelay=>setTimeout(resolveDelay,50));
   }
-  throw new Error(`No verified startup acknowledgement for ${role} within ${startupTimeoutMs/1000} seconds. Check the new terminal and sassato sessions before retrying.`);
+  throw new Error(`No verified startup acknowledgement for ${role} within ${timeout/1000} seconds. Check the new terminal and sassato sessions before retrying.`);
 }
 function runtimeEnvironment(store:Store,role:string,parentPath:string):{directory:string;env:NodeJS.ProcessEnv} {
   const directory=mkdtempSync(join(dirname(lockPath(store,role)),`.runtime-${role}-`));
@@ -216,7 +218,7 @@ async function terminateUnconfirmed(child:ReturnType<typeof spawn>,exited:Promis
   if(timer)clearTimeout(timer);
   if(!gone){child.kill('SIGKILL');await exited;}
 }
-async function runNative(store:Store,plan:LaunchPlan,options:LaunchOptions,runtime?:LaunchRuntime):Promise<void> {
+async function runNative(store:Store,plan:LaunchPlan,options:LaunchOptions,runtime?:LaunchRuntime,watchRun?:WatchRun):Promise<void> {
   check(store.path!==':memory:','Launching requires a persistent database');
   check(process.platform==='linux','Verified native launch currently requires Linux/WSL. On other systems, launch the provider manually and run sassato context.',3);
   const release=acquire(store,plan.role);
@@ -232,7 +234,7 @@ async function runNative(store:Store,plan:LaunchPlan,options:LaunchOptions,runti
       const cancellation=new AbortController(),cancel=()=>cancellation.abort();
       process.on('SIGINT',cancel);process.on('SIGTERM',cancel);
       try {
-        const result=await watch(roleStore,fresh.role,{remote:fresh.watchRemote,executable:resolveExecutable(runtime?.executable??fresh.executable,true),since:options.since,stopFile:fresh.stopFile??undefined,signal:cancellation.signal,onAttempt:attempt=>console.error(`${attempt.role}: ${attempt.reason} ${attempt.message_id??`E${attempt.cursor}`} — ${attempt.outcome} (exit ${attempt.exit_code??'unknown'})`),onGiveUp:notification=>console.error(`${notification.role}: gave up retrying ${notification.message_id??`E${notification.cursor}`} after ${notification.attempts} attempts; inspect context. Other notifications remain watched.`),onReady:()=>{
+        const result=await watch(roleStore,fresh.role,{run:watchRun??runtime?.watchRun,remote:fresh.watchRemote,executable:resolveExecutable(runtime?.executable??fresh.executable,true),since:options.since,stopFile:fresh.stopFile??undefined,signal:cancellation.signal,onAttempt:attempt=>console.error(`${attempt.role}: ${attempt.reason} ${attempt.message_id??`E${attempt.cursor}`} — ${attempt.outcome} (exit ${attempt.exit_code??'unknown'})`),onGiveUp:notification=>console.error(`${notification.role}: gave up retrying ${notification.message_id??`E${notification.cursor}`} after ${notification.attempts} attempts; inspect context. Other notifications remain watched.`),onReady:()=>{
           plan.status='started';plan.pid=process.pid;
           console.error(`Watching ${fresh.role} through Codex queue (experimental). Queue acceptance does not confirm a completed turn.`);
           notifyStartup(runtime,{status:'started',watcher:true,pid:process.pid,process_start:processIdentity(process.pid)??undefined});
@@ -307,28 +309,48 @@ async function runNative(store:Store,plan:LaunchPlan,options:LaunchOptions,runti
 }
 export async function launch(store:Store,roles:string[],options:LaunchOptions={}):Promise<LaunchPlan[]> {return launchInternal(store,roles,options);}
 async function launchInternal(store:Store,roles:string[],options:LaunchOptions,runtime?:LaunchRuntime):Promise<LaunchPlan[]> {
-  const plans=planLaunch(store,roles,options);
+  let plans:LaunchPlan[];
+  // Planning errors are also visible, but unauthorized/dry-run/STOP requests
+  // must not create lifecycle records or send notifications.
+  try {plans=planLaunch(store,roles,options);}
+  catch(error) {
+    if(options.watch&&!options.dryRun&&store.actor&&store.role(store.actor).kind==='human') {
+      const targets=options.all?store.all("SELECT name FROM roles WHERE workspace_id=? AND kind='agent' AND provider='codex'",store.ws).map(row=>String(row.name)):roles;
+      for(const role of new Set(targets)) {
+        const configured=store.get('SELECT kind,provider FROM roles WHERE workspace_id=? AND name=?',store.ws,role);
+        if(configured?.kind==='agent'&&configured.provider==='codex'&&!activeStop(store,[role],options.stopFile))
+          finishWatchRun(store,runtime?.watchRun??beginWatchRun(store,role),'startup-refused');
+      }
+    }
+    throw error;
+  }
   if(options.dryRun)return plans;
   store.requireHuman();
   for(const plan of plans) {
-    if(plan.status==='already-running'){notifyStartup(runtime,startedResponse(store,plan.role,'already-running'));continue;}
-    check(!plan.stopFile||!existsSync(plan.stopFile),`Stop signal exists at ${plan.stopFile}; the launcher never removes it`,4);
-    if(plan.terminal==='native') await runNative(store,plan,options,runtime);
-    else {
-      check(process.platform==='linux'&&!!process.env.WSL_DISTRO_NAME,'Windows Terminal launch must run inside WSL',3);
-      plan.executable=resolveExecutable(plan.provider,true);
-      const startup=startupRequest(store,plan.role);
-      try {
-        // Transport a resolved provider and the caller's PATH through an encoded payload.
-        // wsl.exe --exec need not load a login shell and no path becomes shell source.
-        const childRuntime:LaunchRuntime={provider:plan.provider,executable:plan.executable,path:process.env.PATH??'',startup};
-        const args=windowsTerminalArgs(store,plan,options,childRuntime);
-        const child=store.tx(()=>{assertWorkAllowed(store,plan.role);return spawn('wt.exe',args,{stdio:'ignore',shell:false});});
-        await new Promise<void>((res,rej)=>{child.once('spawn',()=>res());child.once('error',rej);});
-        child.unref();
-        const response=await awaitStartup(store,plan.role,startup,child);
-        plan.status=response.status as 'started'|'already-running';plan.runtimeSessionId=response.session_id;plan.pid=response.pid;
-      } finally {rmSync(startup.directory,{recursive:true,force:true});}
+    const run=plan.watchRemote?(runtime?.watchRun??beginWatchRun(store,plan.role)):undefined;
+    try {
+      if(plan.status==='already-running'){notifyStartup(runtime,startedResponse(store,plan.role,'already-running'));continue;}
+      check(!plan.stopFile||!existsSync(plan.stopFile),`Stop signal exists at ${plan.stopFile}; the launcher never removes it`,4);
+      if(plan.terminal==='native') await runNative(store,plan,options,runtime,run);
+      else {
+        check(process.platform==='linux'&&!!process.env.WSL_DISTRO_NAME,'Windows Terminal launch must run inside WSL',3);
+        plan.executable=resolveExecutable(plan.provider,true);
+        const startup=startupRequest(store,plan.role);
+        try {
+          // Transport a resolved provider and the caller's PATH through an encoded payload.
+          // wsl.exe --exec need not load a login shell and no path becomes shell source.
+          const childRuntime:LaunchRuntime={provider:plan.provider,executable:plan.executable,path:process.env.PATH??'',startup,...(run?{watchRun:run}:{})};
+          const args=windowsTerminalArgs(store,plan,options,childRuntime);
+          const child=store.tx(()=>{assertWorkAllowed(store,plan.role);return spawn('wt.exe',args,{stdio:'ignore',shell:false});});
+          await new Promise<void>((res,rej)=>{child.once('spawn',()=>res());child.once('error',rej);});
+          child.unref();
+          const response=await awaitStartup(store,plan.role,startup,child,!!plan.watchRemote);
+          plan.status=response.status as 'started'|'already-running';plan.runtimeSessionId=response.session_id;plan.pid=response.pid;
+        } finally {rmSync(startup.directory,{recursive:true,force:true});}
+      }
+    } catch(error) {
+      if(run)finishWatchRun(store,run,activeStop(store,[plan.role],options.stopFile)?'stopped':plan.status==='started'?'failed':'startup-refused');
+      throw error;
     }
   }
   return plans;
@@ -343,6 +365,7 @@ if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)&&p
     check(typeof candidate.path==='string'&&candidate.path.length<=32_000&&!candidate.path.includes('\0'),'Invalid launch PATH');
     const startup=candidate.startup;
     check(startup&&uuid.test(startup.token)&&dirname(resolve(startup.directory))===resolve(`${db}.launch`,workspace)&&basename(startup.directory).startsWith(`.startup-${role}-`),'Invalid startup acknowledgement path');
+    if(candidate.watchRun)check(uuid.test(candidate.watchRun.id)&&candidate.watchRun.role===role&&payload.options?.watch,'Invalid watcher lifecycle payload');
     runtime=candidate;checkStartup(startup);process.env.PATH=runtime.path;
     store=new Store(db,name(payload.actor));store.use(workspace);
     await launchInternal(store,[role],nativeOptions({...payload.options,dryRun:false}),runtime);

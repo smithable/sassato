@@ -194,3 +194,14 @@ for example `{"reviewer":{"remote":"unix:///absolute/path/codex.sock"}}`, using
 loopback `ws://HOST:PORT` endpoints are accepted. This opts the role into explicit experimental
 `watch ROLE` / `launch ROLE --watch` starts; it does not enable an automatic service.
 See [the integration guide](integrations.md#experimental-codex-queue-watcher).
+
+
+The tested Codex watcher releases are listed in one source constant,
+`TESTED_CODEX_WATCH_VERSIONS` in `src/codex-watch-compatibility.ts` (currently `0.167.0`).
+Every Codex update needs the isolated lab round rerun before that release is added;
+a version outside this list is refused even if its queue flags look compatible.
+Validate attached-TUI approval, strict headless policy, mid-turn ordering, thirty-minute
+idle delivery, restart/failure behavior and STOP before a supervised live-role run.
+A successful `--version` command may print informational notices to stderr; an exact
+supported version line must still appear in stdout. Queue execution retains its strict
+warning/acknowledgement checks: exit zero alone never confirms delivery or completion.

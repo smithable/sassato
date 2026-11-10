@@ -12,6 +12,7 @@ import { initWorkspace } from '../dist/admin.js';
 import { addTask,takeTask } from '../dist/tasks.js';
 import { registerSession,endSession,context,renderContext,setFact,send,processIdentity } from '../dist/coordination.js';
 import { requestStop,stopStatus,acknowledgeStop,resumeWork,assertWorkAllowed } from '../dist/control.js';
+import { saveNotificationProgress } from '../dist/notification-progress.js';
 
 function fixture(t) {
   const dir=mkdtempSync(join(tmpdir(),'sassato-control-')),path=join(dir,'state.db'),s=new Store(path,'human',{create:true});
@@ -198,13 +199,115 @@ test('remote queue uncertainty outlives terminal exit until explicit end or stop
 
 test('human end of an already-ended registration settles remote uncertainty without pretending a live PID exited',async t=>{
   const {s,dir}=fixture(t),child=await fakeProvider(t,dir);
-  as(s,'a',()=>registerSession(s,{provider:'claude',external_id:'verified-worker',pid:child.pid}));
+  const registration=as(s,'a',()=>registerSession(s,{provider:'claude',external_id:'verified-worker',pid:child.pid}));
   as(s,'a',()=>endSession(s));
-  s.event('watch','a','queue-attempt',{role:'a',reason:'urgent',queue_exit_code:0});
+  s.event('watch','a','queue-attempt',{role:'a',session_id:registration.id,reason:'urgent',outcome:'queued',exit_code:0});
   requestStop(s,['a']);assert.equal(stopStatus(s,['a'])[0].state,'waiting');
   endSession(s,'verified-worker','a');
   const stillLive=stopStatus(s,['a'])[0];assert.equal(stillLive.state,'waiting');assert.equal(stillLive.session_state,'running');
   assert.equal(stillLive.waiting_reason,undefined,'human end cleared remote uncertainty, but the live process still blocks STOP');
   const exited=once(child,'exit');child.kill();await exited;
   assert.equal(stopStatus(s,['a'])[0].state,'exited');
+});
+
+function queueAttempt(s,session,outcome='queued',role='a') {
+  return s.event('watch',role,'queue-attempt',{role,session_id:session.id,reason:'urgent',outcome,exit_code:outcome==='failed'?1:0});
+}
+function markTerminalGone(s,session,{ended=true}={}) {
+  s.run('UPDATE sessions SET pid=?,process_start=?,ended_at=? WHERE workspace_id=? AND id=?',2147483647,'old-boot:1',ended?new Date().toISOString():null,s.ws,Number(session.id.slice(1)));
+}
+
+test('failed queues and attempts without a matching registration do not override a verified terminal exit',t=>{
+  const {s}=fixture(t),registration=as(s,'a',()=>registerSession(s,{provider:'codex',external_id:'current-thread'}));
+  queueAttempt(s,registration,'failed');
+  queueAttempt(s,{id:'S999999'},'queued');
+  s.event('watch','a','queue-attempt',{reason:'urgent',outcome:'queued'});
+  markTerminalGone(s,registration);
+  const result=requestStop(s,['a'])[0];assert.equal(result.state,'exited');assert.equal(result.waiting_reason,undefined);
+});
+
+test('explicit replacement retires old remote uncertainty without deleting its audit',t=>{
+  const {s}=fixture(t),old=as(s,'a',()=>registerSession(s,{provider:'codex',external_id:'older-thread'}));
+  const queued=queueAttempt(s,old);
+  const current=as(s,'a',()=>registerSession(s,{provider:'codex',external_id:'replacement-thread',replace:true}));
+  markTerminalGone(s,current,{ended:false});
+  const result=requestStop(s,['a'])[0];assert.equal(result.state,'exited');assert.equal(result.session_id,current.id);
+  assert.equal(s.get('SELECT action FROM events WHERE id=?',queued).action,'queue-attempt');
+  assert.equal(s.get("SELECT action FROM events WHERE entity='session' AND entity_id=? AND action='replaced'",old.id).action,'replaced');
+});
+
+test('remote uncertainty uses the active registration even when a newer ended history row exists',t=>{
+  const {s}=fixture(t),active=as(s,'a',()=>registerSession(s,{provider:'codex',external_id:'active-thread'}));
+  queueAttempt(s,active);markTerminalGone(s,active,{ended:false});
+  const at=new Date().toISOString();
+  s.run('INSERT INTO sessions(workspace_id,role,provider,external_id,pid,process_start,started_at,last_seen_at,ended_at) VALUES(?,?,?,?,?,?,?,?,?)',s.ws,'a','codex','newer-history',2147483647,'old-boot:1',at,at,at);
+  const result=requestStop(s,['a'])[0];assert.equal(result.state,'waiting');assert.match(result.waiting_reason,/outlive its terminal/);
+  endSession(s,'active-thread','a');
+  assert.equal(stopStatus(s,['a'])[0].state,'exited');
+});
+
+test('current unconfirmed queues stay pending, and a later failed attempt does not erase accepted uncertainty',t=>{
+  const {s}=fixture(t),registration=as(s,'a',()=>registerSession(s,{provider:'codex',external_id:'current-thread'}));
+  queueAttempt(s,registration,'unconfirmed');markTerminalGone(s,registration);
+  requestStop(s,['a']);assert.equal(stopStatus(s,['a'])[0].state,'waiting');
+  queueAttempt(s,registration,'failed');
+  assert.equal(stopStatus(s,['a'])[0].state,'waiting');
+  endSession(s,'current-thread','a');
+  assert.equal(stopStatus(s,['a'])[0].state,'exited');
+  const audit=s.get("SELECT actor,detail FROM events WHERE entity='session' AND entity_id=? AND action='ended' ORDER BY id DESC LIMIT 1",registration.id);
+  assert.equal(audit.actor,'human');assert.equal(JSON.parse(audit.detail).human_override,true);
+});
+
+test('a later stop acknowledgement settles remote work for subsequent stop generations',t=>{
+  const {s}=fixture(t),registration=as(s,'a',()=>registerSession(s,{provider:'codex',external_id:'current-thread'}));
+  queueAttempt(s,registration);markTerminalGone(s,registration);
+  const first=requestStop(s,['a'])[0];assert.equal(first.state,'waiting');
+  as(s,'a',()=>acknowledgeStop(s,first.id));resumeWork(s,['a']);
+  const next=requestStop(s,['a'])[0];assert.notEqual(next.id,first.id);assert.equal(next.state,'exited');
+  assert.equal(next.acknowledged_at,null,'Old remote uncertainty is settled; the new request is not itself acknowledged');
+});
+
+test('older acknowledgements and another session end cannot settle a later queue attempt',t=>{
+  const {s}=fixture(t),old=as(s,'a',()=>registerSession(s,{provider:'codex',external_id:'older-thread'}));
+  const current=as(s,'a',()=>registerSession(s,{provider:'codex',external_id:'current-thread',replace:true}));
+  const first=requestStop(s,['a'])[0];as(s,'a',()=>acknowledgeStop(s,first.id));resumeWork(s,['a']);
+  queueAttempt(s,current);markTerminalGone(s,current);
+  s.event('session',old.id,'ended',{role:'a',human_override:true});
+  const unrelated=requestStop(s,['b'])[0];as(s,'b',()=>acknowledgeStop(s,unrelated.id));
+  const next=requestStop(s,['a'])[0];assert.equal(next.state,'waiting');assert.match(next.waiting_reason,/outlive its terminal/);
+});
+
+test('a queue after acknowledgement restores waiting and permits one fresh acknowledgement of the same request',t=>{
+  const {s}=fixture(t),registration=as(s,'a',()=>registerSession(s,{provider:'codex',external_id:'current-thread'}));
+  markTerminalGone(s,registration);
+  const request=requestStop(s,['a'])[0];as(s,'a',()=>acknowledgeStop(s,request.id));
+  queueAttempt(s,registration,'unconfirmed');assert.equal(stopStatus(s,['a'])[0].state,'waiting');
+  const before=s.get("SELECT count(*) n FROM events WHERE entity='stop' AND action='acknowledged'").n;
+  as(s,'a',()=>assert.equal(acknowledgeStop(s,request.id).state,'acknowledged'));
+  assert.equal(s.get("SELECT count(*) n FROM events WHERE entity='stop' AND action='acknowledged'").n,before+1);
+  const latest=s.get('SELECT max(id) n FROM events').n;
+  as(s,'a',()=>acknowledgeStop(s,request.id));assert.equal(s.get('SELECT max(id) n FROM events').n,latest,'Ordinary repeat remains idempotent');
+  resumeWork(s,['a']);assert.equal(requestStop(s,['a'])[0].state,'exited');
+});
+
+test('saving notification progress during a turn does not prove remote work stopped',t=>{
+  const {s}=fixture(t),registration=as(s,'a',()=>registerSession(s,{provider:'codex',external_id:'current-thread'}));
+  const queued=queueAttempt(s,registration);markTerminalGone(s,registration);
+  as(s,'a',()=>saveNotificationProgress(s,{cursor:queued,expected_version:0}));
+  const requested=requestStop(s,['a'])[0];assert.equal(requested.state,'waiting');assert.match(requested.waiting_reason,/outlive its terminal/);
+});
+
+test('retired queue hints never conceal an older verified live process or a current launcher lock',async t=>{
+  const {s,dir,path}=fixture(t),child=await fakeProvider(t,dir);
+  const old=as(s,'a',()=>registerSession(s,{provider:'claude',external_id:'older-worker',pid:child.pid}));
+  queueAttempt(s,old);as(s,'a',()=>endSession(s));
+  const at=new Date().toISOString();
+  s.run('INSERT INTO sessions(workspace_id,role,provider,external_id,pid,process_start,started_at,last_seen_at,ended_at) VALUES(?,?,?,?,?,?,?,?,?)',s.ws,'a','codex','newer-dead',2147483647,'old-boot:1',at,at,at);
+  const result=requestStop(s,['a'])[0];assert.equal(result.state,'waiting');assert.equal(result.session_id,old.id);assert.equal(result.session_state,'running');
+  assert.equal(result.waiting_reason,undefined,'Old remote hints are ignored while the verified live process still blocks');
+  const exited=once(child,'exit');child.kill();await exited;
+  const locks=join(`${path}.launch`,s.workspace);mkdirSync(locks,{recursive:true});
+  writeFileSync(join(locks,'a.lock'),JSON.stringify({pid:process.pid,identity:processIdentity(process.pid)}));
+  assert.equal(stopStatus(s,['a'])[0].state,'waiting');assert.equal(stopStatus(s,['a'])[0].launcher_pending,true);
+  unlinkSync(join(locks,'a.lock'));assert.equal(stopStatus(s,['a'])[0].state,'exited');
 });

@@ -108,6 +108,12 @@ function checkpointEvidence(path: string | undefined): unknown {
   } finally {closeSync(fd);}
 }
 function humanOutput(value: unknown, command?: string): string {
+  if(command==='status'&&value&&typeof value==='object') {
+    const status=value as Row,watchers=status.watchers??[];
+    const base=humanOutput(Object.fromEntries(Object.entries(status).filter(([key])=>key!=='watchers')));
+    return [base,...watchers.map((row:Row)=>`${row.role} watcher: ${row.state}${row.reason?` (${row.reason})`:''}`)].join('\n');
+  }
+
   if(Array.isArray(value)&&command==='stop-status')return value.length?value.map((row:Row)=>`${row.id} ${row.role}: ${row.state}${row.waiting_reason?` (${row.waiting_reason})`:''}${row.human_action?`\n${row.human_action}`:''}`).join('\n'):'No active stop requests.';
   if(Array.isArray(value)&&(command==='sent'||command==='outbox')) {
     return value.length?value.map((message:Row)=>`${message.id}: ${String(message.body).replace(/\s+/g,' ').slice(0,240)}\n  ${message.receipts.map((r:Row)=>`${r.recipient}: ${r.state==='done'?'acked':r.state}`).join(', ')}`).join('\n'):'No sent messages.';

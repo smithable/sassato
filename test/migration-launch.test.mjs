@@ -352,6 +352,29 @@ test('Codex bootstrap remains pull-based and no-prompt omits all startup instruc
 });
 
 
+test('configured Codex watcher makes its worker end idle without also running a foreground waiter',t=>{
+  const f=fixture(t),claudeBefore=planLaunch(f.s,['a'],{fresh:true})[0].args.at(-1);
+  const ordinary=planLaunch(f.s,['c'],{fresh:true})[0].args.at(-1);
+  assert.match(ordinary,/ordinary foreground sassato wait --timeout 60/);
+  setWorkspaceSettings(f.s,{codex_watch:{c:{remote:'unix:///fixture.sock'}}});
+  const watched=planLaunch(f.s,['c'],{fresh:true})[0].args.at(-1);
+  assert.match(watched,/configured for a launcher-owned Codex queue watcher/);
+  assert.match(watched,/Do not run a foreground waiter or start another watcher/);
+  assert.match(watched,/Configuration alone does not prove the watcher is running: a human must start it explicitly/);
+  assert.match(watched,/Continue your current actionable work/);
+  assert.match(watched,/Native approval prompts remain for the human; never answer or work around them/);
+  assert.match(watched,/When no actionable work remains, save a durable checkpoint and handled notification progress, then end this turn idle/);
+  assert.doesNotMatch(watched,/sassato wait|wait again|No background wake-up is assumed/);
+  assert.match(watched,/sassato context --since CURSOR --as c --workspace test/);
+  assert.match(watched,/sassato ack MESSAGE_ID --as c --workspace test/);
+  assert.match(watched,/leave progress unchanged on failure/);
+  assert.match(watched,/If STOP is requested, start no new work or watcher/);
+  assert.equal(planLaunch(f.s,['a'],{fresh:true})[0].args.at(-1),claudeBefore,'Claude background waiting is unchanged');
+  assert.deepEqual(planLaunch(f.s,['c'],{fresh:true,noPrompt:true})[0].args,[]);
+  setWorkspaceSettings(f.s,{codex_watch:{}});
+  assert.equal(planLaunch(f.s,['c'],{fresh:true})[0].args.at(-1),ordinary,'removing watch configuration restores the ordinary Codex workflow');
+});
+
 test('worker setup errors acknowledge failure instead of waiting for startup timeout',async t=>{
   const f=fixture(t);fakeWindowsTerminal(f,t,{unknownActor:true});
   const started=Date.now();

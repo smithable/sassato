@@ -237,7 +237,7 @@ bound, and no-match is never confused with a permission failure.
 | `stop [ROLE...] [--all] --as alice` | Request cooperative stop and wait; defaults to all agent roles |
 | `stop [ROLE...] --timeout SECONDS --as alice` | Bound the wait; timeout exits 4 and leaves requests active |
 | `stop [ROLE...] --no-wait --as alice` | Request stop and return immediately |
-| `stop [ROLE...] --force --as alice` | SIGTERM verified registered provider PIDs, allow up to one second, then SIGKILL verified survivors |
+| `stop [ROLE...] --force --as alice` | SIGTERM verified registered provider PIDs, allow up to five seconds, then SIGKILL verified survivors |
 | `stop-status [ROLE...]` | Read active stop requests and their observed state |
 | `stop-status [ROLE...] --quiet [--stop-file PATH]` | Print no normal output; exit 4 if stop intent or the optional stop file is active, otherwise 0 |
 | `stopped R123 --as ROLE` | Acknowledge this exact current request after tools stop and WIP is saved |
