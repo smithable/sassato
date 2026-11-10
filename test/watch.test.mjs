@@ -222,6 +222,22 @@ test('a newer workflow event after exhaustion starts a fresh bounded delivery',a
   assert.equal(getNotificationProgress(f.s),null);
 });
 
+test('new workflow during the final observation window gets its first delivery immediately',async t=>{
+  const f=fixture(t),wakes=[wake(f,'task-ready')];let arrived=false;
+  const r=rig(f,{wakes,onSleep(clock){
+    if(!arrived&&clock>=1_500_000){arrived=true;wakes.push(wake(f,'answer',{cursor:f.cursor+1}),wake(f,'stop',{cursor:f.cursor+1}));}
+  }});
+  const result=await watch(f.s,'builder',{remote,since:f.cursor},r.deps);
+  assert.equal(result.reason,'stopped');assert.equal(result.attempts,5);
+  const history=audits(f.s);
+  assert.deepEqual(history.filter(row=>row.action==='queue-attempt').map(row=>[row.reason,row.cursor,row.attempt]),[
+    ['task-ready',f.cursor,1],['task-ready',f.cursor,2],['task-ready',f.cursor,3],['answer',f.cursor+1,1],['stop',f.cursor+1,1]
+  ]);
+  assert.deepEqual(r.calls.filter(call=>call.args[1]==='--thread').map(call=>call.at),[0,300_000,1_200_000,1_500_000,1_500_000]);
+  assert.equal(history.filter(row=>row.action==='gave-up'||row.action==='coalesced').length,0);
+  assert.equal(getNotificationProgress(f.s),null);
+});
+
 test('exit-zero warnings, missing acknowledgment and wrong-thread acknowledgment are unconfirmed',async t=>{
   for(const queueResult of [{code:0,stdout:queued,stderr:'Warning: daemon unavailable'},
     {code:0,stdout:'',stderr:''},{code:0,stdout:queued.replace(thread,'00000000-0000-0000-0000-000000000000'),stderr:''}]) {

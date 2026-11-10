@@ -140,9 +140,9 @@ export async function watch(s:Store,target:string,options:WatchOptions,overrides
       const message=wake.reason==='urgent'&&typeof wake.message?.id==='string'?wake.message.id:null;
       check(wake.reason!=='urgent'||(message!==null&&/^M[1-9][0-9]*$/.test(message)),'Wait returned an invalid urgent message ID',4);
       const key=message??'workflow';let prior=pending.get(key);
-      // Exhaustion bounds retries of old work; it must not suppress a later
-      // workflow change. The fresh prompt reconciles from agent-owned progress.
-      if(wake.reason!=='stop'&&!message&&prior?.exhausted&&wake.cursor>prior.wake.cursor) {
+      // Once the last attempt was queued, later workflow changes need their own
+      // delivery even during the final observation window. Reconcile from agent progress.
+      if(wake.reason!=='stop'&&!message&&prior&&(prior.exhausted||prior.count>=3)&&wake.cursor>prior.wake.cursor) {
         pending.delete(key);prior=undefined;
       }
       if(wake.reason!=='stop'&&!message&&prior) {
