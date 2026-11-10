@@ -6,14 +6,36 @@
   "import_answer_markers": [
     "Johan answered",
     "Johan's answers",
-    "Johan’s answers",
+    "Johan\u2019s answers",
     "Johan:",
     "Johan,",
     "Johan ("
   ],
   "roles": [
-    { "name": "builder", "kind": "agent", "provider": "claude" },
-    { "name": "reviewer", "kind": "agent", "provider": "codex" },
-    { "name": "johan", "kind": "human" }
-  ]
+    {
+      "name": "builder",
+      "kind": "agent",
+      "provider": "claude"
+    },
+    {
+      "name": "reviewer",
+      "kind": "agent",
+      "provider": "codex"
+    },
+    {
+      "name": "hassist",
+      "kind": "agent"
+    },
+    {
+      "name": "johan",
+      "kind": "human"
+    }
+  ],
+  "import_role_aliases": {
+    "human assistant": "hassist",
+    "human assistance": "hassist"
+  },
+  "import_timezone_aliases": {
+    "Mariehamn": "Europe/Mariehamn"
+  }
 }

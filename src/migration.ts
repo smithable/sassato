@@ -5,7 +5,6 @@ import { Store, type Row } from './storage.js';
 import { check, now, safe, text } from './errors.js';
 import { humanRole } from './humans.js';
 import { workspaceSettings, validateTimezone } from './workspace-settings.js';
-import { legacyRoleAliases, legacyTimezoneAliases } from './legacy.js';
 
 export interface ImportOptions { backlog?: string; wip?: string; actions?: string; sessions?: string; repair?: boolean }
 interface Source { path: string; kind: 'backlog' | 'wip' | 'action' | 'sessions'; digest: string; raw: string }
@@ -59,14 +58,17 @@ function answeredAction(raw: string, markers: string[]): Item['answerEvidence'] 
   const lines=raw.split(/\r?\n/);
   const normalize=(value:string):string=>value.trim().replace(/^(?:[-*]\s+)?(?:#{1,6}\s+)?/,'').replace(/[*_~`]/g,'').trim();
   const prefixes=markers.map(normalize).filter(Boolean).sort((a,b)=>b.length-a.length);
-  const substantive=(value:string):boolean=>!!value&&!/^(?:[-*]\s*)?(?:tbd|todo|pending|not yet|not answered|unanswered|awaiting|please (?:answer|decide)|write (?:your|the) answer|<[^>]*>|\[(?:(?:your\s+)?answer|yes.no|pending|todo|tbd)[^\]]*\])(?:\b|$)/i.test(value)&&!/^[-—.\s]+$/.test(value);
+  const dateOnly=(value:string):boolean=>/^[([]?\d{4}-\d{2}-\d{2}(?:[T\s]+\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?(?:\s*(?:Z|UTC|[+-]\d{2}:?\d{2}|[A-Za-z_]+\/[A-Za-z_/]+))?[)\]]?[.,;]?$/i.test(value.trim());
+  const markerFor=(line:string)=>prefixes.find(prefix=>line.toLowerCase().startsWith(prefix.toLowerCase())&&
+    (!/[\p{L}\p{N}]$/u.test(prefix)||!line[prefix.length]||/^[\s:,(]/.test(line.slice(prefix.length))));
+  const genericLabel=(line:string)=>/^(?:Answered\b|Answer\s*:|Decision\s*:)/i.test(line);
+  const substantive=(value:string):boolean=>!!value&&!dateOnly(value)&&!/^(?:[-*]\s*)?(?:tbd|todo|pending|not yet|not answered|unanswered|awaiting|please (?:answer|decide)|write (?:your|the) answer|<[^>]*>|\[(?:(?:your\s+)?answer|yes.no|pending|todo|tbd)[^\]]*\])(?:\b|$)/i.test(value)&&!/^[-—.\s]+$/.test(value);
   for(let i=0;i<lines.length;i++) {
-    const line=normalize(lines[i]),lower=line.toLowerCase();
+    const line=normalize(lines[i]);
     // Custom markers are literal prefixes, never regular expressions or names
     // inferred from roles. Generic answer labels remain available by default.
-    const marker=prefixes.find(prefix=>lower.startsWith(prefix.toLowerCase())&&
-      (!/[\p{L}\p{N}]$/u.test(prefix)||!line[prefix.length]||/^[\s:,(]/.test(line.slice(prefix.length))));
-    if(!/^(?:Answered\b|Answer\s*:|Decision\s*:)/i.test(line)&&marker===undefined)continue;
+    const marker=markerFor(line);
+    if(!genericLabel(line)&&marker===undefined)continue;
     let evidence='';
     const direct=/^(?:Answer(?:ed)?|Decision)\s*:\s*(.*)$/i.exec(line);
     if(direct)evidence=direct[1];
@@ -77,21 +79,28 @@ function answeredAction(raw: string, markers: string[]): Item['answerEvidence'] 
       // A date attached to an answer heading is metadata, not an answer.
       if(!/^[,(]|^\d{4}-\d{2}-\d{2}(?:\b|$)/.test(remainder))evidence=remainder;
     }
+    if(dateOnly(evidence))evidence='';
     if(!evidence) {
       const next=lines.slice(i+1).find(value=>value.trim());
-      if(next&&!/^\s*#{1,6}\s/.test(next))evidence=normalize(next);
+      if(next&&!/^\s*#{1,6}\s/.test(next)) {
+        const candidate=normalize(next);
+        // Another answer label must be parsed on its own iteration: a heading
+        // containing only a date is not a decision for the preceding heading.
+        if(!genericLabel(candidate)&&markerFor(candidate)===undefined)evidence=candidate;
+      }
     }
     if(substantive(evidence))return {line:i+1,excerpt:lines[i].trim().slice(0,300)};
   }
   return undefined;
 }
-const dateLabel='(\\d{4}-\\d{2}-\\d{2})(?:[T\\s]+~?(\\d{1,2}):([x\\d]{2}))?(?:\\s*(UTC|Z|[+-]\\d{2}:\\d{2}|[A-Za-z_]+/[A-Za-z_/]+|'+Object.keys(legacyTimezoneAliases).join('|')+'))?';
-function sourceTime(date:string,hours:string|undefined,minutes:string|undefined,zone:string|undefined,defaultZone:string):number|undefined {
+const regexLiteral=(value:string):string=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+const datePattern=(aliases:Record<string,string>):string=>'(\\d{4}-\\d{2}-\\d{2})(?:[T\\s]+~?(\\d{1,2}):([x\\d]{2}))?(?:\\s*(UTC|Z|[+-]\\d{2}:\\d{2}|[A-Za-z_]+/[A-Za-z_/]+'+Object.keys(aliases).map(alias=>'|'+regexLiteral(alias)).join('')+'))?';
+function sourceTime(date:string,hours:string|undefined,minutes:string|undefined,zone:string|undefined,defaultZone:string,aliases:Record<string,string>):number|undefined {
   const hour=Number(hours??'0'),minute=Number((minutes??'00').replace(/x/gi,'9'));
   if(hour>23||minute>59)return undefined;
   let time=Date.parse(`${date}T${String(hour).padStart(2,'0')}:${String(minute).padStart(2,'0')}:00Z`);
   if(!Number.isFinite(time)||new Date(time).toISOString().slice(0,10)!==date)return undefined;
-  const selected=zone ? legacyTimezoneAliases[zone]??zone : defaultZone;
+  const selected=zone ? (Object.hasOwn(aliases,zone.toLowerCase())?aliases[zone.toLowerCase()]:zone) : defaultZone;
   const numeric=/^([+-])(\d{2}):(\d{2})$/.exec(selected);
   if(numeric) {
     if(Number(numeric[2])>23||Number(numeric[3])>59)return undefined;
@@ -104,22 +113,23 @@ function sourceTime(date:string,hours:string|undefined,minutes:string|undefined,
   }
   return time;
 }
-function wipStamp(line:string,roleLabel:string,timezone:string):{label:string;time:number}|undefined {
+function wipStamp(line:string,roleLabel:string,timezone:string,aliases:Record<string,string>):{label:string;time:number}|undefined {
+  const dateLabel=datePattern(aliases);
   const header=line.replace(/^\s*[-*]\s+/,'');
   // Match only the author in a dated header, never a role mentioned in the body
   // or a subagent whose name merely starts with an existing role.
   const first=new RegExp(`^${dateLabel}\\s+\\(${roleLabel}(?:,[^)]*)?\\)\\s*(?::|$)`,'i').exec(header);
-  if(first){const time=sourceTime(first[1],first[2],first[3],first[4],timezone);if(time!==undefined)return {label:first[5],time};}
+  if(first){const time=sourceTime(first[1],first[2],first[3],first[4],timezone,aliases);if(time!==undefined)return {label:first[5],time};}
   const roleFirst=new RegExp(`^${roleLabel}\\s+(?:\\(\\s*)?${dateLabel}\\s*(?:\\)|:|$)`,'i').exec(header)
     ??new RegExp(`^\\(${roleLabel}\\s*,\\s*${dateLabel}\\s*(?:,|\\))`,'i').exec(header);
-  if(roleFirst){const time=sourceTime(roleFirst[2],roleFirst[3],roleFirst[4],roleFirst[5],timezone);if(time!==undefined)return {label:roleFirst[1],time};}
+  if(roleFirst){const time=sourceTime(roleFirst[2],roleFirst[3],roleFirst[4],roleFirst[5],timezone,aliases);if(time!==undefined)return {label:roleFirst[1],time};}
   const stopped=new RegExp(`\\(stopped\\s*,?\\s*${dateLabel}\\s*\\)`,'i').exec(header);
   if(stopped) {
     const before=header.slice(0,stopped.index),after=header.slice(stopped.index+stopped[0].length);
     const label=new RegExp(`^${roleLabel}\\s*:?\\s*$`,'i').exec(before)?.[1]
       ??new RegExp(`^${dateLabel}\\s+\\(${roleLabel}(?:,[^)]*)?\\)\\s*:\\s*$`,'i').exec(before)?.[5]
       ??new RegExp(`^\\s*\\(?${roleLabel}\\s*(?:\\)|:|$)`,'i').exec(after)?.[1];
-    const time=sourceTime(stopped[1],stopped[2],stopped[3],stopped[4],timezone);
+    const time=sourceTime(stopped[1],stopped[2],stopped[3],stopped[4],timezone,aliases);
     if(label&&time!==undefined)return {label,time};
   }
   return undefined;
@@ -132,10 +142,11 @@ function wipBlock(lines:string[],start:number,legacy=false):string {
 function parse(store: Store, sources: Source[]): {items:Item[]; warnings:string[]} {
   const items:Item[]=[],warnings:string[]=[];
   const roles=new Set(store.all('SELECT name FROM roles WHERE workspace_id=?',store.ws).map(r=>String(r.name)));
-  const role=(value:string):string|null=>{const normalized=legacyRoleAliases[value.toLowerCase()]??value.toLowerCase();return roles.has(normalized)?normalized:null;};
-  const labels=[...roles,...Object.keys(legacyRoleAliases).filter(alias=>roles.has(legacyRoleAliases[alias]))].sort((a,b)=>b.length-a.length).join('|');
-  const roleLabel='(?:Opus\\s+|session\\s+)?('+labels+')';
-  const settings=workspaceSettings(store),timezone=settings.import_timezone;
+  const settings=workspaceSettings(store),timezone=settings.import_timezone,roleAliases=settings.import_role_aliases;
+  const role=(value:string):string|null=>{const key=value.toLowerCase(),normalized=Object.hasOwn(roleAliases,key)?roleAliases[key]:key;return roles.has(normalized)?normalized:null;};
+  const labels=[...roles,...Object.keys(roleAliases).filter(alias=>roles.has(roleAliases[alias]))].sort((a,b)=>b.length-a.length).map(regexLiteral).join('|');
+  // Prefer an explicit complete alias before interpreting a generic prefix.
+  const roleLabel='(?:session\\s+)??('+labels+')';
   const add=(source:Source,line:number,key:string,body:string,owner:string|null,flags:string[]=[],kind:Item['kind']='task',externalId?:string):Item=>{
     const trimmed=body.trim(),finished=completion(trimmed),answerEvidence=source.kind==='action'?answeredAction(source.raw,settings.import_answer_markers):undefined;
     let status:Item['status']=finished??'open';
@@ -156,7 +167,7 @@ function parse(store: Store, sources: Source[]): {items:Item[]; warnings:string[
     if(source.kind==='wip') {
       const latest=new Map<string,{line:number;body:string;time:number}>();
       for(let i=0;i<lines.length;i++) {
-        const stamp=wipStamp(lines[i],roleLabel,timezone);if(!stamp)continue;
+        const stamp=wipStamp(lines[i],roleLabel,timezone,settings.import_timezone_aliases);if(!stamp)continue;
         const owner=role(stamp.label);if(!owner){warnings.push(`${source.path}:${i+1}: dated entry has no recognized role; preserved only`);continue;}
         const previous=latest.get(owner);if(!previous||stamp.time>=previous.time)latest.set(owner,{line:i+1,body:wipBlock(lines,i),time:stamp.time});
       }
@@ -169,7 +180,7 @@ function parse(store: Store, sources: Source[]): {items:Item[]; warnings:string[
       lines.forEach((line,i)=>{
         if(!line.trim())return;
         const match=/^\s*(claude|codex)\s+(?:--resume|resume)\s+([a-zA-Z0-9][a-zA-Z0-9._:-]{0,199})\s+#\s*(.*)$/i.exec(line);
-        const label=match?.[3].match(new RegExp(`(?:^|[,;]\\s*)(?:session\\s+|role\\s+)?(${labels})(?=$|[\\s,(])`,'i'));
+        const label=match?.[3].match(new RegExp(`(?:^|[,;]\\s*)(?:session\\s+|role\\s+)??(${labels})(?=$|[\\s,(])`,'i'));
         const owner=label?role(label[1]):null;
         if(!match||!owner){warnings.push(`${source.path}:${i+1}: unrecognized session mapping preserved only`);return;}
         const item=add(source,i+1,`session/${owner}`,line,owner,[],'session',match[2]);item.provider=match[1].toLowerCase();

@@ -63,6 +63,8 @@ export async function observeBusyChecks(checks:BusyCheck[],deadline=Infinity,sig
       // Do not create/truncate files, follow symlinks, or block opening a FIFO.
       fd=openSync(config.path,constants.O_RDONLY|constants.O_NONBLOCK|constants.O_NOFOLLOW);
       const before=fstatSync(fd);if(!before.isFile())return unknown('Lock path is not a regular file');
+      // This briefly acquires an actual flock lock; file contents/holder protocols
+      // are not inspected, and another nonblocking taker can observe our probe.
       const result=await execute(['flock','--exclusive','--nonblock','--conflict-exit-code','75','3'],undefined,timeout,fd,signal);
       const after=statSync(config.path);
       if(before.ino!==after.ino||before.dev!==after.dev)return unknown('Lock file changed during check');

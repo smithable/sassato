@@ -72,7 +72,10 @@ python3 scripts/provider-live-probe.py --provider claude
 It creates temporary directories and new identities, allows bounded conversational
 turns and checks completion and recall. Cleanup checks and signals its own process
 group even when the leader already exited successfully; inability to verify group
-exit fails the probe. This is not proof of containment for a descendant that
+exit fails the probe. Version and MCP discovery commands use owned groups too.
+SIGINT or SIGTERM stops new launches and cleans every registered group before
+returning exit status 128 plus the first signal number; repeated signals do not
+interrupt cleanup. Discovery timeout follows the same cleanup path. This is not proof of containment for a descendant that
 deliberately leaves that group. Output is a
 sanitized JSON result, without transcripts, account details, IDs or machine paths.
 It exits nonzero when a capability or completion signal cannot be verified. No

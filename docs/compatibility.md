@@ -5,7 +5,9 @@ Repeating init does not replace their configuration. No schema migration is requ
 configurable human roles or workspace settings.
 
 Older databases without explicit workspace settings retain their original bootstrap human
-as the default recipient and their original import time zone. There is no implicit external
+as the default recipient. Stored import time zones are retained; without an explicit setting,
+imports now use UTC. Set the historical time zone before re-importing older local dates.
+There is no implicit external
 stop-file path; an explicitly configured `stop_file` is retained.
 Inspect these with `workspace settings`; change them with human-only `workspace set`.
 New workspaces use generic roles, UTC imports and no external stop file by default.
@@ -21,9 +23,13 @@ For an existing Smithable workspace, inspect `workspace settings` and explicitly
 compatibility logic is needed. An authorized human can run:
 
 ```sh
-sassato workspace set --default-human johan --workspace smithable --as johan
+sassato workspace set --default-human johan --import-timezone Europe/Mariehamn --workspace smithable --as johan
 sassato workspace set --import-answer-markers '["Johan answered", "Johan’s answers", "Johan:"]' --workspace smithable --as johan
 ```
+
+If historical documents use `human assistant` / `human assistance` for `hassist` or
+`Mariehamn` for `Europe/Mariehamn`, configure those aliases explicitly, as shown in the
+example below. Alias targets must already be configured roles.
 
 Add any other historical answer prefixes that the source documents use; see the
 [Smithable example configuration](../examples/smithable.config.json). Repeating `init`
@@ -38,8 +44,9 @@ workspace is renamed. Model settings are inherited rather than pinned to a previ
 Markdown import recognizes configured role names. Generic `Answer:`, `Answered` and
 `Decision:` labels work by default; person-specific answer headings require explicit
 `import_answer_markers` rather than being inferred from role names.
-Historical role-label and time-zone spellings remain accepted by a small compatibility
-adapter. Preview all imports; raw source and previous answers are preserved, and ambiguous
+Historical role-label and time-zone spellings require explicit `import_role_aliases`
+and `import_timezone_aliases` maps; there are no built-in project aliases. These settings
+affect future imports only, without renaming stored roles or rewriting timestamps. Preview all imports; raw source and previous answers are preserved, and ambiguous
 items remain marked for reconciliation rather than silently treated as current work.
 
 ## Review and recovery update

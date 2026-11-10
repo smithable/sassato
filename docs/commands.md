@@ -35,6 +35,9 @@ prompts. Configuration is validated before creating a database.
 
 `workspace settings` reads routing/import/stop settings. A human can change them with
 `workspace set --default-human NAME`, `--import-timezone ZONE`, or `--stop-file PATH`.
+`--import-answer-markers JSON`, `--import-role-aliases JSON` and
+`--import-timezone-aliases JSON` configure historical document labels; see
+[configuration](configuration.md) for validation and examples.
 Use `none` to clear the default human or stop file. `role set NAME --kind human` adds a
 human; only an existing human can create/promote roles. Agent model/permission settings
 inherit provider defaults unless explicitly configured.
@@ -231,8 +234,11 @@ An all-role stop (explicit `--all`, or no role arguments) also waits for the
 workspace's configured [busy checks](configuration.md#busy-checks-before-an-all-role-stop-completes).
 The same `--timeout` covers both agent acknowledgements and checks. Busy and unknown
 checks are reported by name and prevent successful completion; a timeout leaves
-stop intent active. `--no-wait` and `--force` return without executing checks, with
-`machine_quiet: null` in JSON. Force still only signals verified provider PIDs.
+stop intent active. Only non-idle checks are retried; idle observations are retained
+for that stop invocation. Default timeout 0 waits indefinitely, even if a check
+keeps failing. Use `--timeout SECONDS` to bound this wait.
+`--no-wait` reports role completion without executing checks; it and `--force`
+return `machine_quiet: null` in JSON. Force still only signals verified provider PIDs.
 
 `stop-status --quiet` reads stop intent, including acknowledged requests that have
 not been cleared, and the optional configured `stop_file`. `--stop-file` overrides

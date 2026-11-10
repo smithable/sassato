@@ -4,6 +4,13 @@
 
 Feedback fixes and stop controls:
 
+- Historical author/timezone aliases are explicit settings; unconfigured imports use
+  UTC. Date-only answer lines remain pending.
+- Non-waiting stops report role completion independently; waiting stops retry only
+  busy or unknown checks. Lock checks document flock and holder-file differences.
+- Probe discovery and provider processes share cancellation-safe group cleanup.
+- Added project links and npm/GitHub discovery metadata.
+
 - Removed personal-name commands and import rules; configured humans and literal
   import answer markers replace them. Existing stored role names remain unchanged.
 - `stop --all` can wait for configured held locks and busy commands; errors and

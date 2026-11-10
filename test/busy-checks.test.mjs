@@ -11,6 +11,7 @@ import { validateBusyChecks, observeBusyChecks } from '../dist/busy-checks.js';
 import { stop } from '../dist/stop.js';
 import { activeStop, acknowledgeStop, resumeWork } from '../dist/control.js';
 import { loadConfig } from '../dist/config.js';
+import { registerSession } from '../dist/coordination.js';
 
 function fixture(t) {
   const dir=mkdtempSync(join(tmpdir(),'sassato-busy-')),s=new Store(join(dir,'state.db'),'human',{create:true});
@@ -33,7 +34,7 @@ test('busy commands distinguish busy, idle, failed and timed-out without shell i
 });
 
 test('flock check sees a held lock, not mere file presence, and never creates a missing lock',async t=>{
-  const {dir}=fixture(t),path=join(dir,'gate.lock'),ready=join(dir,'ready');writeFileSync(path,'');
+  const {dir}=fixture(t),path=join(dir,'gate.lock'),ready=join(dir,'ready');writeFileSync(path,'pid=12345 host=fixture-host\n');
   const checks=validateBusyChecks([{name:'gate',type:'flock',path},{name:'absent',type:'flock',path:join(dir,'absent')}]);
   assert.deepEqual((await observeBusyChecks(checks)).map(row=>row.state),['idle','idle']);
   assert(!existsSync(join(dir,'absent')));
@@ -63,9 +64,23 @@ test('no-wait, force and named-role stops never execute machine busy commands',a
   const {s,dir}=fixture(t),marker=join(dir,'ran');
   setWorkspaceSettings(s,{busy_checks:[command('check',`require('node:fs').writeFileSync(${JSON.stringify(marker)},'ran');process.exit(1)`)]});
   for(const options of [{all:true,noWait:true},{all:true,force:true}]){
-    const report=await stop(s,[],options);assert.equal(report.machine_quiet,null);assert(!report.complete);assert.equal(report.busy_checks[0].state,'unknown');assert(!existsSync(marker));
+    const report=await stop(s,[],options);assert.equal(report.machine_quiet,null);assert.equal(report.complete,!!options.noWait);assert.equal(report.busy_checks[0].state,'unknown');assert(!existsSync(marker));
   }
   const named=await stop(s,['builder']);assert(named.complete);assert.equal(named.machine_quiet,null);assert(!existsSync(marker));
+  s.actor='builder';registerSession(s,{provider:'claude',external_id:'pending'});s.actor='human';
+  const pending=await stop(s,[],{all:true,noWait:true});assert(!pending.complete);assert.equal(pending.machine_quiet,null);assert(!existsSync(marker));
+});
+
+test('waiting retries only busy and unknown checks; another stop observes every check anew',async t=>{
+  const {s,dir}=fixture(t),counts={idle:join(dir,'idle'),busy:join(dir,'busy'),unknown:join(dir,'unknown')};
+  const counted=(name,failures,code)=>command(name,`const fs=require('node:fs'),path=${JSON.stringify(counts[name])};let n=0;try{n=Number(fs.readFileSync(path,'utf8'))}catch{}fs.writeFileSync(path,String(++n));process.exit(n<=${failures}?${code}:1)`);
+  setWorkspaceSettings(s,{busy_checks:[counted('idle',0,0),counted('busy',1,0),counted('unknown',2,2)]});
+  const cancellation=new AbortController(),timer=setTimeout(()=>cancellation.abort(),3000);
+  let report;try{report=await stop(s,[],{all:true,signal:cancellation.signal});}finally{clearTimeout(timer);}
+  assert(report.complete);assert.equal(report.machine_quiet,true);assert(!report.timed_out);
+  assert.deepEqual(Object.values(counts).map(path=>Number(readFileSync(path,'utf8'))),[1,2,3]);
+  const repeated=await stop(s,[],{all:true,timeout:2});assert(repeated.complete);
+  assert.deepEqual(Object.values(counts).map(path=>Number(readFileSync(path,'utf8'))),[2,3,4]);
 });
 
 test('stop deadline caps a longer configured command timeout',async t=>{
