@@ -108,7 +108,7 @@ test('saving a handled cursor preserves later events through restart and ignores
 
 test('explicit --since overrides saved progress and missing progress requires a cursor',async t=>{
   const f=fixture(t),s=f.s,before=f.cursor(),pending=task(s,'Existing notification');
-  await assert.rejects(wait(f),/No saved notification progress.*snapshot_cursor/);
+  await assert.rejects(wait(f),/No saved notification progress.*wait --since CURSOR/);
   assert.equal((await wait(f,{since:before})).task,pending.id,'the explicit context cursor preserves an event arriving before wait');
   saveNotificationProgress(s,{cursor:before,expected_version:0});
   assert.equal((await wait(f,{since:f.cursor()})).reason,'timeout','explicit newer cursor overrides progress');
