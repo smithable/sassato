@@ -25,6 +25,9 @@ function available(s:Store,actor:string,condition:string,params:Param[],includeD
     AND (${condition}) ORDER BY t.id`,s.ws,...(includeDoing?[actor]:[]),actor,actor,s.role(actor).kind==='human'?1:0,...params).map(t=>`T${t.id}`);
 }
 function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
+  // A role already observed its own successful action. Consume its event cursor
+  // without waking, while leaving other recipients' independent cursors intact.
+  if(event.actor===actor)return undefined;
   const base={role:actor,cursor:event.id};
   let detail:Row;try{detail=JSON.parse(event.detail);}catch{return undefined;}
   if(event.entity==='question'&&event.action==='answered') {
@@ -122,9 +125,9 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
     const result=s.snapshot(():WaitResult|undefined=>{
       const stop=s.get('SELECT id,acknowledged_at FROM stop_requests WHERE workspace_id=? AND role=? AND cleared_at IS NULL',s.ws,actor);
       if(stop)return {reason:'stop',role:actor,cursor,stop:{id:`R${stop.id}`,acknowledged:!!stop.acknowledged_at}};
-      const message=s.get("SELECT m.id,m.sender,substr(m.body,1,240) AS body FROM receipts r JOIN messages m ON m.workspace_id=r.workspace_id AND m.id=r.message_id WHERE r.workspace_id=? AND r.recipient=? AND r.state='unread' AND m.urgent=1 ORDER BY m.id LIMIT 1",s.ws,actor);
+      const message=s.get("SELECT m.id,m.sender,substr(m.body,1,240) AS body FROM receipts r JOIN messages m ON m.workspace_id=r.workspace_id AND m.id=r.message_id WHERE r.workspace_id=? AND r.recipient=? AND r.state='unread' AND m.urgent=1 AND m.sender!=? ORDER BY m.id LIMIT 1",s.ws,actor,actor);
       if(message)return {reason:'urgent',role:actor,cursor,message:{id:`M${message.id}`,sender:message.sender,summary:String(message.body).replace(/[\x00-\x1f\x7f]/g,' ').replace(/\s+/g,' ').trim()}};
-      const events=s.all('SELECT id,entity,entity_id,action,detail FROM events WHERE workspace_id=? AND id>? ORDER BY id LIMIT 200',s.ws,cursor);
+      const events=s.all('SELECT id,entity,entity_id,actor,action,detail FROM events WHERE workspace_id=? AND id>? ORDER BY id LIMIT 200',s.ws,cursor);
       more=events.length===200;
       for(const event of events){const wake=workflow(s,actor,event);cursor=event.id;if(wake)return wake;}
       return undefined;

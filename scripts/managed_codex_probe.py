@@ -1,7 +1,8 @@
 """Opt-in Codex recovery adapter. Imported only by the disposable fixture harness.
 
 No existing provider threads, credentials or settings are modified. This module
-does not implement a supervisor and does not run models when imported.
+does not implement a supervisor. Live startup is disabled until an enforceable
+read-root sandbox is available; deterministic protocol tests remain usable.
 """
 import json
 import os
@@ -13,7 +14,7 @@ import subprocess
 import threading
 import time
 
-from managed_probe_config import CODEX_RESTRICTIONS, ConfigurationError, prepare
+from managed_probe_config import CODEX_RESTRICTIONS, ConfigurationError, prepare, require_codex_read_confinement
 
 
 SUPPORTED_VERSIONS = {"0.167.0"}
@@ -61,6 +62,7 @@ def _command_tokens(command):
 
 class AppServer:
     def __init__(self, cwd, env, model=None, *, processes=None, max_turns=4, executable=None):
+        require_codex_read_confinement()
         self.cwd = str(Path(cwd).resolve())
         self.model = model
         self.processes = processes
@@ -250,7 +252,7 @@ def run(fixture):
     """
     report = {"provider": "codex", "ok": False, "process_exit_codes": [],
               "ephemeral_threads": True, "stage": "preflight",
-              "unsupported_gaps": ["hooks_continuity", "interactive_ui_reconnection",
+              "unsupported_gaps": ["readable_roots_confinement", "hooks_continuity", "interactive_ui_reconnection",
                                    "supervisor_crash_reconciliation",
                                    "arbitrary_existing_session_adoption",
                                    "detached_descendants_outside_owned_process_group"]}
@@ -259,6 +261,7 @@ def run(fixture):
         if os.name != "posix":
             raise ProbeFailure("unsupported_process_cleanup_platform")
         policy = prepare(fixture, "codex")
+        require_codex_read_confinement()
         processes = fixture["processes"]
         report["version"] = _version(policy, processes)
         report["requested_model"] = policy["model"]

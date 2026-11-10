@@ -43,6 +43,53 @@ class ConfigurationError(RuntimeError):
     pass
 
 
+def require_codex_read_confinement():
+    """No validated read-root sandbox is available in this native adapter.
+
+    HOME/CODEX_HOME isolation avoids inherited configuration; read-only limits
+    writes, not reads. Post-execution command inspection cannot protect secrets.
+    Keep live runs disabled until an enforceable read boundary is implemented
+    and tested. There is deliberately no environment/fixture override.
+    """
+    raise ConfigurationError("codex-readable-roots-confinement-unavailable")
+
+
+def write_private_diagnostic(scratch_directory, requested_path, record):
+    """Create one private scratch file without following any parent symlinks.
+
+    Walk from / using directory descriptors: checking resolve() alone leaves
+    a symlink-swap window. The final exclusive open rejects files, links, FIFOs
+    and overwrite attempts alike. No directories outside the fixture are made.
+    """
+    root = Path(scratch_directory).absolute()
+    path = Path(requested_path)
+    if ".." in root.parts or ".." in path.parts:
+        raise ValueError("diagnostic-parent-traversal")
+    if not path.is_absolute():
+        path = root / path
+    relative = path.relative_to(root)
+    if not relative.parts:
+        raise ValueError("diagnostic-file-required")
+    descriptors = []
+    try:
+        current = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+        descriptors.append(current)
+        for part in (*root.parts[1:], *relative.parts[:-1]):
+            current = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                              dir_fd=current)
+            descriptors.append(current)
+        fd = os.open(relative.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                     0o600, dir_fd=current)
+        try:
+            os.fchmod(fd, 0o600)
+            os.write(fd, record)
+        finally:
+            os.close(fd)
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
 def validate_home(provider, value):
     if not value:
         raise ConfigurationError("isolated-provider-home-required")

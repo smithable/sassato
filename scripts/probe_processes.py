@@ -2,6 +2,7 @@
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 
@@ -95,6 +96,7 @@ class OwnedProcesses:
             pass
 
     def close(self, process):
+        cancellation_before = self.signum
         self._protected += 1
         try:
             try:
@@ -136,8 +138,11 @@ class OwnedProcesses:
             raise RuntimeError('Owned process group cleanup could not be verified')
         finally:
             self._protected -= 1
+            if not self._protected and cancellation_before is None and sys.exc_info()[0] is None:
+                self._check_cancelled()
 
     def close_all(self):
+        cancellation_before = self.signum
         self._protected += 1
         try:
             # Stop all quota-consuming processes promptly, before waiting on any.
@@ -155,6 +160,8 @@ class OwnedProcesses:
                     self.cleanup_failures.append(type(error).__name__)
         finally:
             self._protected -= 1
+            if not self._protected and cancellation_before is None and sys.exc_info()[0] is None:
+                self._check_cancelled()
         return self.cleanup_failures
 
     def __exit__(self, exc_type, exc, traceback):

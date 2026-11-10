@@ -234,10 +234,11 @@ An all-role stop (explicit `--all`, or no role arguments) also waits for the
 workspace's configured [busy checks](configuration.md#busy-checks-before-an-all-role-stop-completes).
 The same `--timeout` covers both agent acknowledgements and checks. Busy and unknown
 checks are reported by name and prevent successful completion; a timeout leaves
-stop intent active. Only non-idle checks are retried; idle observations are retained
-for that stop invocation. Default timeout 0 waits indefinitely, even if a check
+stop intent active. Only non-idle checks are retried while roles shut down; once
+all roles have stopped, every check is re-probed before reporting machine quiet.
+Idle observations from that final phase are then retained. Default timeout 0 waits indefinitely, even if a check
 keeps failing. Use `--timeout SECONDS` to bound this wait.
-`--no-wait` reports role completion without executing checks; it and `--force`
+`--no-wait` and `--force` report role completion without executing checks; both
 return `machine_quiet: null` in JSON. Force still only signals verified provider PIDs.
 
 `stop-status --quiet` reads stop intent, including acknowledged requests that have
@@ -269,7 +270,9 @@ WIP older than 24 hours has `stale=true`; new imports retain the source timestam
 `wait` also reports human answers (`answer`), resolved blockers (`blocker-resolved`),
 new assignments/handoffs (`task-assigned`), claimable work (`task-ready`), review
 submissions (`review-submitted`), and owner review results (`review-approved` or
-`review-rejected`). Ordinary mail alone is ignored. An assigned task may still be blocked; `task-ready` means currently claimable work or already-owned work whose dependency
+`review-rejected`). Ordinary mail and the waiting role's own actions do not wake it. Self-authored
+workflow events still advance the returned cursor; their effects remain visible
+in context and history. STOP always takes precedence, including self-requested STOP. An assigned task may still be blocked; `task-ready` means currently claimable work or already-owned work whose dependency
 has cleared. Check current state before claiming, since another role may act.
 The optional `--urgent` flag remains accepted for compatibility and does not disable
 workflow notifications. Reviews are currently untargeted: an unapproved submission

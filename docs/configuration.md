@@ -151,8 +151,9 @@ sassato workspace set --busy-checks '[]' --as alice
 
 An unknown or busy check prevents waiting-stop completion and is included in progress
 and final output. Only non-idle checks are retried, with a 250 ms pause between rounds.
-An idle observation is retained for that stop invocation; another `stop` runs all
-checks anew. By default `--timeout 0` waits indefinitely, including when checks keep
+Once all selected roles have stopped, every check runs again, including checks
+previously observed idle. Only idle observations from that final phase are retained;
+another `stop` runs all checks anew. By default `--timeout 0` waits indefinitely, including when checks keep
 failing or timing out. Use a finite timeout, such as `stop --all --timeout 60`, for
 unattended scripts or checks that might remain unknown. A timeout leaves stop intent
 active and returns exit 4.
@@ -161,7 +162,7 @@ active and returns exit 4.
 unexecuted checks. Both `--no-wait` and `--force` leave checks unverified and return
 `machine_quiet: null`. Named-role stops do not run workspace-wide busy checks.
 Quiet means the selected agents stopped cooperatively and each configured check
-was observed idle during this invocation. Observations need not be simultaneous:
+was observed idle after all selected roles had stopped. Observations need not be simultaneous:
 producers should remain idle after observing stop intent. This is not a machine-wide
 process inventory or a lock preventing unrelated work from starting afterward.
 Interrupting a waiting stop with Ctrl-C or SIGTERM cancels and reaps its check

@@ -2,6 +2,16 @@
 
 ## 0.1.2 — unreleased
 
+- Waiters skip the role's own actions without losing other-role notifications.
+  WIP conflicts include the current version; completion/resolution output is concise.
+- All-role stops recheck machine activity after the last role stops; force mode leaves
+  machine checks explicitly unverified. Import date metadata shares the WIP grammar,
+  and standard timezone names cannot be redefined by aliases.
+- Probe cancellation is delivered after protected cleanup; fixture startup excludes
+  inherited preloads. Native managed model runs remain gated until read confinement
+  and pre-prompt guard verification can be established.
+
+
 Feedback fixes and stop controls:
 
 - Historical author/timezone aliases are explicit settings; unconfigured imports use

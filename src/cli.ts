@@ -104,7 +104,15 @@ function checkpointEvidence(path: string | undefined): unknown {
     check(false,'Evidence file could not be read; provide a readable regular JSON file');
   } finally {closeSync(fd);}
 }
-function humanOutput(value: unknown): string {
+function humanOutput(value: unknown, command?: string): string {
+  if(value && typeof value==='object' && command==='done') {
+    const task=value as Row;
+    return `${task.id} done: ${String(task.title).replace(/[\x00-\x1f\x7f]/g,' ').replace(/\s+/g,' ').trim().slice(0,220)}`;
+  }
+  if(value && typeof value==='object' && command==='resolve') {
+    const blocker=value as Row;
+    return `${blocker.id} resolved for ${blocker.task_id}.`;
+  }
   if(value && typeof value==='object' && 'reason' in value && 'role' in value) {
     const event=value as WaitResult;
     let summary:string;
@@ -295,7 +303,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'backup': {const path=arg('backup destination');empty();result=await a.backupDatabase(s,path);break;}
       }
     }
-    console.log(bool('json')?JSON.stringify(result):command==='context'?c.renderContext(result as c.ContextData):humanOutput(result));
+    console.log(bool('json')?JSON.stringify(result):command==='context'?c.renderContext(result as c.ContextData):humanOutput(result,command));
   } catch(error) {
     const code=error instanceof AppError?error.code:typeof (error as NodeJS.ErrnoException)?.code==='string'&&(error as NodeJS.ErrnoException).code!.startsWith('ERR_PARSE_ARGS')?2:1;
     const message=error instanceof Error?error.message:'Unexpected failure';

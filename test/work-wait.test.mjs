@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import {Store} from '../dist/storage.js';
 import {initWorkspace} from '../dist/admin.js';
 import {send,inbox} from '../dist/coordination.js';
-import {requestStop,resumeWork} from '../dist/control.js';
+import {requestStop,resumeWork,acknowledgeStop} from '../dist/control.js';
 import {addTask,askHuman,answerQuestion,blockTask,resolveBlocker,addDependency,removeDependency,takeTask,doneTask,dropTask,reopenTask,releaseTask,handoffTask,updateTask} from '../dist/tasks.js';
 import {waitForWork} from '../dist/mail-wait.js';
 function fixture(t){
@@ -35,7 +35,7 @@ test('answers reach original asker after handoff and after explicit human task c
   handoffTask(f.s,work.id,'b','B handles implementation');const since=f.cursor();answerQuestion(f.s,question.id,'Yes');
   assert.equal((await wait(f,since)).reason,'answer');
   const human=addTask(f.s,{title:'Human decision',humanOnly:true}),q=askHuman(f.s,human.id,{question:'Approve and close?'}),cursor=f.cursor();answerQuestion(f.s,q.id,'Approved',{close:true});
-  f.reader.actor='human';const closed=await wait(f,cursor);assert.equal(closed.reason,'answer');assert.equal(closed.task,human.id);assert.equal(f.s.task(human.id).status,'done');
+  f.reader.actor='human';const closed=await wait(f,cursor);assert.equal(closed.reason,'timeout','own answer must not wake the answering human');assert.equal(f.s.task(human.id).status,'done');
 });
 
 test('resolved blocker wakes its owner even when another blocker still holds the task',async t=>{
@@ -140,4 +140,33 @@ test('dependency completion and removal wake owned doing work but respect other 
   assert.equal(result.reason,'task-ready');assert.deepEqual(result.tasks,[own.id]);assert.equal(f.s.task(own.id).status,'doing');
   const missing=task(f.s,'Unfinished prerequisite','b');addDependency(f.s,own.id,missing.id);const cursor=f.cursor();removeDependency(f.s,own.id,missing.id);
   const removed=await wait(f,cursor);assert.equal(removed.reason,'task-ready');assert.deepEqual(removed.tasks,[own.id]);
+});
+
+
+test('queued self actions are skipped without losing other-role blocker notifications',async t=>{
+  const f=fixture(t),work=task(f.s,'Reconcile blockers'),blockers=[];
+  for(let i=0;i<4;i++)blockers.push(blockTask(f.s,work.id,{kind:'agent',waitingOn:'b',body:`Blocker ${i}`}));
+  const since=f.cursor();as(f.s,'a',()=>{for(const blocker of blockers.slice(0,3))resolveBlocker(f.s,blocker.id,'Resolved during own reconciliation');});
+  resolveBlocker(f.s,blockers[3].id,'Human cleared the remaining blocker');
+  const external=await wait(f,since);assert.equal(external.reason,'blocker-resolved');assert.equal(external.blocker,blockers[3].id);
+  const next=blockTask(f.s,work.id,{kind:'external',waitingOn:'service',body:'One more'});
+  as(f.s,'a',()=>resolveBlocker(f.s,next.id,'I checked it'));as(f.s,'a',()=>addTask(f.s,{title:'Own assignment',owner:'a'}));
+  const skipped=await wait(f,external.cursor);assert.equal(skipped.reason,'timeout');assert.equal(skipped.cursor,f.cursor());
+  assert.equal((await wait(f,skipped.cursor)).reason,'timeout','rearm never loops on skipped self events');
+});
+
+test('self completion still wakes other dependent roles and own STOP takes priority',async t=>{
+  const f=fixture(t),dep=task(f.s,'My prerequisite'),own=task(f.s,'My dependent'),other=task(f.s,'Other dependent','b');
+  addDependency(f.s,own.id,dep.id);addDependency(f.s,other.id,dep.id);const since=f.cursor();finish(f.s,dep.id);
+  const self=await wait(f,since);assert.equal(self.reason,'timeout');
+  f.reader.actor='b';const notification=await wait(f,since);assert.equal(notification.reason,'task-ready');assert.deepEqual(notification.tasks,[other.id]);
+  const stop=requestStop(f.s,['a'])[0];as(f.s,'a',()=>acknowledgeStop(f.s,stop.id));f.reader.actor='a';const stopped=await wait(f,since);assert.equal(stopped.reason,'stop');assert.equal(stopped.cursor,since);
+});
+
+test('self-sent urgent mail does not wake or consume mail, while other senders still wake',async t=>{
+  const f=fixture(t),since=f.cursor();as(f.s,'a',()=>send(f.s,['a'],'Reminder to myself',{urgent:true}));
+  const result=await wait(f,since);assert.equal(result.reason,'timeout');
+  assert.equal(as(f.s,'a',()=>inbox(f.s,{peek:true}))[0].state,'unread');
+  const external=send(f.s,['a'],'Human urgent update',{urgent:true});const next=await wait(f,result.cursor);
+  assert.equal(next.reason,'urgent');assert.equal(next.message.id,external.id);
 });

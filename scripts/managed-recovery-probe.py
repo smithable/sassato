@@ -4,7 +4,8 @@
 Requires a source checkout built with npm run build, Python 3 and POSIX. Invokes
 real models unless --fixture-only is supplied, spending quota on the currently
 authenticated account and potentially incurring charges. Model runs never belong in
-CI. Never controls existing sessions.
+CI. Turn/tool and wall-time limits are not request, token, or monetary limits.
+Never controls existing sessions.
 """
 import argparse
 import importlib
@@ -12,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -25,10 +27,20 @@ HELPER = Path(__file__).with_name('managed-recovery-fixture.mjs')
 
 
 def fixture_call(action, root, value=None, processes=None):
-    command = ['node', str(HELPER), action, str(root)]
+    # Resolve the configured runtime, but never pass preload/startup variables or
+    # the caller's working directory to the fixture helper, including create().
+    executable = shutil.which('node')
+    if not executable:
+        raise RuntimeError('fixture_node_unavailable')
+    command = [str(Path(executable).resolve()), str(HELPER), action, str(root)]
+    env = {key: os.environ[key] for key in ('PATH', 'LANG', 'LC_ALL') if key in os.environ}
+    env.update({'HOME': str(root), 'XDG_CONFIG_HOME': str(Path(root) / '.config'),
+                'XDG_CACHE_HOME': str(Path(root) / '.cache'),
+                'XDG_DATA_HOME': str(Path(root) / '.local/share')})
     if value is not None:
         command.append(str(value))
-    result = processes.run(command, capture_output=True, text=True, timeout=20)
+    result = processes.run(command, capture_output=True, text=True, timeout=20,
+                           cwd=str(root), env=env)
     if result.returncode:
         raise RuntimeError('fixture_' + action + '_failed')
     return json.loads(result.stdout)
@@ -125,7 +137,7 @@ if __name__ == '__main__':
     parser.add_argument('--provider', choices=['codex', 'claude'], required=True)
     parser.add_argument('--provider-home', help='Dedicated directory provisioned by the operator with native subscription login; never copies credentials')
     parser.add_argument('--model', help='Explicit model; defaults: codex gpt-6-luna, claude claude-haiku-5-5; no fallback')
-    parser.add_argument('--max-turns', type=int, choices=range(1,9), default=4, help='Per-process turn/tool cap, default 4; not a monetary cap')
+    parser.add_argument('--max-turns', type=int, choices=range(1,9), default=4, help='Per-process turn/tool cap, default 4; no request, token, or monetary cap')
     parser.add_argument('--fixture-only', action='store_true',
                         help='Test only disposable Sassato state, without provider calls')
     args = parser.parse_args()

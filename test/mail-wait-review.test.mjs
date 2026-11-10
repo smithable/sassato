@@ -90,7 +90,7 @@ test('STOP and urgent mail preserve a queued review event for cursor rearm',asyn
 
 test('reviewer discovery follows existing human override and human-only review policy',async t=>{
   const f=fixture(t),task=work(f,'human',true),since=f.cursor();submit(f,task);
-  assert.equal((await wait(f,'human',since)).reason,'review-submitted','human operator self-review is allowed by reviewTask');
+  assert.equal((await wait(f,'human',since)).reason,'timeout','human self-review is allowed, but own submission must not wake own waiter');
   assert.equal((await wait(f,'b',since)).reason,'review-submitted','human-only execution does not prohibit independent review');
   const approved=review(f,task,true,'human');assert.equal(approved.reviewed_by,'human');
 });

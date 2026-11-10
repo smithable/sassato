@@ -110,19 +110,24 @@ export async function stop(store:Store,selected:string[],options:StopOptions={})
   const requests=requestStop(store,selected,{all:options.all});
   const roles=requests.map(r=>r.role),ids=new Map(requests.map(r=>[r.role,r.id]));
   let statuses=stopStatus(store,roles);
+  let checkedAfterStopped=false;
   const result:StopResult={requests,statuses,complete:false,timed_out:false,interrupted:false,force:!!options.force,signals:[],limitations:options.force?[...forceLimitations]:[],busy_checks:checks.map(check=>({name:check.name,state:'unknown',reason:'Not checked'})),machine_quiet:null};
   const update=()=>{
     result.statuses=statuses;
     result.interrupted=!!options.signal?.aborted||requests.some(request=>!statuses.some(row=>row.role===request.role&&row.id===ids.get(request.role)));
-    result.complete=!result.interrupted&&statuses.length===requests.length&&statuses.every(row=>finished.has(row.state))&&(options.noWait||result.busy_checks.every(check=>check.state==='idle'));
+    const rolesFinished=statuses.length===requests.length&&statuses.every(row=>finished.has(row.state));
+    if(!rolesFinished)checkedAfterStopped=false;
+    result.complete=!result.interrupted&&rolesFinished&&(options.noWait||options.force||!checks.length||(checkedAfterStopped&&result.busy_checks.every(check=>check.state==='idle')));
     result.machine_quiet=options.force||options.noWait||!(options.all||selected.length===0)?null:result.complete;
   };
   const refreshChecks=async()=>{
-    // Once idle is observed, retain that observation for this stop invocation.
-    // Starting another stop performs a new complete round of checks.
-    const pending=checks.filter((_,index)=>result.busy_checks[index].state!=='idle');
+    // Shutdown can start new jobs after an early idle observation. Require a full
+    // round begun after the final role stops, then retry only non-idle checks.
+    const afterStopped=statuses.length===requests.length&&statuses.every(row=>finished.has(row.state));
+    const pending=checks.filter((_,index)=>(afterStopped&&!checkedAfterStopped)||result.busy_checks[index].state!=='idle');
     const observations=new Map((await observeBusyChecks(pending,deadline,options.signal)).map(row=>[row.name,row]));
     result.busy_checks=result.busy_checks.map(row=>observations.get(row.name)??row);
+    if(afterStopped)checkedAfterStopped=true;
   };
   update();options.onProgress?.(statuses,result.busy_checks);
   if(options.signal?.aborted){update();return result;}

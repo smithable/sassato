@@ -1,5 +1,6 @@
 """Runner cancellation integration with local fake providers; no model calls."""
 import json
+import importlib.util
 import os
 from pathlib import Path
 import signal
@@ -8,10 +9,43 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
+
+from probe_processes import OwnedProcesses
+
+spec = importlib.util.spec_from_file_location("runner", Path(__file__).with_name("managed-recovery-probe.py"))
+runner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(runner)
 
 
 @unittest.skipUnless(sys.platform == "linux", "owned process groups require Linux")
 class RunnerProcessTests(unittest.TestCase):
+    def test_fixture_helper_starts_in_scratch_without_node_preloads(self):
+        with tempfile.TemporaryDirectory(prefix="sassato-helper-test-") as outer:
+            root = Path(outer) / 'scratch'
+            root.mkdir()
+            marker = Path(outer) / 'preload-ran'
+            preload = Path(outer) / 'preload.cjs'
+            preload.write_text("require('node:fs').writeFileSync(" + json.dumps(str(marker)) + ", 'bad');")
+            with patch.dict(os.environ, {'NODE_OPTIONS': '--require=' + str(preload),
+                                        'SASSATO_DB': str(Path(outer) / 'production.db')}):
+                with OwnedProcesses() as processes:
+                    original = processes.run
+                    calls = []
+                    def checked(*args, **kwargs):
+                        calls.append(kwargs)
+                        self.assertEqual(kwargs['cwd'], str(root))
+                        self.assertEqual(kwargs['env']['HOME'], str(root))
+                        self.assertNotIn('NODE_OPTIONS', kwargs['env'])
+                        self.assertNotIn('SASSATO_DB', kwargs['env'])
+                        return original(*args, **kwargs)
+                    with patch.object(processes, 'run', side_effect=checked):
+                        fixture = runner.fixture_call('create', root, 'codex', processes)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(fixture['directory'], str(root / 'repo'))
+            self.assertFalse(marker.exists())
+            self.assertFalse((Path(outer) / 'production.db').exists())
+
     def test_sigterm_reaps_fixture_job_and_every_registered_provider(self):
         with tempfile.TemporaryDirectory(prefix="sassato-runner-test-") as root:
             marker = Path(root) / "pids.json"
@@ -48,6 +82,10 @@ sys.exit(128+result['cancelled_signal'] if result.get('cancelled_signal') else 1
                 self.assertTrue(marker.exists(), "runner did not reach the owned-provider phase")
                 pids = json.loads(marker.read_text())
                 self.assertEqual(len(pids), 3)  # Fixture job plus two fake providers.
+                for pid in pids:
+                    os.kill(pid, 0)  # Assert actual PIDs exist, not just assumed PGIDs.
+                    self.assertEqual(os.getpgid(pid), pid, 'fake must lead an owned group')
+                    self.assertNotEqual(pid, os.getpgrp())
                 process.send_signal(signal.SIGTERM)
                 stdout, stderr = process.communicate(timeout=10)
                 self.assertEqual(process.returncode, 143, stderr)
@@ -55,6 +93,8 @@ sys.exit(128+result['cancelled_signal'] if result.get('cancelled_signal') else 1
                 self.assertFalse(report["ok"])
                 self.assertEqual(report["cancelled_signal"], signal.SIGTERM)
                 for pid in pids:
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(pid, 0)
                     with self.assertRaises(ProcessLookupError):
                         os.killpg(pid, 0)
             finally:

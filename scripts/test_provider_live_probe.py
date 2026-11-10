@@ -24,7 +24,7 @@ class ProbeTests(unittest.TestCase):
         return subprocess.CompletedProcess([], code, json.dumps(data), '')
 
     def test_unknown_version_stops_before_provider_launch(self):
-        with patch.object(probe.PROCESSES, 'run', return_value=subprocess.CompletedProcess([], 0, 'codex-cli 9.0.0', '')), patch.object(probe.subprocess, 'Popen') as launch:
+        with patch.object(probe.PROCESSES, 'run', return_value=subprocess.CompletedProcess([], 0, 'codex-cli 9.0.0', '')), patch.object(probe.PROCESSES, 'popen') as launch:
             with self.assertRaisesRegex(RuntimeError, 'Unsupported provider version'):
                 probe.run_codex()
             launch.assert_not_called()
@@ -280,6 +280,42 @@ class OwnershipRaceTests(unittest.TestCase):
                     pass
         self.assertEqual(calls,[first,second])
         self.assertEqual(raised.exception.signum,signal.SIGINT)
+
+    def test_mid_run_close_delivers_deferred_signal_before_returning(self):
+        jobs = OwnedProcesses()
+        process = Mock(pid=1234, stdin=io.StringIO())
+        jobs.processes = [process]
+        def wait(**kwargs):
+            jobs._signal(signal.SIGTERM, None)
+            return 0
+        process.wait.side_effect = wait
+        with patch.object(jobs, '_group_exists', return_value=False):
+            with self.assertRaises(ProbeCancelled) as raised:
+                jobs.close(process)
+        self.assertEqual(raised.exception.signum, signal.SIGTERM)
+        self.assertEqual(jobs.processes, [])
+        self.assertTrue(process.stdin.closed)
+
+    def test_cleanup_after_delivered_cancellation_does_not_raise_again(self):
+        jobs = OwnedProcesses()
+        jobs.signum = signal.SIGTERM
+        process = Mock(pid=1234, stdin=io.StringIO())
+        process.wait.return_value = 0
+        jobs.processes = [process]
+        with patch.object(jobs, '_group_exists', return_value=False):
+            self.assertEqual(jobs.close(process), 0)
+        self.assertEqual(jobs.processes, [])
+
+    def test_cancellation_during_cleanup_does_not_hide_cleanup_error(self):
+        jobs = OwnedProcesses()
+        process = Mock(pid=1234, stdin=io.StringIO())
+        def wait(**kwargs):
+            jobs._signal(signal.SIGTERM, None)
+            raise RuntimeError('fixture cleanup failed')
+        process.wait.side_effect = wait
+        with self.assertRaisesRegex(RuntimeError, 'fixture cleanup failed'):
+            jobs.close(process)
+        self.assertEqual(jobs.signum, signal.SIGTERM)
 
     def test_full_stdin_pipe_cannot_block_cleanup_flush(self):
         read_fd,write_fd=os.pipe()

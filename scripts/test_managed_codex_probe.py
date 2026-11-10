@@ -15,6 +15,9 @@ import managed_codex_probe as adapter
 
 class RunTests(unittest.TestCase):
     def setUp(self):
+        # Protocol orchestration stays testable while real launches are gated.
+        gate = patch.object(adapter, "require_codex_read_confinement")
+        gate.start(); self.addCleanup(gate.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.events = []

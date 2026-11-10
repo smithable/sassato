@@ -28,7 +28,9 @@ export function validateSettings(s: Store, input: Row): WorkspaceSettings {
     check(!s.get('SELECT 1 FROM roles WHERE workspace_id=? AND name=? AND name!=?',s.ws,key,target),'An import alias cannot override another configured role');
   });
   const timezoneAliases=aliases(input.import_timezone_aliases??{},'import_timezone_aliases',(key,target)=>{
-    check(/^[a-z][a-z _-]*$/.test(key)&&!['utc','z'].includes(key),'Time zone aliases must be labels, not standard zones or offsets');validateTimezone(target);
+    let standard=false;
+    try {new Intl.DateTimeFormat('en',{timeZone:key});standard=true;} catch { /* An unrecognized label can be an alias. */ }
+    check(/^[a-z][a-z _-]*$/.test(key)&&key!=='z'&&!standard,'Time zone aliases must be labels, not standard zones or offsets');validateTimezone(target);
   });
   return {default_human:human,import_timezone:validateTimezone(input.import_timezone ?? 'UTC'),stop_file:input.stop_file == null ? null : text(input.stop_file,'stop file',4096),busy_checks:validateBusyChecks(input.busy_checks??[]),import_answer_markers:markers.map(marker=>text(marker,'import answer marker',200)),import_role_aliases:roleAliases,import_timezone_aliases:timezoneAliases};
 }

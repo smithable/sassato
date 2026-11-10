@@ -236,7 +236,7 @@ export function setWip(s: Store, input: WipInput): Row {
   for (const value of [input.current,input.next,input.notes]) if (value !== undefined && value !== '') text(value,'WIP entry',10_000);
   return s.tx(() => {
     const old = s.get('SELECT * FROM wip WHERE workspace_id=? AND role=?',s.ws,actor);
-    if (old) check(input.expected_version !== undefined && integer(input.expected_version,'expected version',1) === old.version,'WIP changed or expected version missing; read it and retry with --expect',4);
+    if (old) check(input.expected_version !== undefined && integer(input.expected_version,'expected version',0) === old.version,`WIP changed or expected version missing; current version is ${old.version}. Read it and retry with --expect ${old.version}`,4);
     else check(input.expected_version === undefined || input.expected_version === 0,'WIP does not exist at that version',4);
     const at = now(), current = input.current ?? old?.current ?? '', next = input.next ?? old?.next ?? '', notes = input.notes ?? old?.notes ?? '';
     s.run('INSERT INTO wip(workspace_id,role,current,next,notes,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(workspace_id,role) DO UPDATE SET current=excluded.current,next=excluded.next,notes=excluded.notes,updated_at=excluded.updated_at,version=wip.version+1',s.ws,actor,current,next,notes,at);

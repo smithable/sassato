@@ -176,9 +176,9 @@ python3 scripts/managed-recovery-probe.py --provider codex --fixture-only
 
 Live runs currently require Linux, Python 3, POSIX process groups and the selected
 installed provider; other platforms fail preflight until their policy isolation is
-validated. These
-commands spend real model quota or charges and are never run by CI, normal unit
-tests or package smoke. `--fixture-only` launches no provider. The runner creates a
+validated. These opt-in commands are intended for real model runs, which can spend
+quota or incur charges; the current gates stop before model work. Live provider
+probes are never run by CI, normal unit tests or package smoke. `--fixture-only` launches no provider. The runner creates a
 scratch repository and database; the inspector reads real coordination and file state.
 
 Live runs require an operator-provisioned, dedicated native authentication directory
@@ -196,7 +196,8 @@ Claude; `--model NAME` selects an explicit alternative. Defaults follow the offi
 Availability on the test account and compatibility with the pinned provider versions
 remain unproved until a live run passes; there is no automatic model fallback.
 `--max-turns N` defaults to 4 and accepts 1–8. Turns also have a 120-second deadline;
-these are execution limits, not a guaranteed currency budget.
+these are execution limits, not request, token, or monetary caps. A turn can make
+multiple model requests; its token usage is not bounded by `--max-turns`.
 
 When initial inspection succeeds, the runner requires clean old-process/group exit
 without forced cleanup before its
@@ -206,12 +207,21 @@ the controller checks file bytes, full Git status, HEAD, task ownership/version,
 role configuration, event state, progress, mail and job exit independently. The live
 attempts above stopped before this path; only the fixture checks exercised it.
 
-The hardened adapters request these local startup restrictions before model work.
+The current native live adapters stop before model work. Codex's read-only policy
+has no verified fixture-only readable roots, so it fails before provider startup.
+Claude verifies required CLI flags and reads init before any prompt; init does not
+attest that the PreToolUse guard loaded, so its model turns remain gated as well.
+These are explicit unsupported results, not successful isolation or recovery proofs.
+
+The adapter implementations retain these requested startup restrictions for future
+validated transports and deterministic protocol tests.
 Centrally managed hosts (including cloud-delivered or WSL/host policy) are unsupported:
 local isolation and known managed-file checks cannot establish freedom from those
 policies. Live enforcement remains unproved for the hardened adapters.
 
-- Both use a clean environment and temporary HOME, a dedicated provider auth home,
+- The fixture helper, including initial creation, uses a clean environment and scratch
+  working directory; inherited Node preloads are excluded. Both adapters use a clean
+  environment and temporary HOME, a dedicated provider auth home,
   and owned process groups for discovery, model execution and the fixture job.
   SIGINT/SIGTERM stop and reap owned groups; a cancellation remains a failure.
 - Codex pins read-only sandbox and on-request/user approval settings at startup and
@@ -223,7 +233,8 @@ policies. Live enforcement remains unproved for the hardened adapters.
   The selected mode is `dontAsk`; broader modes such as `acceptEdits`, `auto` and
   `bypassPermissions` are rejected. Local inherited hooks and MCP are disabled.
 - Optional private diagnostics use exclusive creation of a new mode-600 regular
-  file. Existing files, symlinks and special files are not overwritten.
+  file beneath the disposable scratch directory. Existing files, symlinks (including
+  parent directories), outside paths and special files are rejected.
 
 These restrictions and cancellation paths have deterministic regression coverage;
 the hardened adapters have not been live revalidated. Historical failures above do

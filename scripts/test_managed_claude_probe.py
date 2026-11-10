@@ -18,6 +18,10 @@ class AdapterTest(unittest.TestCase):
     def setUp(self):
         policy={'executable':'/fixture/claude','env':{},'model':'test-model','max_turns':4,'settings':'{}'}
         self.policy=policy
+        # These tests exercise the transport after a hypothetical future guard
+        # proof. Dedicated startup tests below keep the actual live gate closed.
+        gate = patch.object(probe, '_require_loaded_guard')
+        gate.start(); self.addCleanup(gate.stop)
         self.close_outcome=Mock(return_value={'exit_code':0,'forced':False,'process_group_empty':True})
         mocked=patch.object(probe,'prepare',return_value=policy);mocked.start();self.addCleanup(mocked.stop)
 
@@ -26,6 +30,8 @@ class AdapterTest(unittest.TestCase):
         class Owner:
             forced_cleanup=()
             def run(self, args, **kwargs):
+                if args[-1:] == ['--help']:
+                    return types.SimpleNamespace(returncode=0, stdout='\n'.join(probe.REQUIRED_FLAGS))
                 if args[-2:]==['auth','status']:
                     return types.SimpleNamespace(returncode=0,stdout=json.dumps({'loggedIn':True,'authMethod':'claude.ai'}))
                 return probe.subprocess.run(args,**kwargs)
@@ -230,6 +236,81 @@ class AdapterTest(unittest.TestCase):
         session.processes.close.return_value=0
         session.readers=[]
         self.assertTrue(session.close()['forced'])
+
+
+class StartupTests(unittest.TestCase):
+    """Exercise actual startup refusal without the protocol-test gate mock."""
+
+    def session(self):
+        session = probe.Session.__new__(probe.Session)
+        session.fixture = {'policy': {'model': 'test-model', 'max_turns': 4}}
+        session.directory = Path('/fixture')
+        session.identity = 'fixture-session'
+        session.events = queue.Queue()
+        session.transport_failure = None
+        session.init = None
+        session.hooks = []
+        session.process = types.SimpleNamespace(stdin=io.StringIO())
+        return session
+
+    def init(self, session, **changes):
+        return {'type': 'system', 'subtype': 'init', 'session_id': session.identity,
+                'cwd': str(session.directory), 'model': 'test-model', 'permissionMode': 'dontAsk',
+                'tools': ['Bash'], **changes}
+
+    def test_unverified_guard_blocks_prompt_even_with_valid_init_and_startup_hook(self):
+        session = self.session()
+        session.events.put({'type': 'system', 'subtype': 'hook_response',
+                            'hook_event': 'SessionStart', 'exit_code': 0})
+        session.events.put(self.init(session))
+        with self.assertRaisesRegex(probe.ProbeFailure, 'provider-guard-loading-unverified'):
+            session.turn('must never reach a model')
+        self.assertEqual(session.process.stdin.getvalue(), '')
+        self.assertIsNotNone(session.init)
+
+    def test_missing_init_times_out_without_sending_prompt(self):
+        session = self.session()
+        with patch.object(probe, 'STARTUP_TIMEOUT', 0):
+            with self.assertRaisesRegex(probe.ProbeFailure, 'provider-pre-prompt-init-unavailable'):
+                session.turn('must never reach a model')
+        self.assertEqual(session.process.stdin.getvalue(), '')
+
+    def test_unsafe_init_is_rejected_before_guard_check_or_prompt(self):
+        cases = [({'permissionMode': 'bypassPermissions'}, 'inherited-permission-mode'),
+                 ({'tools': ['Bash', 'Read']}, 'unexpected-provider-integrations'),
+                 ({'mcp_servers': [{}]}, 'unexpected-provider-integrations'),
+                 ({'model': 'other'}, 'requested-model-not-retained'),
+                 ({'cwd': '/outside'}, 'working-directory-mismatch')]
+        for changes, failure in cases:
+            session = self.session()
+            session.events.put(self.init(session, **changes))
+            with self.subTest(changes=changes), patch.object(probe, '_require_loaded_guard') as guard:
+                with self.assertRaisesRegex(probe.ProbeFailure, failure):
+                    session.turn('must never reach a model')
+                guard.assert_not_called()
+                self.assertEqual(session.process.stdin.getvalue(), '')
+
+    def test_unexpected_model_event_cannot_replace_startup_evidence(self):
+        session = self.session()
+        session.events.put({'type': 'assistant', 'message': {'content': []}})
+        with self.assertRaisesRegex(probe.ProbeFailure, 'unexpected-provider-event-before-prompt'):
+            session.turn('must never reach a model')
+        self.assertEqual(session.process.stdin.getvalue(), '')
+
+    def test_future_verified_guard_must_follow_init_before_prompt(self):
+        session = self.session()
+        session.events.put(self.init(session))
+        session.events.put({'type': 'result', 'subtype': 'success', 'is_error': False,
+                            'session_id': session.identity, 'result': 'fixture'})
+        order = []
+        def verify():
+            self.assertIsNotNone(session.init)
+            self.assertEqual(session.process.stdin.getvalue(), '')
+            order.append('init-then-guard')
+        with patch.object(probe, '_require_loaded_guard', side_effect=verify):
+            session.turn('simulated prompt', ['fixture'])
+        self.assertEqual(order, ['init-then-guard'])
+        self.assertIn('simulated prompt', session.process.stdin.getvalue())
 
 
 if __name__ == '__main__':

@@ -1,8 +1,9 @@
 """Bounded opt-in native Claude adapter for the disposable managed-recovery probe.
 
-Importing this module performs no provider work. run(fixture) invokes real models
-using existing authentication and the fixture's own scratch directory only. It
-never controls another terminal, changes account settings, or approves requests.
+Importing this module performs no provider work. run(fixture) performs isolated
+startup checks, but model turns remain disabled until loaded PreToolUse guards
+can be attested before a prompt. It never controls another terminal, changes
+account settings, or approves requests.
 """
 import json
 import os
@@ -10,41 +11,46 @@ from pathlib import Path
 import queue
 import re
 import signal
-import stat
 import subprocess
 import threading
 import time
 import uuid
 
-from managed_probe_config import ConfigurationError, INSPECT_COMMAND, prepare
+from managed_probe_config import ConfigurationError, INSPECT_COMMAND, prepare, write_private_diagnostic
 
 
 SUPPORTED_VERSION = '2.1.321'
 MAX_OUTPUT_BYTES = 8 * 1024 * 1024
 MAX_LINE_BYTES = 2 * 1024 * 1024
 TURN_TIMEOUT = 120
+STARTUP_TIMEOUT = 10
+REQUIRED_FLAGS = ("--permission-prompts", "--restricted", "--include-hook-events")
 
 
 class ProbeFailure(RuntimeError):
     """A fixed diagnostic code safe to include in a sanitized report."""
 
 
-def _private_diagnostic(code, value):
-    """Optional bounded developer evidence; never included in the public report."""
+def _private_diagnostic(code, value, scratch_directory):
+    """Optional bounded evidence, exclusively inside this disposable fixture."""
     path = os.environ.get('SASSATO_PROBE_DIAGNOSTIC')
     if not path:
         return
     record = json.dumps({'code': code, 'value': str(value)[:2048]}) + '\n'
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_EXCL | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
-        try:
-            os.fchmod(fd, 0o600)  # Only the newly created exclusive file is changed.
-            if stat.S_ISREG(os.fstat(fd).st_mode) and stat.S_IMODE(os.fstat(fd).st_mode) == 0o600:
-                os.write(fd, record.encode('utf8'))
-        finally:
-            os.close(fd)
-    except OSError:
+        write_private_diagnostic(scratch_directory, path, record.encode('utf8'))
+    except (OSError, ValueError):
         pass
+
+
+def _require_loaded_guard():
+    """The documented init event has no loaded PreToolUse guard inventory.
+
+    Configured JSON, a successful local guard test, and SessionStart hook output
+    do not attest that PreToolUse is registered. Until a supported pre-prompt
+    attestation is implemented, do not send a prompt to test it with a model.
+    """
+    raise ProbeFailure('provider-guard-loading-unverified')
 
 
 def _tool_failure_code(content):
@@ -67,6 +73,12 @@ def _version(policy, processes):
         raise ProbeFailure('unrecognized-provider-version')
     if match.group(1) != SUPPORTED_VERSION:
         raise ProbeFailure('unsupported-provider-version')
+    help_result = processes.run([policy['executable'], '--help'], capture_output=True,
+                                text=True, timeout=10, env=policy['env'])
+    if help_result.returncode != 0 or any(
+            not re.search(r'(?m)^\s*' + re.escape(flag) + r'(?:\s|$)', help_result.stdout)
+            for flag in REQUIRED_FLAGS):
+        raise ProbeFailure('required-provider-confinement-flags-unavailable')
     return match.group(1)
 
 
@@ -204,7 +216,7 @@ class Session:
                     raise ProbeFailure('malformed-tool-call')
                 if name == 'Bash':
                     if values.get('command', '').strip() != self.fixture['required_tool_command']:
-                        _private_diagnostic('unexpected-shell-command', values.get('command'))
+                        _private_diagnostic('unexpected-shell-command', values.get('command'), self.directory)
                         raise ProbeFailure('unexpected-shell-command')
                 else:
                     raise ProbeFailure('unexpected-provider-tool')
@@ -219,7 +231,7 @@ class Session:
                     if ident not in self.tool_calls:
                         raise ProbeFailure('unmatched-provider-tool-result')
                     if block.get('is_error'):
-                        _private_diagnostic('provider-tool-result-error', block.get('content'))
+                        _private_diagnostic('provider-tool-result-error', block.get('content'), self.directory)
                         raise ProbeFailure(_tool_failure_code(block.get('content')))
                     self.successful_tools.add(ident)
                     if self.fixture['tool_marker'] in json.dumps(block.get('content'), ensure_ascii=False):
@@ -227,7 +239,25 @@ class Session:
         if kind == 'result' and event.get('permission_denials'):
             raise ProbeFailure('provider-permission-denied')
 
+    def _await_ready(self):
+        # Read startup without feeding even one prompt. Providers that require
+        # a prompt to emit init cannot satisfy this adapter's startup contract.
+        deadline = time.monotonic() + STARTUP_TIMEOUT
+        while self.init is None:
+            try:
+                event = self._receive(deadline)
+            except ProbeFailure as error:
+                if str(error) == 'provider-event-deadline':
+                    raise ProbeFailure('provider-pre-prompt-init-unavailable') from None
+                raise
+            if event.get('type') != 'system' or event.get('subtype') not in (
+                    'init', 'hook_started', 'hook_progress', 'hook_response'):
+                raise ProbeFailure('unexpected-provider-event-before-prompt')
+            self._observe(event)
+        _require_loaded_guard()
+
     def turn(self, prompt, expected=(), compact=False, interrupt=False):
+        self._await_ready()
         self.turn_count = getattr(self, 'turn_count', 0) + 1
         if self.turn_count > self.fixture.get('policy', {}).get('max_turns', 4):
             raise ProbeFailure('provider-turn-cap-exceeded')
@@ -293,7 +323,8 @@ def run(fixture):
     report = {'provider': 'claude', 'ok': False, 'adapter': 'native-stream-json',
               'version': None, 'stages': [], 'tools_restricted_to': ['exact inspector Bash command with deny-only hook'],
               'permission_prompts': 'none', 'authentication': 'operator-provisioned isolated claude.ai login',
-              'hook_continuity': 'unproved', 'interruption': 'not-run',
+              'hook_continuity': 'unproved', 'guard_loading': 'unverified-model-turns-disabled',
+              'interruption': 'not-run',
               'ui_reconnection': 'unproved', 'supervisor_supported': False,
               'cleanup_scope': 'owned process and process group; detached descendants remain unproved'}
     sessions = []

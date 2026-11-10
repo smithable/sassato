@@ -139,7 +139,7 @@ class ConfinementTests(unittest.TestCase):
 
     def test_codex_startup_pins_policy_and_checks_auth_before_model(self):
         owner = Mock(); owner.popen.return_value = Mock(stdin=io.StringIO())
-        with patch.object(codex.threading, "Thread"):
+        with patch.object(codex.threading, "Thread"), patch.object(codex, "require_codex_read_confinement"):
             server = codex.AppServer(self.root, {"CODEX_HOME": str(self.home)}, "gpt-6-luna",
                                     processes=owner, executable="/fixture/codex", max_turns=1)
         argv = owner.popen.call_args.args[0]
@@ -169,19 +169,73 @@ class ConfinementTests(unittest.TestCase):
             server.start()
         self.assertEqual(server.call.call_count, 3)
 
+    def test_codex_live_probe_is_gated_before_any_provider_process_or_model(self):
+        self.credential("codex")
+        with patch.object(codex, "_version") as version:
+            result = codex.run(self.fixture)
+        self.assertEqual(result["failure"], "codex-readable-roots-confinement-unavailable")
+        self.assertFalse(result["ok"])
+        version.assert_not_called()
+        self.fixture["processes"].popen.assert_not_called()
+        self.fixture["processes"].run.assert_not_called()
+        with self.assertRaisesRegex(config.ConfigurationError, "readable-roots-confinement"):
+            codex.AppServer(self.root, {}, processes=self.fixture["processes"], executable="/fixture/codex")
+        self.fixture["processes"].popen.assert_not_called()
+
+    def test_claude_requires_all_advertised_flags_before_start(self):
+        policy = {"executable": "/fixture/claude", "env": {}}
+        for missing in claude.REQUIRED_FLAGS:
+            owner = Mock()
+            owner.run.side_effect = [
+                subprocess.CompletedProcess([], 0, "Claude Code " + claude.SUPPORTED_VERSION),
+                subprocess.CompletedProcess([], 0, "\n".join(flag for flag in claude.REQUIRED_FLAGS if flag != missing))]
+            with self.subTest(missing=missing), self.assertRaisesRegex(claude.ProbeFailure, "confinement-flags-unavailable"):
+                claude._version(policy, owner)
+            owner.popen.assert_not_called()
+        owner.run.side_effect = [
+            subprocess.CompletedProcess([], 0, "Claude Code " + claude.SUPPORTED_VERSION),
+            subprocess.CompletedProcess([], 0, "\n".join(claude.REQUIRED_FLAGS))]
+        self.assertEqual(claude._version(policy, owner), claude.SUPPORTED_VERSION)
+
+    def test_diagnostic_rejects_outside_paths_and_all_symlink_parents(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        scratch = self.root / "scratch"
+        scratch.mkdir()
+        linked = scratch / "linked"
+        linked.symlink_to(outside, target_is_directory=True)
+        internal = scratch / "internal"
+        internal.mkdir()
+        internal_link = scratch / "internal-link"
+        internal_link.symlink_to(internal, target_is_directory=True)
+        targets = [outside / "diagnostic", scratch / ".." / "outside" / "diagnostic",
+                   linked / "diagnostic", internal_link / "diagnostic"]
+        for target in targets:
+            with self.subTest(target=target), patch.dict(os.environ, {"SASSATO_PROBE_DIAGNOSTIC": str(target)}):
+                claude._private_diagnostic("fixture", "private", scratch)
+                self.assertFalse(target.exists())
+        linked_root = self.root / "scratch-link"
+        linked_root.symlink_to(scratch, target_is_directory=True)
+        with patch.dict(os.environ, {"SASSATO_PROBE_DIAGNOSTIC": str(linked_root / "diagnostic")}):
+            claude._private_diagnostic("fixture", "private", linked_root)
+        self.assertFalse((scratch / "diagnostic").exists())
+        with patch.dict(os.environ, {"SASSATO_PROBE_DIAGNOSTIC": "internal/diagnostic"}):
+            claude._private_diagnostic("fixture", "allowed", scratch)
+        self.assertEqual(json.loads((internal / "diagnostic").read_text())["value"], "allowed")
+
     def test_private_diagnostic_exclusive_regular_600_and_never_clobbers(self):
         path = self.root / "diagnostic.json"
         with patch.dict(os.environ, {"SASSATO_PROBE_DIAGNOSTIC": str(path)}):
-            claude._private_diagnostic("fixture", "first")
+            claude._private_diagnostic("fixture", "first", self.root)
             saved = path.read_bytes()
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-            claude._private_diagnostic("fixture", "second")
+            claude._private_diagnostic("fixture", "second", self.root)
             self.assertEqual(path.read_bytes(), saved)
             path.unlink(); target = self.root / "target"; target.write_text("keep")
-            path.symlink_to(target); claude._private_diagnostic("fixture", "overwrite")
+            path.symlink_to(target); claude._private_diagnostic("fixture", "overwrite", self.root)
             self.assertEqual(target.read_text(), "keep")
             path.unlink(); os.mkfifo(path)
-            claude._private_diagnostic("fixture", "never blocks")
+            claude._private_diagnostic("fixture", "never blocks", self.root)
             self.assertTrue(stat.S_ISFIFO(path.lstat().st_mode))
 
 
