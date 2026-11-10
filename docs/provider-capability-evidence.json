@@ -1,7 +1,7 @@
 {
   "evidence_version": 1,
   "observed_on": "2026-11-10",
-  "scope": "Bounded isolated conversation probes; synthetic recovery text, no actual task or job handoff",
+  "scope": "Earlier bounded conversation probes with synthetic recovery text, plus separately reported disposable real-Sassato recovery attempts",
   "configuration_changes": false,
   "credentials_copied": false,
   "existing_sessions_controlled": false,
@@ -69,5 +69,92 @@
     "interactive TUI reconnection",
     "Windows Terminal/WSL launcher integration",
     "supervisor crash reconciliation and lost acknowledgments"
-  ]
+  ],
+  "managed_recovery_validation": {
+    "observed_on": "2026-11-10",
+    "scope": "Actual disposable Sassato database/repository and runner-owned job; restricted read-only inspection before fresh replacement",
+    "fixture_checks": "passed",
+    "fixture_only_probe": "passed without model calls",
+    "production_supervisor_enabled": false,
+    "configuration_changes": false,
+    "credentials_copied": false,
+    "existing_sessions_controlled": false,
+    "authentication": "inherited; login status not re-probed in this batch",
+    "notification_proof_scope": "Fixture replays the gap event twice and leaves independent progress and inbox receipts unchanged; handled-progress advancement is covered by deterministic CLI tests, not live provider mutation",
+    "codex": {
+      "version": "0.167.0",
+      "transport": "owned app-server stdio",
+      "ok": false,
+      "stage": "initial_process",
+      "failure": "tool_did_not_complete_successfully",
+      "fresh_replacement_reached": false,
+      "model_reported": "gpt-6-astra",
+      "sandbox_reported": "readOnly",
+      "approval_policy_reported": "on-request",
+      "attempts": 2,
+      "owned_provider_exit_codes": [
+        0,
+        0
+      ],
+      "fixture_job_cleanup_exit_codes": [
+        0,
+        0
+      ],
+      "separate_non_model_diagnostic": {
+        "command": "codex sandbox -- /bin/true",
+        "temporary_working_directory": true,
+        "inherited_settings": true,
+        "exit_code": 1,
+        "diagnostic": "sandbox-helper-unavailable",
+        "stderr_signature": "bwrap: execvp <installed-codex-executable>: No such file or directory",
+        "installed_executable_exists_outside_sandbox": true,
+        "executable_relocated": false,
+        "general_provider_incompatibility_established": false
+      }
+    },
+    "claude": {
+      "version": "2.1.321",
+      "transport": "owned native CLI print mode with stream-json input/output",
+      "ok": false,
+      "stage": "initial-recovery",
+      "fresh_replacement_reached": false,
+      "tools_restricted_to": [
+        "Bash",
+        "Read"
+      ],
+      "attempts": [
+        {
+          "failure": "unexpected-shell-command",
+          "owned_provider_exit_code": 143,
+          "forced_cleanup": true,
+          "fixture_job_cleanup_exit_code": 0
+        },
+        {
+          "failure": "unexpected-shell-command",
+          "owned_provider_exit_code": 143,
+          "forced_cleanup": true,
+          "owned_process_group_empty": true,
+          "fixture_job_cleanup_exit_code": 0
+        },
+        {
+          "failure": "provider-tool-error-or-permission-denial",
+          "prompt_scope_clarified": true,
+          "owned_provider_exit_code": 0,
+          "forced_cleanup": false,
+          "owned_process_group_empty": true,
+          "fixture_job_cleanup_exit_code": 0
+        }
+      ]
+    },
+    "gate": "closed: actual provider recovery and configuration continuity not established",
+    "not_established": [
+      "successful provider read of real Sassato fixture state",
+      "fresh real-state identity and recovery acknowledgment",
+      "model, instruction, tool, hook and permission continuity across actual replacement",
+      "live provider handling and saving notification progress",
+      "durable service adoption",
+      "interactive TUI or Windows Terminal/WSL integration",
+      "supervisor crash, concurrent controller or lost acknowledgment reconciliation"
+    ]
+  }
 }

@@ -6,6 +6,13 @@ not a supported managed-session feature. Real task/job handoff, configuration
 continuity and UI reconnection remain unproved; the supervisor gate remains closed.
 The [sanitized evidence summary](provider-capability-evidence.json) records what ran.
 
+A subsequent real-Sassato recovery probe did **not** pass on this host for either
+provider. Codex's sandboxed inspection command could not start; Claude's restricted
+inspection attempts failed before replacement. The earlier conversation-only
+successes do not establish real-state recovery. See
+[managed recovery validation](managed-recovery-validation.md) for the acceptance
+criteria, recorded failures and reproduction commands.
+
 ## Local observations
 
 | Provider | Installed version | Observed locally | Not established |
@@ -31,7 +38,7 @@ start a server, invoke a model, change provider settings or update Sassato state
 Missing commands or changed schema layouts report unavailable/unconfirmed fields.
 The output always distinguishes interface discovery from live validation.
 
-## Live observations
+## Earlier conversation-only live observations
 
 The probes used temporary working directories, explicit provider identities and
 existing authentication. They did not change config/auth, invoke tools, install
@@ -82,6 +89,27 @@ the reproduction script covers history, compaction, recall and fresh recovery.
 | Codex interactive UI | Evaluate attaching the TUI through `--remote` to the managed server | Demonstrate disconnect/reconnect without duplicate execution or settings loss |
 | Claude managed native CLI | A supervisor-owned print/stream-JSON process with explicit session ID; fresh-process replacement and in-place compact are candidates | Verified old-process exit before replacement, new startup, recovery acknowledgment; compact requires the boundary signal |
 | Claude SDK conversation | Separate optional adapter, only after selecting an authentication mode appropriate for the integration | Observe `compact_boundary`; a successful result with no boundary is not proof of compaction |
+
+These remain candidates. The later disposable recovery runner uses actual Sassato
+tasks, checkpoints, dirty files, notification progress and a controller-owned job.
+Its fixture-only checks passed, but live initial inspection was blocked in both
+tested modes:
+
+- Codex `0.167.0` reported `tool_did_not_complete_successfully`. A separate bounded
+  non-model `codex sandbox -- /bin/true` check reproduced the bwrap helper-path
+  failure (`sandbox-helper-unavailable`). The installed executable exists on the
+  host but was inaccessible in that sandbox execution. No executable relocation,
+  configuration changes or broader permissions were used to work around it.
+- Claude Code `2.1.321` first requested commands outside the probe's exact allowed
+  state-inspection command. With a clarified prompt, it returned
+  `provider-tool-error-or-permission-denial`. This result does not distinguish an
+  underlying tool execution error from denial, and is not a successful recovery.
+
+No fresh real-state provider session was reached. Existing authentication was
+inherited without credential copying or changes; account status was not rechecked.
+The next step is to resolve the supported read-only execution path and rerun the
+bounded proof, not enable a supervisor or silently relax permissions. See the
+[run-status matrix](managed-recovery-validation.md#current-result-supervisor-gate-closed).
 
 Codex documents fresh threads through `thread/start`, compaction through
 `thread/compact/start`, and asynchronous completion notifications. The installed

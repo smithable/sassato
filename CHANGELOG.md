@@ -4,6 +4,9 @@
 
 Review and recovery fixes:
 
+- Source-only opt-in managed recovery probes exercise disposable real Sassato state
+  through native provider processes, with independent file/task/cursor checks and
+  deterministic adapter failure tests. Production supervision remains gated.
 - Checkpoints capture bounded repository/task evidence and optional validation,
   artifact and job reports, separating observations from agent claims.
 - Durable notification progress resumes waiters after restart; advancing it requires

@@ -203,3 +203,5 @@ installed by checkpoint saving or recovery.
 
 See [provider capabilities](provider-capabilities.md) for the compatibility evidence
 and limits of future managed-session work. No supervisor command is implemented here.
+The [managed recovery validation guide](managed-recovery-validation.md) documents
+the opt-in actual-state probe and the remaining lifecycle release gates.
