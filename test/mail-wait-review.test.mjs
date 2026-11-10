@@ -7,7 +7,7 @@ import { Store } from '../dist/storage.js';
 import { initWorkspace } from '../dist/admin.js';
 import { context,send,inbox,acknowledge } from '../dist/coordination.js';
 import { requestStop,resumeWork } from '../dist/control.js';
-import { addTask,takeTask,submitTask,reviewTask,updateTask,showTask,doneTask,dropTask,noteTask,reopenTask,blockTask,resolveBlocker } from '../dist/tasks.js';
+import { addTask,takeTask,submitTask,reviewTask,updateTask,showTask,doneTask,dropTask,noteTask,reopenTask,blockTask,resolveBlocker,askHuman,answerQuestion } from '../dist/tasks.js';
 import { waitForWork } from '../dist/mail-wait.js';
 import { fixtureConfig } from './fixtures/team.mjs';
 
@@ -168,4 +168,19 @@ test('restoring blocked review wakes reviewers again and supersedes the original
   const late=await wait(f,'c',since);assert.equal(late.reason,'review-submitted');assert.equal(late.cursor,next.cursor);assert.equal(late.version,restored.version);
   assert.equal((await wait(f,'b',next.cursor)).reason,'timeout');
   const owner=await wait(f,'a',original.cursor);assert.equal(owner.reason,'blocker-resolved');assert.equal(owner.blocker,blocker.id);
+});
+
+
+test('human owners of restored review get the blocker or answer notification instead of self-review',async t=>{
+  const f=fixture(t),task=work(f,'human',true);submit(f,task);
+  const blocker=blockTask(f.s,task.id,{kind:'agent',waitingOn:'a',body:'Await agent verification'}),since=f.cursor();
+  as(f.s,'a',()=>resolveBlocker(f.s,blocker.id,'Verified'));
+  const restored=await wait(f,'human',since);assert.equal(restored.reason,'blocker-resolved');assert.equal(restored.blocker,blocker.id);
+  const review=await wait(f,'b',since);assert.equal(review.reason,'review-submitted');assert.equal(review.task,task.id);
+  f.s.run("INSERT INTO roles(workspace_id,name,kind) VALUES(?,'operator','human')",f.s.ws);
+  const question=askHuman(f.s,task.id,{question:'Approve the approach?',forRole:'operator'}),beforeAnswer=f.cursor();
+  as(f.s,'operator',()=>answerQuestion(f.s,question.id,'Approved'));
+  const answer=await wait(f,'human',beforeAnswer);assert.equal(answer.reason,'answer');assert.equal(answer.question,question.id);
+  assert.equal((await wait(f,'human',answer.cursor)).reason,'timeout');
+  assert.equal((await wait(f,'b',beforeAnswer)).reason,'review-submitted');
 });

@@ -104,7 +104,9 @@ export function showTask(s: Store, task: string, options: { historyLimit?: numbe
   return s.snapshot(() => {
     const row = s.task(task), limit = integer(options.historyLimit ?? 100, 'history limit', 1, 1000);
     const history = s.all('SELECT * FROM events WHERE workspace_id=? AND entity=? AND entity_id=? AND id<? ORDER BY id DESC LIMIT ?', s.ws, 'task', task, integer(options.beforeEvent ?? Number.MAX_SAFE_INTEGER, 'before event', 1), limit).map(r => ({ ...r, id: `E${r.id}`, detail: JSON.parse(r.detail) }));
-    return { ...taskView(row), blockers: blocking(s, row), dependencies: s.all('SELECT t.* FROM dependencies d JOIN tasks t ON t.workspace_id=d.workspace_id AND t.id=d.depends_on WHERE d.workspace_id=? AND d.task_id=? ORDER BY t.id', s.ws, row.id).map(taskView), questions: s.all('SELECT * FROM questions WHERE workspace_id=? AND task_id=? ORDER BY id', s.ws, row.id).map(questionView), history };
+    return { ...taskView(row), blockers: blocking(s, row), dependencies: s.all('SELECT t.* FROM dependencies d JOIN tasks t ON t.workspace_id=d.workspace_id AND t.id=d.depends_on WHERE d.workspace_id=? AND d.task_id=? ORDER BY t.id', s.ws, row.id).map(taskView), questions: s.all(`SELECT q.*,(SELECT CASE WHEN json_valid(e.detail) THEN json_extract(e.detail,'$.relayed_by') END
+      FROM events e WHERE e.workspace_id=q.workspace_id AND e.entity='question' AND e.entity_id='H'||q.id AND e.action='answered'
+      ORDER BY e.id DESC LIMIT 1) AS relayed_by FROM questions q WHERE q.workspace_id=? AND q.task_id=? ORDER BY q.id`, s.ws, row.id).map(questionView), history };
   });
 }
 export function takeTask(s: Store, task: string, options: { hours?: number } = {}): Row {
@@ -351,7 +353,11 @@ export function answerQuestion(s: Store, questionOrTask: string, answer: string,
     s.event('question', `H${question.id}`, 'answered', { task: taskId(row), answer: recorded, answered_by: actor, ...attribution });
     // Explicit human closure shares this transaction: any remaining blocker or review
     // requirement rolls back the answer, blocker resolution, events and notification.
-    if (options.close) completeTask(s, row, { ref: `H${question.id}` }, true);
+    if (options.close) {
+      check(!row.review_required || row.reviewed_by,
+        'Answer and close were not saved: this task needs an approved review. Retry answer without --close to save the answer and reopen review.', 4);
+      completeTask(s, row, { ref: `H${question.id}` }, true);
+    }
     notify(s, [row.owner, question.asked_by].filter((r): r is string => Boolean(r)), `H${question.id} on ${taskId(row)} answered by ${actor}: ${recorded}${options.close ? ' Task closed.' : ''}`, row);
     const result = questionView({ ...question, status: 'answered', answer: recorded, answered_by: actor, answered_at: at, ...attribution });
     return options.close ? { ...result, task_status: 'done' } : result;

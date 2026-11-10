@@ -45,7 +45,7 @@ Mail:       send ROLE[,ROLE]|all TEXT [--re T1] [--urgent]
             wait [--since EVENT_CURSOR] [--timeout SECONDS] [--urgent]
             inbox [--peek] [--state unread|read|done] | sent (or outbox) | ack M1
 Knowledge:  fact set KEY TEXT --source LOCATION [--expect VERSION]
-            fact get KEY | fact history KEY | facts
+            fact get KEY | fact history KEY | facts [--since YYYY-MM-DD] [--limit N]
 WIP:        wip [show ROLE] | wip set --current TEXT --next TEXT --notes TEXT
             (updates require --expect VERSION)
 Recovery:   checkpoint show [ROLE]
@@ -61,8 +61,9 @@ Read:       context [--brief] [--since EVENT_CURSOR] | status
 Migration:  import --backlog FILE --wip FILE --actions DIR --sessions FILE
             --dry-run (preview), then same paths --confirm DIGEST [--repair]
             export NEW_DIRECTORY
-Launch:     launch ROLE [--fresh|--resume] [--dry-run] [--no-prompt]
+Launch:     launch ROLE [--fresh|--resume|--watch] [--dry-run] [--no-prompt]
             [--terminal native|windows-terminal] [--new-window] [--all] | launch-unlock ROLE
+            watch ROLE [--since CURSOR] [--new-window] (experimental, human started)
 Maintenance: migrate | doctor | backup NEW_FILE --as HUMAN | restore BACKUP --db NEW_FILE
              machine (system load only)
 
@@ -72,20 +73,20 @@ select workspace when not explicit. Writes require --as; human actions require a
 Lists default to bounded results; --limit N. Context never consumes inbox receipts.
 Exit codes: 0 success/no matches; 1 storage/runtime; 2 input; 3 identity/access; 4 conflict; 5 mail-wait timeout.
 `;
-const strings = ['db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by'];
-const booleans = ['json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','urgent','close','repair','interactive','no-interactive','quiet','apply'];
+const strings = ['db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','codex-watch'];
+const booleans = ['json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','urgent','close','repair','interactive','no-interactive','quiet','apply','watch'];
 const globalFlags = ['db','workspace','as','json','help'];
 const allowed: Record<string,string[]> = {
-  init:['config','humans','interactive','no-interactive','launch','dry-run','fresh','resume','no-prompt','terminal','distro','window','stop-file','new-window'], 'workspace attach':[], 'workspace settings':[], 'workspace set':['default-human','import-timezone','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases'],roles:[], 'role set':['provider','model','effort','permission-mode','sandbox','approval','dir','kind'],
+  init:['config','humans','interactive','no-interactive','launch','dry-run','fresh','resume','no-prompt','terminal','distro','window','stop-file','new-window'], 'workspace attach':[], 'workspace settings':[], 'workspace set':['default-human','import-timezone','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','codex-watch'],roles:[], 'role set':['provider','model','effort','permission-mode','sandbox','approval','dir','kind'],
   add:['title','body','for','owner','priority','human-only','review-required'],tasks:['status','owner','for','available','limit','after'],show:['limit','before-event'],
   take:['hours'],renew:['hours'],note:[],update:['expect','title','body','priority','for','human-only','agent-allowed','review-required','no-review'],handoff:[],release:[],submit:[],review:['approve','reject','note','expect'],done:['ref'],drop:[],reopen:[],after:[],unafter:[],block:['kind','waits-on'],blockers:['task','chain','limit','all'],resolve:[],
   'ask-human':['for','options','recommend','command'],answer:['close','relayed-by'],humans:['for','limit'],send:['re','urgent'],wait:['urgent','timeout','stop-file','since'],inbox:['peek','state','limit'],outbox:['limit'],sent:['limit'],retitle:['owner','apply'],ack:[],
-  'fact set':['source','checked-at','expect'],'fact get':[],'fact history':[],facts:['limit'],
+  'fact set':['source','checked-at','expect'],'fact get':[],'fact history':[],facts:['limit','since'],
   'wip show':[],'wip set':['current','next','notes','expect'],sessions:[], 'session register':['provider','session-id','pid','replace'],'session heartbeat':['session-id'],'session end':['session-id'],usage:['until'],
   stop:['all','timeout','no-wait','force'],'stop-status':['quiet','stop-file'],stopped:[],'resume-work':['all'],
   context:['brief','since','limit'],status:[],search:['type','owner','status','since','limit','phrase','prefix'],
   'checkpoint show':[], 'checkpoint save':['current','next','notes','expect','evidence'], 'progress show':[], 'progress save':['cursor','expect'],
-  import:['backlog','wip','actions','sessions','dry-run','confirm','repair'],export:[],launch:['fresh','resume','dry-run','no-prompt','terminal','distro','window','stop-file','all','new-window'],'launch-unlock':[],migrate:[],doctor:[],backup:[],restore:[],machine:[]
+  import:['backlog','wip','actions','sessions','dry-run','confirm','repair'],export:[],watch:['since','stop-file','dry-run','terminal','distro','window','new-window'],launch:['watch','since','fresh','resume','dry-run','no-prompt','terminal','distro','window','stop-file','all','new-window'],'launch-unlock':[],migrate:[],doctor:[],backup:[],restore:[],machine:[]
 };
 function checkpointEvidence(path: string | undefined): unknown {
   if (path===undefined) return undefined;
@@ -107,6 +108,7 @@ function checkpointEvidence(path: string | undefined): unknown {
   } finally {closeSync(fd);}
 }
 function humanOutput(value: unknown, command?: string): string {
+  if(Array.isArray(value)&&command==='stop-status')return value.length?value.map((row:Row)=>`${row.id} ${row.role}: ${row.state}${row.waiting_reason?` (${row.waiting_reason})`:''}${row.human_action?`\n${row.human_action}`:''}`).join('\n'):'No active stop requests.';
   if(Array.isArray(value)&&(command==='sent'||command==='outbox')) {
     return value.length?value.map((message:Row)=>`${message.id}: ${String(message.body).replace(/\s+/g,' ').slice(0,240)}\n  ${message.receipts.map((r:Row)=>`${r.recipient}: ${r.state==='done'?'acked':r.state}`).join(', ')}`).join('\n'):'No sent messages.';
   }
@@ -145,7 +147,7 @@ function humanOutput(value: unknown, command?: string): string {
   if(value && typeof value==='object' && 'statuses' in value && 'timed_out' in value) {
     const report=value as Row;
     const lines=[report.force?'Force stop requested.':report.timed_out?'Timed out; stop requests remain active.':report.interrupted?'Stop wait interrupted; inspect stop-status.':report.complete?'All selected roles have stopped or are inactive.':'Stop requested; agents are still stopping.'];
-    for(const row of report.statuses) lines.push(`${row.id} ${row.role}: ${row.state}`);
+    for(const row of report.statuses) {lines.push(`${row.id} ${row.role}: ${row.state}${row.waiting_reason?` (${row.waiting_reason})`:''}`);if(row.human_action)lines.push(row.human_action);}
     for(const item of report.busy_checks??[]) lines.push(`Busy check ${item.name}: ${item.state} (${item.reason})`);
     if(report.machine_quiet===true)lines.push('Selected roles stopped; configured busy checks are idle.');
     for(const signal of report.signals) lines.push(`${signal.role} PID ${signal.pid??'unknown'}: ${signal.status} (${signal.reason})`);
@@ -208,7 +210,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     const rest=(label:string):string=>{const x=p.join(' ');p.length=0;check(x.length>0,`Missing ${label}`);return x;};
     const empty=()=>check(p.length===0,`Unexpected argument: ${p[0]}`);
     const db=databasePath(str('db')),workspace=str('workspace')??(process.env.SASSATO_WORKSPACE||undefined),actor=str('as')??(process.env.SASSATO_ROLE||undefined);
-    const launchOptions: l.LaunchOptions={fresh:bool('fresh'),resume:bool('resume'),all:bool('all'),noPrompt:bool('no-prompt'),dryRun:bool('dry-run'),terminal:str('terminal') as l.LaunchOptions['terminal'],distro:str('distro'),window:str('window'),stopFile:str('stop-file'),newWindow:bool('new-window')};
+    const launchOptions: l.LaunchOptions={fresh:bool('fresh'),resume:bool('resume'),all:bool('all'),noPrompt:bool('no-prompt'),dryRun:bool('dry-run'),terminal:str('terminal') as l.LaunchOptions['terminal'],distro:str('distro'),window:str('window'),stopFile:str('stop-file'),newWindow:bool('new-window'),watch:bool('watch')||command==='watch',since:['launch','watch'].includes(command)?num('since'):undefined};
     const jsonLaunch=()=>check(!bool('json')||bool('dry-run')||str('terminal')==='windows-terminal'||bool('new-window')&&str('terminal')!=='native','Interactive native launch cannot use --json; use --dry-run --json to inspect');
     let result: unknown;
     if(command==='init') {
@@ -230,7 +232,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     else if(command==='machine') {empty();result=a.machine();}
     else {
       const reads=['tasks','show','blockers','humans','outbox','sent','fact get','fact history','facts','wip show','sessions','roles','workspace settings','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
-      const readonly=reads.includes(command)||command==='retitle'&&!bool('apply')||command==='inbox'&&bool('peek')||['launch','import'].includes(command)&&bool('dry-run');
+      const readonly=reads.includes(command)||command==='retitle'&&!bool('apply')||command==='inbox'&&bool('peek')||['launch','watch','import'].includes(command)&&bool('dry-run');
       store=new Store(db,actor,{readonly});
       const s=store;
       if(command!=='migrate') s.use(workspace);
@@ -243,7 +245,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           if(str('default-human')!==undefined)patch.default_human=str('default-human')==='none'?null:str('default-human')!;
           if(str('import-timezone')!==undefined)patch.import_timezone=str('import-timezone')!;
           if(str('stop-file')!==undefined)patch.stop_file=str('stop-file')==='none'?null:configPath(str('stop-file')!);
-          for(const [flag,key] of [['busy-checks','busy_checks'],['import-answer-markers','import_answer_markers'],['import-role-aliases','import_role_aliases'],['import-timezone-aliases','import_timezone_aliases']] as const) if(str(flag)!==undefined) {
+          for(const [flag,key] of [['busy-checks','busy_checks'],['import-answer-markers','import_answer_markers'],['import-role-aliases','import_role_aliases'],['import-timezone-aliases','import_timezone_aliases'],['codex-watch','codex_watch']] as const) if(str(flag)!==undefined) {
             try {patch[key]=JSON.parse(str(flag)!);}catch {check(false,`--${flag} must be valid JSON`);}
           }
           result=setWorkspaceSettings(s,patch);break;
@@ -274,7 +276,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'ack': {const message=arg('message');empty();result=c.acknowledge(s,message);break;}
         case 'fact set': {const key=arg('key');result=c.setFact(s,key,{body:rest('fact'),source:need('source'),checked_at:str('checked-at'),expected_version:num('expect')});break;}
         case 'fact get': case 'fact history': {const key=arg('key');empty();result=command==='fact get'?c.facts(s,{key}):c.factHistory(s,key);break;}
-        case 'facts': empty();result=c.facts(s,{limit:num('limit')});break;
+        case 'facts': empty();result=c.facts(s,{limit:num('limit'),since:str('since')});break;
         case 'wip show': {const role=p.shift();empty();result=c.getWip(s,role);break;}
         case 'wip set': empty();result=c.setWip(s,{current:str('current'),next:str('next'),notes:str('notes'),expected_version:num('expect')});break;
         case 'sessions': empty();result=c.sessions(s);break;
@@ -285,7 +287,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           process.on('SIGINT',cancel);process.on('SIGTERM',cancel);
           try {
             result=await stop(s,p.splice(0),{all:bool('all'),force:bool('force'),noWait:bool('no-wait'),timeout:num('timeout'),signal:cancellation.signal,onProgress:bool('json')?undefined:(rows,checks)=>{
-              const remaining=[...rows.filter(row=>row.state==='waiting').map(row=>`${row.role}: ${row.state}`),...checks.filter(item=>item.state!=='idle').map(item=>`${item.name}: ${item.state} (${item.reason})`)];
+              const remaining=[...rows.filter(row=>row.state==='waiting').map(row=>`${row.role}: ${row.state}${row.waiting_reason?` (${row.waiting_reason})`:''}${row.human_action?` ${row.human_action}`:''}`),...checks.filter(item=>item.state!=='idle').map(item=>`${item.name}: ${item.state} (${item.reason})`)];
               if(remaining.length)console.error('Waiting: '+remaining.join(', '));
             }});
           }finally{process.off('SIGINT',cancel);process.off('SIGTERM',cancel);}
@@ -308,13 +310,13 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'search': result=a.search(s,rest('query'),{type:str('type'),role:str('owner'),status:str('status'),since:str('since'),limit:num('limit'),phrase:bool('phrase'),prefix:bool('prefix')});break;
         case 'import': empty();{const input={backlog:str('backlog'),wip:str('wip'),actions:str('actions'),sessions:str('sessions'),repair:bool('repair')};check(bool('dry-run')!==!!str('confirm'),'Use --dry-run to preview or --confirm DIGEST to apply');result=bool('dry-run')?m.previewImport(s,input):m.applyImport(s,input,need('confirm'));}break;
         case 'export': {const path=arg('new directory');empty();result=m.exportMarkdown(s,path);break;}
-        case 'launch': {jsonLaunch();result=await l.launch(s,p.splice(0),launchOptions);break;}
+        case 'watch': case 'launch': {jsonLaunch();result=await l.launch(s,p.splice(0),launchOptions);break;}
         case 'launch-unlock': result=l.unlockLaunch(s,p.splice(0));break;
         case 'doctor': empty();result=a.doctor(s);if(!(result as Row).ok)process.exitCode=1;break;
         case 'backup': {const path=arg('backup destination');empty();result=await a.backupDatabase(s,path);break;}
       }
     }
-    console.log(bool('json')?JSON.stringify(result):command==='context'?c.renderContext(result as c.ContextData):humanOutput(result,command));
+    console.log(bool('json')?JSON.stringify(result):command==='context'?c.renderContext(result as c.ContextData):['facts','fact get','fact history'].includes(command)?c.renderFacts(store!,result as Row[],command==='facts'?'list':command==='fact get'?'get':'history'):humanOutput(result,command));
   } catch(error) {
     const code=error instanceof AppError?error.code:typeof (error as NodeJS.ErrnoException)?.code==='string'&&(error as NodeJS.ErrnoException).code!.startsWith('ERR_PARSE_ARGS')?2:1;
     const message=error instanceof Error?error.message:'Unexpected failure';

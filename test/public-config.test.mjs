@@ -35,7 +35,7 @@ test('config supplies workspace and stable shared/per-role directories regardles
   assert.equal(roles.find(r=>r.name==='builder').working_dir,project);
   assert.equal(roles.find(r=>r.name==='reviewer').working_dir,other);
   assert.ok(roles.every(r=>r.model===null));
-  assert.deepEqual(f.run(['workspace','settings','--workspace','demo']),{default_human:'alice',import_timezone:'America/New_York',stop_file:join(project,'STOP'),busy_checks:[],import_answer_markers:['Alice answered'],import_role_aliases:{},import_timezone_aliases:{}});
+  assert.deepEqual(f.run(['workspace','settings','--workspace','demo']),{default_human:'alice',import_timezone:'America/New_York',stop_file:join(project,'STOP'),busy_checks:[],import_answer_markers:['Alice answered'],import_role_aliases:{},import_timezone_aliases:{},codex_watch:{}});
   const task=f.run(['add','Choose','--workspace','demo','--as','builder']);
   assert.equal(f.run(['ask-human',task.id,'Ready?','--workspace','demo','--as','builder']).for_role,'alice');
   assert.equal(f.raw(['workspace','set','--default-human','bob','--workspace','demo','--as','builder']).status,3);
@@ -53,7 +53,7 @@ test('new defaults are generic, unpinned and independent of a machine-wide stop 
   assert.deepEqual(roles.map(r=>r.name),['builder','human','reviewer']);
   assert.ok(roles.every(r=>r.model===null&&r.permission_mode===null));
   assert.ok(roles.filter(r=>r.kind==='agent').every(r=>r.working_dir===tmpdir()));
-  assert.deepEqual(f.run(['workspace','settings','--workspace','demo']),{default_human:null,import_timezone:'UTC',stop_file:null,busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{}});
+  assert.deepEqual(f.run(['workspace','settings','--workspace','demo']),{default_human:null,import_timezone:'UTC',stop_file:null,busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},codex_watch:{}});
   const help=spawnSync(process.execPath,[cli,'--help'],{encoding:'utf8'});
   assert.doesNotMatch(help.stdout,/ask-alice|ask-bob|project-specific-human/i);
 });

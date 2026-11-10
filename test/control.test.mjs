@@ -63,14 +63,14 @@ test('acknowledgement binds the exact active generation and human resume permits
   assert.deepEqual(s.all("SELECT action FROM events WHERE workspace_id=? AND entity='stop' AND entity_id=? ORDER BY id",s.ws,first.id).map(r=>r.action),['requested','acknowledged','cleared']);
 });
 
-test('unfinished work does not imply a running session; unverified registrations still wait',t=>{
+test('unfinished work does not imply a running session; explicitly ended no-PID registrations are inactive',t=>{
   const {s}=fixture(t);
   as(s,'a',()=>{const task=addTask(s,{title:'Unregistered active work'});takeTask(s,task.id);});
   as(s,'b',()=>{registerSession(s,{provider:'claude',external_id:'unverified'});endSession(s,'unverified');});
   requestStop(s,['a','b','c']);
   const states=Object.fromEntries(stopStatus(s).map(r=>[r.role,r]));
   assert.equal(states.a.state,'inactive');assert.equal(states.a.pending_work,1);
-  assert.equal(states.b.session_state,'ended');assert.equal(states.b.state,'waiting','declared end without PID proof is not exit');
+  assert.equal(states.b.session_state,'ended');assert.equal(states.b.state,'inactive','explicitly ended no-PID registration is inactive, not verified exited');
   assert.equal(states.c.state,'inactive');
 });
 
@@ -163,4 +163,34 @@ test('malformed launcher locks wait, proven stale locks do not block, and acknow
   assert.equal(stopStatus(s,['a'])[0].state,'inactive','nonexistent PID proves launcher gone');
   writeFileSync(file,JSON.stringify({pid:process.pid,identity:processIdentity(process.pid)}));
   as(s,'a',()=>acknowledgeStop(s,request.id));assert.equal(stopStatus(s,['a'])[0].state,'acknowledged');
+});
+
+
+test('unresolved no-PID registration explains the human-verified session-end escape',t=>{
+  const {s}=fixture(t);
+  as(s,'a',()=>registerSession(s,{provider:'claude',external_id:'unverified'}));
+  const requested=requestStop(s,['a'])[0];assert.equal(requested.state,'waiting');
+  assert.match(requested.waiting_reason,/no PID/);
+  assert.match(requested.human_action,/independently verifying.*session end --as a --workspace team/);
+  as(s,'a',()=>endSession(s,'unverified'));
+  const ended=stopStatus(s,['a'])[0];assert.equal(ended.state,'inactive');assert.equal(ended.acknowledged_at,null);
+  assert.equal(ended.waiting_reason,undefined);assert.equal(ended.human_action,undefined);
+  assert.throws(()=>assertWorkAllowed(s,'a'),/Stop requested/,'clearing the registration does not clear STOP intent');
+});
+
+
+test('remote queue uncertainty outlives terminal exit until explicit end or stop acknowledgement',t=>{
+  const {s}=fixture(t);
+  const registered=as(s,'a',()=>registerSession(s,{provider:'codex',external_id:'remote-thread'}));
+  const at=new Date().toISOString();
+  s.run('UPDATE sessions SET pid=?,process_start=?,ended_at=? WHERE role=?',2147483647,'old-boot:1',at,'a');
+  as(s,'a',()=>s.event('watch','a','queue-attempt',{session_id:registered.id,reason:'urgent',outcome:'queued'}));
+  s.event('session',registered.id,'launcher-exited',{role:'a',exit_code:0});
+  const stopped=requestStop(s,['a'])[0];
+  assert.equal(stopped.state,'waiting');assert.match(stopped.waiting_reason,/outlive its terminal/);assert.match(stopped.human_action,/sassato stopped/);
+  as(s,'a',()=>acknowledgeStop(s,stopped.id));assert.equal(stopStatus(s,['a'])[0].state,'acknowledged');
+  resumeWork(s,['a']);
+  s.run('UPDATE sessions SET pid=NULL,process_start=NULL,ended_at=NULL WHERE role=?','a');
+  assert.equal(requestStop(s,['a'])[0].state,'waiting');
+  as(s,'a',()=>endSession(s));assert.equal(stopStatus(s,['a'])[0].state,'inactive');
 });

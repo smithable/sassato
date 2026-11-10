@@ -186,3 +186,11 @@ Paths supplied directly on commands resolve from the current directory. Workspac
 are recorded in the existing audit history; this feature needs no schema migration.
 Only humans may change them. Change the default recipient and resolve/reassign pending
 human work before demoting a human role.
+
+
+`codex_watch` defaults to `{}`. A human can map Codex agent roles to a local daemon endpoint,
+for example `{"reviewer":{"remote":"unix:///absolute/path/codex.sock"}}`, using
+`workspace set --codex-watch JSON`. Only `unix://` (or an absolute Unix socket path) and
+loopback `ws://HOST:PORT` endpoints are accepted. This opts the role into explicit experimental
+`watch ROLE` / `launch ROLE --watch` starts; it does not enable an automatic service.
+See [the integration guide](integrations.md#experimental-codex-queue-watcher).

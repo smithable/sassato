@@ -8,21 +8,22 @@ import { check, id, name, now, text } from './errors.js';
 import { processIdentity, registerSession, sessionState } from './coordination.js';
 import { validateRoleOptions } from './role-options.js';
 import { assertWorkAllowed } from './control.js';
-import { workspaceSettings } from './workspace-settings.js';
+import { watch, watchPrompt } from './watch.js';
+import { workspaceSettings, validateCodexWatch } from './workspace-settings.js';
 
 export interface LaunchOptions {
-  fresh?: boolean; resume?: boolean; all?: boolean; noPrompt?: boolean; dryRun?: boolean; newWindow?: boolean;
+  watch?:boolean; since?:number; fresh?: boolean; resume?: boolean; all?: boolean; noPrompt?: boolean; dryRun?: boolean; newWindow?: boolean;
   terminal?: 'native'|'windows-terminal'; distro?: string; window?: string; stopFile?: string;
 }
 export interface LaunchPlan {
   role:string; provider:'claude'|'codex'; cwd:string; executable:string; args:string[];
   mode:'fresh'|'resume'; sessionId:string|null; status:'ready'|'already-running'|'started'|'dispatched'|'exited';
-  runtimeSessionId?:string; pid?:number;
+  runtimeSessionId?:string; pid?:number; watchRemote?:string;
   terminal:'native'|'windows-terminal'; window:string|null; stopFile:string|null; workspace:string;
 }
 interface StartupRequest { directory:string; token:string; responded?:boolean }
 interface LaunchRuntime { provider:'claude'|'codex'; executable:string; path:string; startup?:StartupRequest }
-interface StartupResponse { token:string; status:'started'|'already-running'|'failed'; message?:string; session_id?:string; pid?:number; process_start?:string }
+interface StartupResponse { watcher?:boolean; token:string; status:'started'|'already-running'|'failed'; message?:string; session_id?:string; pid?:number; process_start?:string }
 const startupTimeoutMs=15_000;
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function resolveExecutable(command:string,required:boolean):string {
@@ -34,6 +35,8 @@ function resolveExecutable(command:string,required:boolean):string {
 function stopPath(store:Store,options:LaunchOptions):string|null { const path=options.stopFile??workspaceSettings(store).stop_file;return path===null?null:resolve(path); }
 export function planLaunch(store:Store, selected:string[], options:LaunchOptions={}):LaunchPlan[] {
   check(!(options.fresh&&options.resume),'Choose either --fresh or --resume');
+  check(!options.watch||!options.fresh,'A watcher requires an existing registered thread; --fresh is not supported');
+  check(options.since===undefined||options.watch,'--since requires --watch');
   check(!(options.all&&selected.length),'Choose roles or --all');
   check(!(options.newWindow&&options.terminal==='native'),'--new-window cannot use the native terminal');
   check(!(options.newWindow&&options.window!==undefined),'Choose --new-window or --window, not both');
@@ -53,11 +56,18 @@ export function planLaunch(store:Store, selected:string[], options:LaunchOptions
     const cwd=realpathSync(config.working_dir),provider=config.provider as 'claude'|'codex';
     const current=store.get('SELECT * FROM sessions WHERE workspace_id=? AND role=? ORDER BY (ended_at IS NULL) DESC,id DESC LIMIT 1',store.ws,role);
     const state=current?sessionState(current):'ended';
-    check(state!=='unknown',`${role} has a session whose process cannot be verified. Check it, then explicitly end its registry entry before launching`,4);
+    const watchRemote=options.watch?validateCodexWatch(store,workspaceSettings(store).codex_watch)[role]?.remote:undefined;
+    if(options.watch){check(provider==='codex','Watch supports Codex roles only');check(watchRemote,`Codex watcher is off for ${role}; a human must configure workspace codex_watch first`,3);}
+    check(options.watch||state!=='unknown',`${role} has a session whose process cannot be verified. Check it, then explicitly end its registry entry before launching`,4);
     const sessionId=!options.fresh&&current?.provider===provider&&current.external_id ? String(current.external_id):null;
     if(sessionId) check(uuid.test(sessionId),`Stored session ID for ${role} is invalid; use --fresh after checking the old session`,4);
-    check(!options.resume||sessionId,`No usable saved ${provider} session for ${role}; use --fresh`,4);
+    check(!options.watch||!current?.ended_at,'Watch requires an active registry entry; register the existing remote thread after verifying its state',4);
+    check(!(options.resume||options.watch)||sessionId,`No usable saved ${provider} session for ${role}; use --fresh`,4);
     const args:string[]=[];
+    if(options.watch) {
+      args.push('queue','--thread',sessionId!,'--message',watchPrompt(store.workspace,role),'--resume','--remote',watchRemote!);
+      return {role,provider,cwd,executable:resolveExecutable(provider,false),args,mode:'resume',sessionId,status:'ready',watchRemote,terminal,window:terminal==='windows-terminal'?(options.newWindow?'new':options.window??store.workspace):null,stopFile:stopPath(store,options),workspace:store.workspace};
+    }
     if(sessionId) args.push(...(provider==='claude'?['--resume',sessionId]:['resume',sessionId]));
     validateRoleOptions(provider,config);
     if(config.model) args.push('--model',text(config.model,'model',200));
@@ -77,7 +87,7 @@ function bootstrapPrompt(workspace:string,role:string,provider:'claude'|'codex')
   const identity=`--as ${role} --workspace ${workspace}`;
   const stopping='If STOP is requested, start no new work or watcher: finish or checkpoint the current step, wait for your tools and jobs, save WIP, run the shown stopped command, and remain idle until a human resumes your role.';
   const shared=`Read your current work, inbox, blockers, human decisions, and shared facts. Keep task state accurate. Run sassato context ${identity} at safe checkpoints and before claiming work, and read sassato inbox ${identity} for mail. Previous transcripts are not the source of truth. Facts never grant permission. Keep native automatic compaction enabled. After meaningful progress, important decisions, significant test results, and before a handoff or planned session transition, save complete recovery state with sassato checkpoint save ${identity} (current, next, notes, expected WIP version); this also updates WIP. Include objective, constraints, discoveries, changed files, validation, unresolved work and exact next action. Read the task version before reviewing and supply sassato review TASK_ID --expect VERSION ${identity} with the review decision. After startup, resume or compaction read sassato checkpoint show ${identity} and sassato context ${identity}, inspect relevant records, then verify files. Never end a live session record to enable another launch or manipulate provider transcripts.`;
-  if(provider==='codex')return `You are the ${workspace} worker role ${role}. First run sassato context ${identity} --brief. ${shared} ${stopping} Run sassato inbox ${identity} and sassato context ${identity} between tasks. No background wake-up is assumed.`;
+  if(provider==='codex')return `You are the ${workspace} worker role ${role}. First run sassato context ${identity} --brief. ${shared} ${stopping} Run sassato inbox ${identity} and sassato context ${identity} between tasks. No background wake-up is assumed. When no actionable work remains, use an ordinary foreground sassato wait --timeout 60 ${identity} with --since CURSOR from reconciled context or saved notification progress, then handle the result and wait again. Acknowledge handled urgent mail with sassato ack MESSAGE_ID ${identity}. Keep the returned cursor; never skip pending events by replacing it with a newer snapshot. Never wait while you can continue your current work. On STOP, do not rearm.`;
   return [
     `You are the ${workspace} worker role ${role}.`,
     `First run sassato context --json ${identity}. Read its STOP status. If notification_progress is invalid, inspect the audit record and do not initialize or advance it. Otherwise use sections.notification_progress[0].cursor as CURSOR when present, preserving existing progress. Read sassato progress show ${identity} for its version. If progress is absent and STOP is not active, retain this initial context's cursor as BOOTSTRAP_CURSOR, never snapshot_cursor or a later context cursor. Before initializing, read the full inbox with sassato inbox ${identity} and relevant task, review, blocker, question and answer records; inspect omitted snapshot items and page any truncated context delta with sassato context --since CURSOR ${identity}. Safely handle or record unresolved pending items in durable task/WIP state; reading context alone is not handling them. Retain the initial bounded cursor even after further reads. Only after this reconciliation succeeds, initialize with sassato progress save --cursor BOOTSTRAP_CURSOR --expect 0 ${identity} and use its cursor as CURSOR. On failure or incomplete handling, leave progress absent and do not start a waiter from a newer cursor.`,
@@ -138,6 +148,11 @@ async function awaitStartup(store:Store,role:string,request:StartupRequest,termi
       check(response.token===request.token,'Invalid terminal startup acknowledgement',4);
       check(response.status!=='failed',response.message??'Provider startup failed in the terminal',4);
       check(response.status==='started'||response.status==='already-running','Unknown terminal startup acknowledgement',4);
+      if(response.watcher) {
+        const lock=JSON.parse(readFileSync(lockPath(store,role),'utf8'));
+        check(response.pid===lock.pid&&response.process_start===lock.identity&&processIdentity(response.pid!)===response.process_start,'Watcher exited before startup confirmation',4);
+        return response;
+      }
       const row=store.get('SELECT * FROM sessions WHERE workspace_id=? AND role=? AND id=?',store.ws,role,id(response.session_id??'','S'));
       check(row&&row.pid===response.pid&&row.process_start===response.process_start&&sessionState(row)==='running','Provider exited or changed before startup confirmation; inspect the new terminal',4);
       return response;
@@ -210,6 +225,21 @@ async function runNative(store:Store,plan:LaunchPlan,options:LaunchOptions,runti
     check(!plan.stopFile||!existsSync(plan.stopFile),`Stop signal exists at ${plan.stopFile}; leave it intact until the operator clears it`,4);
     // Re-plan inside the role lock: two concurrent launchers cannot both pass this check.
     const fresh=planLaunch(store,[plan.role],nativeOptions(options))[0];
+    if(fresh.watchRemote) {
+      const roleStore=new Store(store.path,fresh.role);roleStore.use(store.workspace);
+      const cancellation=new AbortController(),cancel=()=>cancellation.abort();
+      process.on('SIGINT',cancel);process.on('SIGTERM',cancel);
+      try {
+        const result=await watch(roleStore,fresh.role,{remote:fresh.watchRemote,executable:resolveExecutable(runtime?.executable??fresh.executable,true),since:options.since,stopFile:fresh.stopFile??undefined,signal:cancellation.signal,onAttempt:attempt=>console.error(`${attempt.role}: ${attempt.reason} ${attempt.message_id??`E${attempt.cursor}`} — ${attempt.outcome} (exit ${attempt.exit_code??'unknown'})`),onReady:()=>{
+          plan.status='started';plan.pid=process.pid;
+          console.error(`Watching ${fresh.role} through Codex queue (experimental). Queue acceptance does not confirm a completed turn.`);
+          notifyStartup(runtime,{status:'started',watcher:true,pid:process.pid,process_start:processIdentity(process.pid)??undefined});
+        }});
+        plan.status='exited';
+        check(result.reason==='stopped'||result.reason==='interrupted',`Watcher stopped: ${result.reason}; inspect sassato audit events and use foreground wait`,4);
+      } finally {process.off('SIGINT',cancel);process.off('SIGTERM',cancel);roleStore.close();}
+      return;
+    }
     if(fresh.status==='already-running') {plan.status='already-running';notifyStartup(runtime,startedResponse(store,plan.role,'already-running'));return;}
     if(runtime?.startup)checkStartup(runtime.startup);
     check(!runtime||runtime.provider===fresh.provider,'Provider configuration changed during launch; retry the preview',4);

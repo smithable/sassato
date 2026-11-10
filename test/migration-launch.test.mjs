@@ -9,6 +9,7 @@ import { Store } from '../dist/storage.js';
 import { now } from '../dist/errors.js';
 import { previewImport, applyImport, exportMarkdown } from '../dist/migration.js';
 import { planLaunch, launch, unlockLaunch, windowsTerminalArgs } from '../dist/launch.js';
+import { setWorkspaceSettings } from '../dist/workspace-settings.js';
 import { registerSession, processIdentity } from '../dist/coordination.js';
 
 function fixture(t) {
@@ -339,7 +340,7 @@ test('Codex bootstrap remains pull-based and no-prompt omits all startup instruc
   assert.match(codex,/sassato checkpoint show --as c --workspace test/);
   assert.match(codex,/sassato checkpoint save --as c --workspace test/);
   assert.match(codex,/sassato context --as c --workspace test --brief/);
-  assert(!codex.includes('sassato wait'));assert.match(codex,/sassato inbox --as c --workspace test and sassato context --as c --workspace test between tasks/);
+  assert.match(codex,/ordinary foreground sassato wait --timeout 60 --as c --workspace test/);assert.match(codex,/Never wait while you can continue your current work/);assert.match(codex,/sassato inbox --as c --workspace test and sassato context --as c --workspace test between tasks/);
   assert.match(codex,/sassato review TASK_ID --expect VERSION --as c --workspace test/);
   assert.match(codex,/No background wake-up is assumed/);
   assert.deepEqual(planLaunch(f.s,['a'],{fresh:true,noPrompt:true})[0].args,[]);
@@ -375,4 +376,60 @@ test('Windows Terminal without a worker acknowledgement times out and cleans its
   assert(Date.now()-started>=14000);assert(Date.now()-started<19000);assert(existsSync(fake.log));
   assert.equal(f.s.get('SELECT count(*) n FROM sessions').n,0);
   const base=join(`${f.s.path}.launch`,'test');assert(!readdirSync(base).some(name=>name.startsWith('.startup-')));
+});
+
+
+test('watcher launch is opt-in, requires a registered thread and never overrides its settings',t=>{
+  const f=fixture(t);
+  assert.throws(()=>planLaunch(f.s,['c'],{watch:true}),/watcher is off/);
+  setWorkspaceSettings(f.s,{codex_watch:{c:{remote:'unix:///fixture.sock'}}});
+  assert.throws(()=>planLaunch(f.s,['c'],{watch:true}),/No usable saved/);
+  f.s.actor='c';registerSession(f.s,{provider:'codex',external_id:'12345678-1234-1234-1234-123456789abc'});f.s.actor='human';
+  f.s.run("UPDATE roles SET model='configured-model',sandbox_mode='read-only',approval_policy='on-request',reasoning_effort='high' WHERE name='c'");
+  const plan=planLaunch(f.s,['c'],{watch:true})[0];
+  assert.equal(plan.watchRemote,'unix:///fixture.sock');assert.equal(plan.status,'ready');
+  assert.deepEqual(plan.args.slice(0,3),['queue','--thread','12345678-1234-1234-1234-123456789abc']);
+  assert(!plan.args.includes('--model'));assert(!plan.args.includes('--sandbox'));assert(!plan.args.includes('--config'));assert(!plan.args.includes('--ask-for-approval'));
+  assert.throws(()=>planLaunch(f.s,['c'],{watch:true,fresh:true}),/existing registered thread/);
+  assert.throws(()=>planLaunch(f.s,['c'],{}),/cannot be verified/,'ordinary launch retains duplicate-provider protection');
+  f.s.actor='c';assert.throws(()=>setWorkspaceSettings(f.s,{codex_watch:{}}),/human role/);
+});
+
+test('watch settings reject external endpoints and roles of another provider',t=>{
+  const f=fixture(t);
+  for(const remote of ['ws://example.com:9000','ws://localhost:99999','unix://relative','unix:///bad path','ws://secret@localhost:9000'])
+    assert.throws(()=>setWorkspaceSettings(f.s,{codex_watch:{c:{remote}}}));
+  assert.throws(()=>setWorkspaceSettings(f.s,{codex_watch:{a:{remote:'unix://'}}}),/Codex agent/);
+  setWorkspaceSettings(f.s,{codex_watch:{c:{remote:'ws://127.0.0.1:9000'}}});
+  assert.throws(()=>setWorkspaceSettings(f.s,{codex_watch:{c:{remote:'unix://',model:'x'}}}),/only remote/);
+});
+
+
+test('window watcher owns the role lock, leaves registry intact and exits on STOP once',async t=>{
+  const f=fixture(t),fake=fakeWindowsTerminal(f,t),thread='12345678-1234-1234-1234-123456789abc';
+  const queueLog=join(f.dir,'queue.jsonl'),stopFile=join(f.dir,'STOP');
+  writeFileSync(join(fake.bin,'codex'),`#!/usr/bin/env node
+const args=process.argv.slice(2);
+if(args[0]==='--version'){console.log('codex-cli 0.167.0');process.exit(0);}
+if(args.includes('--help')){console.log('--thread --message --resume --remote');process.exit(0);}
+require('node:fs').appendFileSync(${JSON.stringify(queueLog)},JSON.stringify(args)+'\\n');
+console.log('Queued message aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee for thread ${thread}.');
+`,{mode:0o755});
+  setWorkspaceSettings(f.s,{codex_watch:{c:{remote:'unix:///fixture.sock'}}});
+  f.s.actor='c';registerSession(f.s,{provider:'codex',external_id:thread});f.s.actor='human';
+  const before=f.s.get('SELECT * FROM sessions WHERE role=?','c');
+  const plans=await launch(f.s,['c'],{watch:true,since:0,newWindow:true,stopFile});
+  const watcherPid=plans[0].pid;
+  t.after(()=>{try{process.kill(watcherPid,'SIGTERM');}catch{}});
+  assert.equal(plans[0].status,'started');assert(watcherPid>0);
+  await assert.rejects(()=>launch(f.s,['c'],{watch:true,since:0,stopFile}),/Launch lock exists/);
+  assert.deepEqual(f.s.get('SELECT * FROM sessions WHERE role=?','c'),before);
+  writeFileSync(stopFile,'stop');
+  const lock=join(`${f.s.path}.launch`,'test','c.lock');
+  for(let i=0;i<100&&existsSync(lock);i++)await new Promise(res=>setTimeout(res,50));
+  assert(!existsSync(lock),'watcher released role lock after STOP');
+  const calls=readFileSync(queueLog,'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(calls.length,1);assert.match(calls[0][4],/requests STOP/);
+  assert.deepEqual(f.s.get('SELECT * FROM sessions WHERE role=?','c'),before);
+  assert.equal(f.s.get("SELECT count(*) n FROM events WHERE entity='watch' AND action='queue-attempt'").n,1);
 });
