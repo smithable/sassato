@@ -22,6 +22,13 @@ export function validateTimezone(value: unknown): string {
   try {new Intl.DateTimeFormat('en',{timeZone:zone});} catch {check(false,'Use an IANA import time zone such as UTC or America/New_York');}
   return zone;
 }
+export function codexRemoteEndpoint(value:unknown):string {
+  const remote=text(value,'Codex remote endpoint',4096);
+  // Local endpoints only for the experimental release; never credentials in URLs.
+  check(/^unix:\/\/(?:\/[^\s]+)?$/.test(remote)||/^ws:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):[0-9]{1,5}$/.test(remote),'Use a local unix:// endpoint or ws://localhost:PORT');
+  if(remote.startsWith('ws:')){const port=Number(remote.slice(remote.lastIndexOf(':')+1));check(port>0&&port<=65535,'Invalid remote port');}
+  return remote;
+}
 export function validateCodexWatch(s:Store,value:unknown):Record<string,CodexWatchSettings> {
   check(value!==null&&typeof value==='object'&&!Array.isArray(value),'codex_watch must be an object keyed by role');
   const entries=Object.entries(value);check(entries.length<=32,'codex_watch supports at most 32 roles');
@@ -31,10 +38,7 @@ export function validateCodexWatch(s:Store,value:unknown):Record<string,CodexWat
     check(setting!==null&&typeof setting==='object'&&!Array.isArray(setting),'Watch setting must contain remote');
     const object=setting as Record<string,unknown>;
     check(Object.keys(object).length===1&&Object.hasOwn(object,'remote'),'Watch setting accepts only remote');
-    const remote=text(object.remote,'Codex remote endpoint',4096);
-    // Local endpoints only for the first experimental release. Never accept credentials in URLs.
-    check(/^unix:\/\/(?:\/[^\s]+)?$/.test(remote)||/^ws:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):[0-9]{1,5}$/.test(remote),'Use a local unix:// endpoint or ws://localhost:PORT');
-    if(remote.startsWith('ws:')){const port=Number(new URL(remote).port);check(port>0&&port<=65535,'Invalid remote port');}
+    const remote=codexRemoteEndpoint(object.remote);
     return [role,{remote}];
   }));
 }

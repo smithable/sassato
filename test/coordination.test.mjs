@@ -248,3 +248,35 @@ test('context dates WIP, flags stale source state, and retains it under truncati
   c.setWip(s,{current:'New work',expected_version:1});assert.equal(c.context(s).sections.wip[0].stale,false);
   s.run('UPDATE wip SET updated_at=? WHERE workspace_id=? AND role=?',new Date(Date.now()-23*60*60_000).toISOString(),s.ws,'a');assert.equal(c.context(s).sections.wip[0].stale,false);
 });
+
+
+test('human session-end override targets a worker and records the human actor, including already-ended rows',t=>{
+  const {s}=setup(t),registered=c.registerSession(s,{provider:'codex',external_id:'worker-thread'});
+  const before=s.get('SELECT count(*) AS n FROM events').n;
+  assert.throws(()=>c.endSession(s,undefined,'b'),/human role/);
+  as(s,'b',()=>assert.throws(()=>c.endSession(s,undefined,'a'),/human role/));
+  assert.equal(s.get('SELECT count(*) AS n FROM events').n,before);
+  as(s,'human',()=>{
+    assert.throws(()=>c.endSession(s,'wrong-thread','a'),/Session was replaced/);
+    assert.throws(()=>c.endSession(s,undefined,'missing'),/Unknown role/);
+    assert.throws(()=>c.endSession(s,undefined,'human'),/agent roles/);
+    const ended=c.endSession(s,'worker-thread','a');assert.equal(ended.id,registered.id);assert.equal(ended.state,'ended');
+    const firstEnd=s.get("SELECT max(id) AS id FROM events WHERE entity='session' AND action='ended'").id;
+    const historical='2020-01-01T00:00:00.000Z';s.run('UPDATE sessions SET ended_at=? WHERE id=?',historical,Number(registered.id.slice(1)));
+    assert.equal(c.endSession(s,undefined,'a').ended_at,historical,'verification preserves the original end timestamp');
+    assert.equal(c.endSession(s,undefined,'a').id,registered.id,'human verification may repeat after an already-ended terminal');
+    const event=s.get("SELECT actor,detail FROM events WHERE entity='session' AND action='ended' ORDER BY id DESC LIMIT 1");
+    assert.equal(event.actor,'human');assert.deepEqual(JSON.parse(event.detail),{role:'a',human_override:true});
+    assert(s.get("SELECT max(id) AS id FROM events WHERE entity='session' AND action='ended'").id>firstEnd);
+  });
+  assert.throws(()=>c.endSession(s),/No active session/,'ordinary own-session behavior remains unchanged');
+});
+
+
+test('human end chooses the active registration before newer ended history',t=>{
+  const {s}=setup(t),active=c.registerSession(s,{provider:'codex',external_id:'active-thread'});
+  const at=new Date().toISOString();
+  s.run('INSERT INTO sessions(workspace_id,role,provider,external_id,started_at,last_seen_at,ended_at) VALUES(?,?,?,?,?,?,?)',s.ws,'a','codex','ended-history',at,at,at);
+  assert.equal(as(s,'human',()=>c.endSession(s,undefined,'a')).id,active.id);
+  assert(s.get('SELECT ended_at FROM sessions WHERE id=?',Number(active.id.slice(1))).ended_at);
+});

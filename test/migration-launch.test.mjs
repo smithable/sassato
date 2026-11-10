@@ -343,6 +343,8 @@ test('Codex bootstrap remains pull-based and no-prompt omits all startup instruc
   assert.match(codex,/ordinary foreground sassato wait --timeout 60 --as c --workspace test/);assert.match(codex,/Never wait while you can continue your current work/);assert.match(codex,/sassato inbox --as c --workspace test and sassato context --as c --workspace test between tasks/);
   assert.match(codex,/sassato review TASK_ID --expect VERSION --as c --workspace test/);
   assert.match(codex,/No background wake-up is assumed/);
+  assert.match(codex,/sassato progress save --cursor CURSOR --expect VERSION --as c --workspace test/);
+  assert.match(codex,/leave progress unchanged for replay/);
   assert.deepEqual(planLaunch(f.s,['a'],{fresh:true,noPrompt:true})[0].args,[]);
   assert.deepEqual(planLaunch(f.s,['c'],{fresh:true,noPrompt:true})[0].args,[]);
   f.s.run('UPDATE roles SET model=? WHERE workspace_id=? AND name=?','opus',f.s.ws,'a');

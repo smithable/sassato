@@ -52,7 +52,7 @@ Recovery:   checkpoint show [ROLE]
             checkpoint save --current TEXT --next TEXT --notes TEXT [--expect WIP_VERSION] [--evidence FILE]
             progress show [ROLE] | progress save --cursor N --expect VERSION
 Sessions:   session register --provider NAME [--session-id ID] [--pid PID]
-            [--replace] | session heartbeat [--session-id ID] | session end
+            [--replace] | session heartbeat [--session-id ID] | session end [--for ROLE --as HUMAN]
             sessions | usage TEXT [--until DATE]
 Control:    stop [ROLE...] [--all] [--timeout SECONDS | --no-wait | --force]
             stop-status [ROLE...] [--quiet] [--stop-file PATH] | stopped R1 | resume-work [ROLE...] [--all]
@@ -82,7 +82,7 @@ const allowed: Record<string,string[]> = {
   take:['hours'],renew:['hours'],note:[],update:['expect','title','body','priority','for','human-only','agent-allowed','review-required','no-review'],handoff:[],release:[],submit:[],review:['approve','reject','note','expect'],done:['ref'],drop:[],reopen:[],after:[],unafter:[],block:['kind','waits-on'],blockers:['task','chain','limit','all'],resolve:[],
   'ask-human':['for','options','recommend','command'],answer:['close','relayed-by'],humans:['for','limit'],send:['re','urgent'],wait:['urgent','timeout','stop-file','since'],inbox:['peek','state','limit'],outbox:['limit'],sent:['limit'],retitle:['owner','apply'],ack:[],
   'fact set':['source','checked-at','expect'],'fact get':[],'fact history':[],facts:['limit','since'],
-  'wip show':[],'wip set':['current','next','notes','expect'],sessions:[], 'session register':['provider','session-id','pid','replace'],'session heartbeat':['session-id'],'session end':['session-id'],usage:['until'],
+  'wip show':[],'wip set':['current','next','notes','expect'],sessions:[], 'session register':['provider','session-id','pid','replace'],'session heartbeat':['session-id'],'session end':['session-id','for'],usage:['until'],
   stop:['all','timeout','no-wait','force'],'stop-status':['quiet','stop-file'],stopped:[],'resume-work':['all'],
   context:['brief','since','limit'],status:[],search:['type','owner','status','since','limit','phrase','prefix'],
   'checkpoint show':[], 'checkpoint save':['current','next','notes','expect','evidence'], 'progress show':[], 'progress save':['cursor','expect'],
@@ -281,7 +281,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'wip set': empty();result=c.setWip(s,{current:str('current'),next:str('next'),notes:str('notes'),expected_version:num('expect')});break;
         case 'sessions': empty();result=c.sessions(s);break;
         case 'session register': empty();result=c.registerSession(s,{provider:need('provider'),external_id:str('session-id'),pid:num('pid'),replace:bool('replace')});break;
-        case 'session heartbeat': case 'session end': empty();result=(command==='session heartbeat'?c.heartbeat:c.endSession)(s,str('session-id'));break;
+        case 'session heartbeat': empty();result=c.heartbeat(s,str('session-id'));break;
+        case 'session end': empty();result=c.endSession(s,str('session-id'),str('for'));break;
         case 'stop': {
           const cancellation=new AbortController(),cancel=()=>cancellation.abort();
           process.on('SIGINT',cancel);process.on('SIGTERM',cancel);

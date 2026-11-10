@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { Store } from '../dist/storage.js';
 import { initWorkspace } from '../dist/admin.js';
 import { registerSession, send, acknowledge } from '../dist/coordination.js';
-import { requestStop } from '../dist/control.js';
+import { requestStop, acknowledgeStop } from '../dist/control.js';
 import { getNotificationProgress, saveNotificationProgress } from '../dist/notification-progress.js';
 import { watch, watchPrompt } from '../dist/watch.js';
 import { waitForWork } from '../dist/mail-wait.js';
@@ -32,7 +32,7 @@ function rig(f,{wakes=[],queueResult={code:0,stdout:queued,stderr:''},onQueue,on
       waits.push(options);
       if(wakes.length)return wakes.shift();
       clock+=options.timeout*1000;onSleep?.(clock);
-      assert(clock<=1_201_000,'watcher failed to stop after retry budget');
+      assert(clock<=2_110_000,'fixture failed to stop after final retry observation window');
       return {reason:'timeout',role:'builder',cursor:options.since};
     },
     execute:async(executable,args,options)=>{
@@ -67,16 +67,48 @@ test('watch queues only fixed identifier-based text and never persists agent pro
   assert(!audits(f.s).some(row=>Object.hasOwn(row,'wake_confirmed')));
 });
 
-test('duplicate urgent messages back off five then fifteen minutes, then give up visibly',async t=>{
+test('duplicate mail gets a final observation window; exhaustion leaves other notifications and STOP visible',async t=>{
   const f=fixture(t),id=urgent(f),notification=wake(f,'urgent',{message:{id}});
-  const r=rig(f,{wakes:[notification,notification,notification,notification]});
-  const result=await watch(f.s,'builder',{remote,since:f.cursor},r.deps);
-  assert.equal(result.reason,'gave-up');assert.equal(result.attempts,3);
-  assert.deepEqual(r.calls.filter(call=>call.args[1]==='--thread').map(call=>call.at),[0,300_000,1_200_000]);
+  const wakes=[notification,notification,notification,notification],givenUp=[];
+  const r=rig(f,{wakes});
+  const result=await watch(f.s,'builder',{remote,since:f.cursor,onGiveUp(item){
+    givenUp.push({item,at:r.deps.now()});
+    const next=urgent(f,'New work after earlier delivery attempts were exhausted');
+    // Even an alternative waiter returning the exhausted item cannot requeue it.
+    wakes.push(notification,notification,wake(f,'urgent',{message:{id:next}}),wake(f,'task-ready'),wake(f,'stop'));
+  }},r.deps);
+  assert.equal(result.reason,'stopped');assert.equal(result.attempts,6);
+  assert.deepEqual(r.calls.filter(call=>call.args[1]==='--thread').slice(0,3).map(call=>call.at),[0,300_000,1_200_000]);
+  assert.equal(givenUp.length,1);assert.equal(givenUp[0].at,2_100_000);assert.equal(givenUp[0].item.message_id,id);
   assert(r.sleeps.every(ms=>ms>0&&ms<=1000));assert(r.waits.length>4);
   assert(r.waits.slice(1).every(options=>options.excludeUrgentIds.includes(Number(id.slice(1)))));
-  assert.deepEqual(audits(f.s).map(row=>row.action),['queue-attempt','queue-attempt','queue-attempt','gave-up']);
+  assert.deepEqual(audits(f.s).map(row=>row.action),['queue-attempt','queue-attempt','queue-attempt','gave-up','queue-attempt','queue-attempt','queue-attempt']);
+  assert.deepEqual(audits(f.s).slice(-3).map(row=>row.reason),['urgent','task-ready','stop']);
   assert.equal(getNotificationProgress(f.s),null);
+});
+
+test('acknowledging during the final observation window prevents exhaustion',async t=>{
+  const f=fixture(t),id=urgent(f),notification=wake(f,'urgent',{message:{id}}),wakes=[notification];
+  let acknowledged=false;
+  const r=rig(f,{wakes,onSleep(clock){
+    if(clock>=1_500_000&&!acknowledged){acknowledge(f.s,id);acknowledged=true;wakes.push(wake(f,'stop'));}
+  }});
+  const result=await watch(f.s,'builder',{remote,since:f.cursor},r.deps);
+  assert.equal(result.reason,'stopped');assert.equal(result.attempts,4);
+  assert.equal(audits(f.s).filter(row=>row.action==='gave-up').length,0);
+  assert(!r.waits.at(-1).excludeUrgentIds.includes(Number(id.slice(1))));
+});
+
+test('acknowledging an exhausted item removes its waiter exclusion',async t=>{
+  const f=fixture(t),id=urgent(f),notification=wake(f,'urgent',{message:{id}}),wakes=[notification];
+  let exhausted=false,acknowledged=false;
+  const r=rig(f,{wakes,onSleep(){
+    if(exhausted&&!acknowledged){acknowledge(f.s,id);acknowledged=true;wakes.push(wake(f,'stop'));}
+  }});
+  const result=await watch(f.s,'builder',{remote,since:f.cursor,onGiveUp(){exhausted=true;}},r.deps);
+  assert.equal(result.reason,'stopped');assert.equal(result.attempts,4);
+  assert.equal(audits(f.s).filter(row=>row.action==='gave-up').length,1);
+  assert(!r.waits.at(-1).excludeUrgentIds.includes(Number(id.slice(1))));
 });
 
 test('acknowledgement during backoff suppresses the duplicate delivery',async t=>{
@@ -92,7 +124,7 @@ test('other urgent mail and workflow events are delivered while earlier messages
   const f=fixture(t),first=urgent(f),second=urgent(f);
   const one=wake(f,'urgent',{message:{id:first}}),two=wake(f,'urgent',{message:{id:second}});
   const r=rig(f,{wakes:[one,two,one,two,wake(f,'task-ready'),wake(f,'stop')]});
-  const result=await watch(f.s,'builder',{remote:'unix://default',since:f.cursor},r.deps);
+  const result=await watch(f.s,'builder',{remote:'unix://',since:f.cursor},r.deps);
   assert.equal(result.reason,'stopped');assert.equal(result.attempts,4);
   assert.deepEqual(audits(f.s).map(row=>[row.reason,row.message_id,row.attempt]),[
     ['urgent',first,1],['urgent',second,1],['task-ready',null,1],['stop',null,1]
@@ -133,6 +165,60 @@ test('workflow cursors advance only in memory and timeout does not queue a messa
   const result=await watch(f.s,'builder',{remote,since:f.cursor},r.deps);
   assert.equal(result.cursor,f.cursor+2);assert.equal(result.attempts,2);
   assert.deepEqual(r.waits.map(call=>call.since),[f.cursor,f.cursor,f.cursor+1]);
+  assert.equal(getNotificationProgress(f.s),null);
+});
+
+test('a workflow burst coalesces to the highest cursor without postponing its one retry',async t=>{
+  const f=fixture(t),wakes=[wake(f,'task-ready'),wake(f,'answer',{cursor:f.cursor+1}),wake(f,'review-submitted',{cursor:f.cursor+2})];
+  const r=rig(f,{wakes});
+  let queued=0;
+  const result=await watch(f.s,'builder',{remote,since:f.cursor,onAttempt(attempt){
+    if(attempt.reason!=='stop'&&++queued===2)wakes.push(wake(f,'stop',{cursor:f.cursor+2}));
+  }},r.deps);
+  assert.equal(result.reason,'stopped');assert.equal(result.attempts,3);
+  const rows=audits(f.s),deliveries=rows.filter(row=>row.action==='queue-attempt');
+  assert.deepEqual(deliveries.map(row=>[row.reason,row.cursor,row.attempt]),[
+    ['task-ready',f.cursor,1],['review-submitted',f.cursor+2,2],['stop',f.cursor+2,1]
+  ]);
+  assert.deepEqual(rows.filter(row=>row.action==='coalesced').map(row=>[row.reason,row.cursor,row.exit_code]),[
+    ['answer',f.cursor+1,null],['review-submitted',f.cursor+2,null]
+  ]);
+  assert.deepEqual(r.calls.filter(call=>call.args[1]==='--thread').map(call=>call.at),[0,300_000,300_000]);
+  assert.equal(r.waits[3].since,f.cursor+2);assert.equal(getNotificationProgress(f.s),null);
+});
+
+test('progress must cover the highest coalesced cursor before fresh workflow queues immediately',async t=>{
+  const f=fixture(t);
+  // Actual events ensure the agent can persist these handled cursors.
+  f.s.actor='human';
+  const first=f.s.event('task','T1','created',{}),second=f.s.event('task','T2','created',{}),third=f.s.event('task','T3','created',{}),fourth=f.s.event('task','T4','created',{});
+  f.s.actor='builder';
+  const wakes=[wake(f,'task-ready',{cursor:first}),wake(f,'answer',{cursor:second}),wake(f,'review-submitted',{cursor:third})];
+  let stage=0;
+  const r=rig(f,{wakes,onSleep(clock){
+    if(stage===0){saveNotificationProgress(f.s,{cursor:first,expected_version:0});stage=1;}
+    else if(stage===1&&clock>=2000){saveNotificationProgress(f.s,{cursor:third,expected_version:1});stage=2;wakes.push(wake(f,'task-assigned',{cursor:fourth}),wake(f,'stop',{cursor:fourth}));}
+  }});
+  const result=await watch(f.s,'builder',{remote,since:f.cursor},r.deps);
+  assert.equal(result.reason,'stopped');assert.equal(result.attempts,3);
+  assert.deepEqual(audits(f.s).filter(row=>row.action==='queue-attempt').map(row=>[row.reason,row.cursor,row.attempt]),[
+    ['task-ready',first,1],['task-assigned',fourth,1],['stop',fourth,1]
+  ]);
+  assert.deepEqual(r.calls.filter(call=>call.args[1]==='--thread').map(call=>call.at),[0,2000,2000]);
+  assert.equal(getNotificationProgress(f.s).cursor,third);
+});
+
+test('a newer workflow event after exhaustion starts a fresh bounded delivery',async t=>{
+  const f=fixture(t),wakes=[wake(f,'task-ready')],r=rig(f,{wakes});
+  let exhausted=0;
+  const result=await watch(f.s,'builder',{remote,since:f.cursor,
+    onGiveUp(){exhausted++;wakes.push(wake(f,'answer',{cursor:f.cursor+1}),wake(f,'stop',{cursor:f.cursor+1}));}
+  },r.deps);
+  assert.equal(result.reason,'stopped');assert.equal(result.attempts,5);assert.equal(exhausted,1);
+  assert.deepEqual(audits(f.s).filter(row=>row.action==='queue-attempt').map(row=>[row.reason,row.cursor,row.attempt]),[
+    ['task-ready',f.cursor,1],['task-ready',f.cursor,2],['task-ready',f.cursor,3],['answer',f.cursor+1,1],['stop',f.cursor+1,1]
+  ]);
+  assert.deepEqual(r.calls.filter(call=>call.args[1]==='--thread').map(call=>call.at),[0,300_000,1_200_000,2_100_000,2_100_000]);
   assert.equal(getNotificationProgress(f.s),null);
 });
 
@@ -205,4 +291,14 @@ else console.log(${JSON.stringify(queued)});
   const invoked=readFileSync(calls,'utf8').trim().split('\n').map(line=>JSON.parse(line));
   assert.deepEqual(invoked,[['--version'],['queue','--help'],['queue','--thread',thread,'--message',watchPrompt('team','builder'),'--resume','--remote',remote]]);
   assert.equal(audits(f.s)[0].outcome,'queued');
+});
+
+
+test('acknowledged STOP exits without starting another daemon turn',async t=>{
+  const f=fixture(t);f.s.actor='human';const request=requestStop(f.s,['builder'])[0];
+  f.s.actor='builder';acknowledgeStop(f.s,request.id);
+  const r=rig(f);
+  const result=await watch(f.s,'builder',{remote,since:f.cursor},r.deps);
+  assert.equal(result.reason,'stopped');assert.equal(result.attempts,0);
+  assert(!r.calls.some(call=>call.args[0]==='queue'&&call.args[1]!=='--help'));
 });

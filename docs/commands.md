@@ -345,10 +345,14 @@ the command shown in stop status. Ending a registration is not a process stop co
 
 A queued remote Codex turn can outlive its terminal PID. Stop status therefore remains waiting
 after queue attempts until the worker acknowledges, or a human verifies the remote turn and
-jobs have stopped and explicitly ends the session registration. Terminal exit alone is insufficient.
+jobs have stopped and explicitly ends the session registration with `session end --for ROLE --as HUMAN`. Terminal exit alone is insufficient.
 
 `fact get KEY` and `fact history KEY` show full text, version, setter, timestamps and source.
 `facts` lists the most recently updated facts first. `facts --since YYYY-MM-DD` lists current
 facts updated from that calendar day onward, oldest first, in the workspace `import_timezone`.
 Use `--limit` to increase the list length; use history for earlier versions of a fact. JSON keeps
 raw UTC timestamps.
+
+`session end --for ROLE --as HUMAN` records the human actor while ending the selected role's
+latest registration, including a previously ended terminal entry. It does not kill a process
+or override evidence of a still-running PID. Agents may only end their own active registration.

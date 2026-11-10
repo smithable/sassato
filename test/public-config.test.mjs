@@ -208,3 +208,15 @@ test('complete explicit author aliases take precedence over generic session and 
   assert.equal(previewImport(s,{wip}).items[0].owner,'writer');
   assert.equal(previewImport(s,{sessions}).items[0].owner,'writer');
 });
+
+
+test('watch settings stay valid when roles are reconfigured',t=>{
+  const f=fixture(t);f.run(['init','--workspace','demo']);
+  const s=new Store(f.db,'human');s.use('demo');t.after(()=>s.close());
+  setRole(s,'reviewer',{provider:'codex'});
+  setWorkspaceSettings(s,{codex_watch:{reviewer:{remote:'ws://localhost:80'}}});
+  assert.throws(()=>setRole(s,'reviewer',{provider:'claude'}),/Disable this role/);
+  assert.throws(()=>setRole(s,'reviewer',{kind:'human'}),/Disable this role/);
+  setWorkspaceSettings(s,{codex_watch:{}});setRole(s,'reviewer',{provider:'claude'});
+  assert.equal(setWorkspaceSettings(s,{import_timezone:'Europe/Helsinki'}).import_timezone,'Europe/Helsinki');
+});

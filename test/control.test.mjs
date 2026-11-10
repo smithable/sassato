@@ -171,7 +171,7 @@ test('unresolved no-PID registration explains the human-verified session-end esc
   as(s,'a',()=>registerSession(s,{provider:'claude',external_id:'unverified'}));
   const requested=requestStop(s,['a'])[0];assert.equal(requested.state,'waiting');
   assert.match(requested.waiting_reason,/no PID/);
-  assert.match(requested.human_action,/independently verifying.*session end --as a --workspace team/);
+  assert.match(requested.human_action,/independently verifying.*session end --for a --as human --workspace team/);
   as(s,'a',()=>endSession(s,'unverified'));
   const ended=stopStatus(s,['a'])[0];assert.equal(ended.state,'inactive');assert.equal(ended.acknowledged_at,null);
   assert.equal(ended.waiting_reason,undefined);assert.equal(ended.human_action,undefined);
@@ -187,10 +187,24 @@ test('remote queue uncertainty outlives terminal exit until explicit end or stop
   as(s,'a',()=>s.event('watch','a','queue-attempt',{session_id:registered.id,reason:'urgent',outcome:'queued'}));
   s.event('session',registered.id,'launcher-exited',{role:'a',exit_code:0});
   const stopped=requestStop(s,['a'])[0];
-  assert.equal(stopped.state,'waiting');assert.match(stopped.waiting_reason,/outlive its terminal/);assert.match(stopped.human_action,/sassato stopped/);
+  assert.equal(stopped.state,'waiting');assert.match(stopped.waiting_reason,/outlive its terminal/);assert.match(stopped.human_action,/session end --for a --as human/);
   as(s,'a',()=>acknowledgeStop(s,stopped.id));assert.equal(stopStatus(s,['a'])[0].state,'acknowledged');
   resumeWork(s,['a']);
   s.run('UPDATE sessions SET pid=NULL,process_start=NULL,ended_at=NULL WHERE role=?','a');
   assert.equal(requestStop(s,['a'])[0].state,'waiting');
   as(s,'a',()=>endSession(s));assert.equal(stopStatus(s,['a'])[0].state,'inactive');
+});
+
+
+test('human end of an already-ended registration settles remote uncertainty without pretending a live PID exited',async t=>{
+  const {s,dir}=fixture(t),child=await fakeProvider(t,dir);
+  as(s,'a',()=>registerSession(s,{provider:'claude',external_id:'verified-worker',pid:child.pid}));
+  as(s,'a',()=>endSession(s));
+  s.event('watch','a','queue-attempt',{role:'a',reason:'urgent',queue_exit_code:0});
+  requestStop(s,['a']);assert.equal(stopStatus(s,['a'])[0].state,'waiting');
+  endSession(s,'verified-worker','a');
+  const stillLive=stopStatus(s,['a'])[0];assert.equal(stillLive.state,'waiting');assert.equal(stillLive.session_state,'running');
+  assert.equal(stillLive.waiting_reason,undefined,'human end cleared remote uncertainty, but the live process still blocks STOP');
+  const exited=once(child,'exit');child.kill();await exited;
+  assert.equal(stopStatus(s,['a'])[0].state,'exited');
 });

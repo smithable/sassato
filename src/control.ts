@@ -87,7 +87,7 @@ function view(s: Store, row: Row): StopRequest {
     pid:session?.pid ?? null,process_start:session?.process_start ?? null,pending_work:pending,launcher_pending:launcherPending,
     ...(unresolvedRegistration ? {
       waiting_reason:remotePending?'A queued Codex turn may outlive its terminal; wait for worker acknowledgement or independently verify remote shutdown.':'Registered session has no PID; Sassato cannot verify that its provider has stopped.',
-      human_action:`After independently verifying this role's provider and jobs have stopped, a human may run: ${session.ended_at?`sassato stopped R${row.id}`:'sassato session end'} --as ${row.role} --workspace ${s.workspace}`
+      human_action:`After independently verifying this role's provider and jobs have stopped, a human may run: sassato session end --for ${row.role} --as ${row.requested_by} --workspace ${s.workspace}`
     } : {})
   };
 }

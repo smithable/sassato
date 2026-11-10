@@ -44,6 +44,7 @@ export function setRole(s: Store, roleName: string, input: RoleInput): Row {
     }
     const provider = input.provider === undefined ? old?.provider ?? null : optionalText(input.provider, 'provider', 40);
     if (provider !== null) name(provider);
+    check(!workspaceSettings(s).codex_watch[role]||(kind==='agent'&&provider==='codex'),'Disable this role in workspace codex_watch before changing its kind or provider',3);
     const model = input.model === undefined ? old?.model ?? null : optionalText(normalizeOption(input.model), 'model', 200);
     const launchOptions = Object.fromEntries(ROLE_OPTION_KEYS.map(key => [key,input[key] === undefined ? old?.[key] ?? null : normalizeOption(input[key]) ?? null]));
     for (const key of ['permission_mode','sandbox_mode','approval_policy'] as const) {
@@ -148,12 +149,24 @@ export function heartbeat(s: Store, external?: string): Row {
     return { ...row,id:`S${row.id}`,last_seen_at:at,state:sessionState(row) };
   });
 }
-export function endSession(s: Store, external?: string): Row {
+export function endSession(s: Store, external?: string, targetRole?:string): Row {
   return s.tx(() => {
-    const row = currentSession(s,external), at = now();
-    s.run('UPDATE sessions SET ended_at=? WHERE workspace_id=? AND id=?',at,s.ws,row.id);
-    s.event('session',`S${row.id}`,'ended',{ role: row.role });
-    return { ...row,id:`S${row.id}`,ended_at:at,state:'ended' };
+    let row:Row;
+    if(targetRole===undefined)row=currentSession(s,external);
+    else {
+      s.requireHuman();const target=name(targetRole);
+      check(s.role(target).kind==='agent','Human session-end override applies to agent roles',3);
+      const latest=s.get('SELECT * FROM sessions WHERE workspace_id=? AND role=? ORDER BY (ended_at IS NULL) DESC,id DESC LIMIT 1',s.ws,target);
+      check(latest,'No session registered for the target role',3);
+      if(external!==undefined)check(latest.external_id===externalId(external),'Session was replaced; inspect the current registration before ending it',4);
+      // A remote turn may outlive the terminal that already ended this row.
+      // Human verification must produce a new audit event without impersonating it.
+      row=latest;
+    }
+    const at=now();
+    s.run('UPDATE sessions SET ended_at=coalesce(ended_at,?) WHERE workspace_id=? AND id=?',at,s.ws,row.id);
+    s.event('session',`S${row.id}`,'ended',{ role: row.role,...(targetRole===undefined?{}:{human_override:true}) });
+    return { ...row,id:`S${row.id}`,ended_at:row.ended_at??at,state:'ended' };
   });
 }
 

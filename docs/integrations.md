@@ -160,7 +160,8 @@ before rearming the waiter. Reading the inbox alone leaves urgent notifications 
 
 The default remains foreground `sassato wait`. An optional foreground watcher can queue a
 fixed instruction to check Sassato in an **existing registered Codex thread**. It uses the
-documented `codex queue --thread ID --message TEXT --resume --remote ENDPOINT` command,
+[documented Codex queue command](https://learn.chatgpt.com/docs/developer-commands?surface=cli),
+`codex queue --thread ID --message TEXT --resume --remote ENDPOINT`,
 not a second `codex exec resume` writer. App-server is experimental. Queue acceptance is
 not proof that a model turn ran or finished; inspect the thread and Sassato inbox.
 
@@ -192,8 +193,10 @@ Only the agent saves durable notification progress. Stored mail text and task ti
 become queued prompts. Each queue attempt records the role, reason, event/message ID and exit
 code in Sassato's audit log. A warning or ambiguous output stops the watcher visibly; even a
 successful queue command only means “queued”. Repeated urgent notifications are retried after
-five minutes and then fifteen minutes, then give up visibly. Handling and acknowledging mail
-prevents those retries. STOP queues one fixed stop instruction and exits. Starting again
+five minutes and then fifteen minutes. If still unhandled fifteen minutes after the third attempt,
+that notification is marked exhausted with a visible audit event. Other notifications remain
+watched; acknowledging mail removes its retry state. STOP queues one fixed stop instruction and exits (an already acknowledged STOP exits without
+waking the stopped worker). Starting again
 requires a human to resume work and explicitly restart the watcher; removing a stop file alone
 does not rearm an exited watcher.
 
@@ -201,3 +204,7 @@ Use `sassato workspace set --codex-watch '{}' --as human` to disable future watc
 Stop any currently running foreground watcher separately. Recheck the audit log after any
 interruption before restarting: a process crash between queue acceptance and recording its
 result cannot provide exactly-once delivery.
+
+The configured endpoint must own the registered thread. Attach any interactive TUI to that
+same daemon; do not aim a watcher at a thread being driven by a separate standalone TUI.
+Sassato's role lock coordinates Sassato launchers, not independently started provider processes.

@@ -66,3 +66,11 @@ test('resolve and done give concise terminal success while JSON keeps full recor
  const json=run(['resolve',held.id,'Done','--as','b']);assert.equal(json.id,held.id);assert.equal(json.task_id,another.id);assert.equal(json.status,'resolved');assert.equal(json.body,'Wait');
  const done=run(['done',another.id,'--as','a']);assert.equal(done.id,another.id);assert.equal(done.status,'done');assert.equal(done.title,'JSON unchanged');assert.ok(done.completed_at);
 });
+
+test('session end --for preserves human attribution and refuses agent overrides',t=>{
+ const {run,raw}=fixture(t);const session=run(['session','register','--provider','codex','--session-id','worker-thread','--as','a']);
+ assert.equal(raw(['session','end','--for','a','--as','b']).status,3);
+ const ended=run(['session','end','--for','a','--as','human']);assert.equal(ended.id,session.id);assert.equal(ended.role,'a');
+ assert.equal(run(['session','end','--for','a','--session-id','worker-thread','--as','human']).id,session.id);
+ assert.equal(raw(['session','heartbeat','--for','a','--as','human']).status,2,'heartbeat does not accept another-role targeting');
+});
