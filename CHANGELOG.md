@@ -2,6 +2,20 @@
 
 ## 0.1.2 — unreleased
 
+- Separate production coordination fixes from deferred provider recovery experiments;
+  durable-state continuity is covered by ordinary Node tests.
+- Require a first waiter cursor, retain urgent wake-ups until acknowledgement, and
+  report assigned blockers and dropped dependencies. Sent mail shows receipt state.
+- Restore pre-block task state with lease checks; allow targets to edit unowned work;
+  record human-answer relay attribution and preview imported-title cleanup.
+- Recheck activity after workers stop, allow unregistered roles with unfinished work
+  to stop, and give verified providers a short SIGTERM grace before force escalation.
+- Keep housekeeping in audit history but out of search (schema 6); tolerate historical
+  timezone aliases while preventing new overrides of standard zones.
+- Preserve extracted WIP conflict, completion output, date parsing and own-event
+  notification fixes without enabling managed provider sessions.
+
+
 Feedback fixes and stop controls:
 
 - Historical author/timezone aliases are explicit settings; unconfigured imports use

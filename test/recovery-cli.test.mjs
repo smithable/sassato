@@ -56,10 +56,10 @@ test('CLI rejects invalid, oversized and non-file evidence without updating WIP'
 test('CLI progress persists only handled cursor, replays across processes, and keeps later events',t=>{
   const f=fixture(t);assert.equal(f.run(['progress','show']),null);
   const initial=f.run(['progress','save','--cursor','0','--expect','0']);
-  const first=f.run(['add','First notification','--owner','builder']);
+  const first=f.run(['add','First notification','--owner','builder','--as','human']);
   const received=f.run(['wait','--timeout','1']);assert.equal(received.task,first.id);
   const again=f.run(['wait','--timeout','1']);assert.equal(again.cursor,received.cursor);
-  const second=f.run(['add','Arrived during handling','--owner','builder']);
+  const second=f.run(['add','Arrived during handling','--owner','builder','--as','human']);
   const handled=f.run(['progress','save','--cursor',String(received.cursor),'--expect',String(initial.version)]);
   const retry=f.run(['progress','save','--cursor',String(received.cursor),'--expect',String(initial.version)]);
   assert.equal(retry.id,handled.id);

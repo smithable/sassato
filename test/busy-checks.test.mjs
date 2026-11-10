@@ -33,6 +33,16 @@ test('busy commands distinguish busy, idle, failed and timed-out without shell i
   assert.match(statuses[3].reason,/timed out/);assert(!existsSync(unexpected));
 });
 
+test('expired or aborted rounds report every pending check as unknown without executing commands',async t=>{
+  const {dir}=fixture(t),marker=join(dir,'must-not-run');
+  const checks=validateBusyChecks([command('one',`require('node:fs').writeFileSync(${JSON.stringify(marker)},'ran');process.exit(1)`),command('two','process.exit(1)')]);
+  const aborted=new AbortController();aborted.abort();
+  for(const rows of [await observeBusyChecks(checks,0),await observeBusyChecks(checks,Infinity,aborted.signal)]) {
+    assert.deepEqual(rows.map(row=>[row.name,row.state]),[['one','unknown'],['two','unknown']]);
+  }
+  assert.equal(existsSync(marker),false);
+});
+
 test('flock check sees a held lock, not mere file presence, and never creates a missing lock',async t=>{
   const {dir}=fixture(t),path=join(dir,'gate.lock'),ready=join(dir,'ready');writeFileSync(path,'pid=12345 host=fixture-host\n');
   const checks=validateBusyChecks([{name:'gate',type:'flock',path},{name:'absent',type:'flock',path:join(dir,'absent')}]);
@@ -64,11 +74,44 @@ test('no-wait, force and named-role stops never execute machine busy commands',a
   const {s,dir}=fixture(t),marker=join(dir,'ran');
   setWorkspaceSettings(s,{busy_checks:[command('check',`require('node:fs').writeFileSync(${JSON.stringify(marker)},'ran');process.exit(1)`)]});
   for(const options of [{all:true,noWait:true},{all:true,force:true}]){
-    const report=await stop(s,[],options);assert.equal(report.machine_quiet,null);assert.equal(report.complete,!!options.noWait);assert.equal(report.busy_checks[0].state,'unknown');assert(!existsSync(marker));
+    const report=await stop(s,[],options);assert.equal(report.machine_quiet,null);assert.equal(report.complete,true);assert.equal(report.busy_checks[0].state,'unknown');assert(!existsSync(marker));
   }
   const named=await stop(s,['builder']);assert(named.complete);assert.equal(named.machine_quiet,null);assert(!existsSync(marker));
   s.actor='builder';registerSession(s,{provider:'claude',external_id:'pending'});s.actor='human';
   const pending=await stop(s,[],{all:true,noWait:true});assert(!pending.complete);assert.equal(pending.machine_quiet,null);assert(!existsSync(marker));
+  const forced=await stop(s,[],{all:true,force:true});assert(!forced.complete);assert.equal(forced.machine_quiet,null);assert(!existsSync(marker));
+});
+
+test('a check observed idle before agents stop is re-probed after the final acknowledgement',async t=>{
+  const {s,dir}=fixture(t),marker=join(dir,'shutdown-job'),count=join(dir,'check-count');
+  s.actor='builder';registerSession(s,{provider:'claude',external_id:'shutdown'});s.actor='human';
+  setWorkspaceSettings(s,{busy_checks:[command('shutdown',`const fs=require('node:fs'),path=${JSON.stringify(count)};let n=0;try{n=Number(fs.readFileSync(path,'utf8'))}catch{}fs.writeFileSync(path,String(n+1));process.exit(fs.existsSync(${JSON.stringify(marker)})?0:1)`)]});
+  let acknowledged=false,sawBusyAfterStop=false;
+  const report=await stop(s,[],{all:true,timeout:3,onProgress(rows,checks){
+    if(checks[0]?.state==='idle'&&!acknowledged){
+      assert.equal(rows.find(r=>r.role==='builder').state,'waiting');
+      writeFileSync(marker,'job started during shutdown');s.actor='builder';acknowledgeStop(s,rows.find(r=>r.role==='builder').id);s.actor='human';acknowledged=true;
+    }else if(checks[0]?.state==='busy'&&acknowledged){sawBusyAfterStop=true;rmSync(marker);}
+  }});
+  assert(acknowledged);assert(sawBusyAfterStop,'completion must not reuse the pre-stop idle observation');
+  assert(report.complete);assert.equal(report.machine_quiet,true);assert.equal(Number(readFileSync(count,'utf8')),3);
+});
+
+test('a timed-out or cancelled final check never reuses an early idle observation',async t=>{
+  for(const mode of ['timeout','cancel']) {
+    const {s,dir}=fixture(t),count=join(dir,'round');
+    s.actor='builder';registerSession(s,{provider:'claude',external_id:'shutdown'});s.actor='human';
+    setWorkspaceSettings(s,{busy_checks:[command('final',`const fs=require('node:fs'),path=${JSON.stringify(count)};let n=0;try{n=Number(fs.readFileSync(path,'utf8'))}catch{}fs.writeFileSync(path,String(n+1));if(n===0)process.exit(1);setInterval(()=>{},1000)`,10_000)]});
+    const abort=new AbortController();let acknowledged=false;
+    const timer=mode==='cancel'?setInterval(()=>{if(existsSync(count)&&Number(readFileSync(count,'utf8'))===2)abort.abort();},10):undefined;
+    try {
+      const report=await stop(s,[],{all:true,timeout:1,signal:abort.signal,onProgress(rows,checks){
+        if(checks[0]?.state==='idle'&&!acknowledged){s.actor='builder';acknowledgeStop(s,rows.find(row=>row.role==='builder').id);s.actor='human';acknowledged=true;}
+      }});
+      assert(acknowledged);assert(!report.complete);assert.equal(report.machine_quiet,false);assert.equal(report.busy_checks[0].state,'unknown');
+      assert.equal(report.interrupted,mode==='cancel');assert.equal(report.timed_out,mode==='timeout');assert.equal(Number(readFileSync(count,'utf8')),2);
+    } finally {clearInterval(timer);}
+  }
 });
 
 test('waiting retries only busy and unknown checks; another stop observes every check anew',async t=>{

@@ -88,3 +88,20 @@ the initial context `cursor`. They preserve existing progress and never jump to
 absent. Progress versions are separate from WIP versions, and
 progress does not consume inbox receipts. An older CLI does not use these progress
 records automatically, so supply the recorded cursor explicitly when mixing versions.
+
+## Coordination review update
+
+Schema 6 removes housekeeping copies from the search index while retaining the full
+append-only event history. Back up before upgrading, then run `sassato migrate`
+with the selected database before using read-only commands. Older CLIs cannot read
+this schema; deploy the upgraded CLI to all workers that share the database.
+
+Previously stored timezone aliases recognized by Intl (such as `est`, `cet`, and
+`gmt`) are ignored on read, preserving their standard meaning and allowing unrelated
+settings updates. Original settings remain in history. New writes reject such aliases;
+use a nonstandard label such as `local time` for a custom historical timezone.
+
+A first `wait` now requires an explicit `--since` cursor or saved notification
+progress. Keep the cursor captured before reading/handling current work, as described
+in [context management](context-management.md). Reading urgent mail does not clear
+its wake-up; acknowledge it after handling to avoid repeated delivery.

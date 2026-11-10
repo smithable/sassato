@@ -100,10 +100,10 @@ test('WIP is role-owned, shared-readable and protected against stale writes',t=>
     c.setWip(s,{current:'Work owned by b'});
   });
   assert.equal(c.getWip(s).current,'Implement OAuth');
-  assert.throws(()=>c.setWip(s,{current:'Overwrite'}),/expected version missing/);
+  assert.throws(()=>c.setWip(s,{current:'Overwrite'}),/expected version missing; current version is 1.*--expect 1/);
   c.setWip(s,{current:'Done implementing',expected_version:1});
   assert.equal(c.getWip(s).next,'Review redirect');
-  assert.throws(()=>c.setWip(s,{notes:'Old draft',expected_version:1}),/WIP changed/);
+  assert.throws(()=>c.setWip(s,{notes:'Old draft',expected_version:1}),/WIP changed.*current version is 2.*--expect 2/);
 });
 
 test('fresh provider session recovers role work, facts and unread mail without transcript identity',t=>{

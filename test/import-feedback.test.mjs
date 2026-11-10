@@ -207,6 +207,41 @@ test('date-only answer labels do not unblock actions while following decisions r
   assert.equal(f.s.get("SELECT count(*) n FROM questions WHERE status='pending'").n,11);
 });
 
+test('action answers share WIP date grammar and skip timestamp metadata before the actual decision',t=>{
+  const f=fixture(t),actions=join(f.dir,'actions');mkdirSync(actions);
+  setWorkspaceSettings(f.s,{import_timezone_aliases:{'local time':'America/New_York','local_time':'America/New_York'}});
+  const stamps=['2026-11-10 13:38 local time','2026-11-10 ~13:4x local time','2026-11-10 13:4x','2026-11-10 ~13:38 UTC','2026-11-10T13:38:05.125Z','2026-11-10 13:38 GMT','2026-11-10 13:38 local_time'];
+  for(const [i,stamp] of stamps.entries()) {
+    writeFileSync(join(actions,`metadata-${i}.md`),`# Request\nAnswer: ${stamp}\n`);
+    writeFileSync(join(actions,`decision-${i}.md`),`# Request\nAnswer:\n${stamp}\n\n[2026-11-10];\nProceed with option two.\n`);
+  }
+  writeFileSync(join(actions,'section.md'),'# Request\nAnswer:\n2026-11-10 ~13:4x local time\n## Next section\nNot an answer.\n');
+  writeFileSync(join(actions,'placeholder.md'),'# Request\nAnswer:\n2026-11-10 ~13:4x local time\nPending\nUnrelated later notes.\n');
+  writeFileSync(join(actions,'prose.md'),'# Request\nAnswer: 2026-11-10 13:38 local time is the deadline.\n');
+  const plan=previewImport(f.s,{actions}),answers=plan.items.filter(item=>item.answerEvidence);
+  assert.equal(answers.length,stamps.length+1);
+  for(const item of answers.filter(item=>item.source.includes('decision-')))assert.deepEqual(item.answerEvidence,{line:6,excerpt:'Proceed with option two.'});
+  assert.ok(plan.items.filter(item=>item.source.includes('metadata-')).every(item=>item.pendingQuestion));
+  applyImport(f.s,{actions},plan.digest);assert.equal(f.s.get("SELECT count(*) n FROM questions WHERE status='pending'").n,stamps.length+2);
+  const wip=f.file('seconds-wip.md','- 2026-11-10 13:38:05.125 GMT (A): Preserve seconds.\n- B (2026-11-10 ~13:4x local time): Approximate local minute.\n- C (stopped, 2026-11-10 13:38:05+0200) Offset with seconds.\n');
+  const rows=Object.fromEntries(previewImport(f.s,{wip}).items.map(item=>[item.owner,item]));
+  assert.equal(rows.a.sourceUpdatedAt,'2026-11-10T13:38:05.125Z');assert.equal(rows.b.sourceUpdatedAt,'2026-11-10T18:49:00.000Z');assert.equal(rows.c.sourceUpdatedAt,'2026-11-10T11:38:05.000Z');
+});
+
+test('standard slashless time zones are import metadata while date-prefixed decisions remain answers',t=>{
+  const f=fixture(t),actions=join(f.dir,'actions');mkdirSync(actions);
+  const metadata=['2026-11-10 13:38 EST','2026-11-10 13:38 CET','2026-11-10 13:38 Japan','2026-99-99','2026-11-10 29:99 EST'];
+  const decisions=['2026-11-10 agreed','2026-11-10 is approved','2026-11-10 13:38 EST is the deadline'];
+  for(const [i,stamp] of metadata.entries())writeFileSync(join(actions,`metadata-${i}.md`),`# Request\nAnswer: ${stamp}\n`);
+  for(const [i,answer] of decisions.entries())writeFileSync(join(actions,`answer-${i}.md`),`# Request\nAnswer: ${answer}\n`);
+  const plan=previewImport(f.s,{actions});
+  assert.equal(plan.items.filter(item=>item.pendingQuestion).length,metadata.length);
+  assert.deepEqual(plan.items.filter(item=>item.answerEvidence).map(item=>item.answerEvidence.excerpt).sort(),decisions.map(value=>'Answer: '+value).sort());
+  const wip=f.file('standard-zones.md','- 2026-11-10 13:38 EST (A): Standard east coast zone.\n- B (2026-11-10 13:38 CET): Standard central zone.\n- C (stopped, 2026-11-10 13:38 Japan) Standard country alias.\n- A (2026-11-11 agreed): Not a timezone.\n');
+  const rows=Object.fromEntries(previewImport(f.s,{wip}).items.map(item=>[item.owner,item]));
+  assert.equal(rows.a.sourceUpdatedAt,'2026-11-10T18:38:00.000Z');assert.equal(rows.b.sourceUpdatedAt,'2026-11-10T12:38:00.000Z');assert.equal(rows.c.sourceUpdatedAt,'2026-11-10T04:38:00.000Z');
+});
+
 test('fresh current-format imports are already reconciled and repair is a no-op',t=>{
   const f=fixture(t),backlog=f.file('backlog.md','## A\n1. Waiting on dependency\n2. (dropped) Cancelled work\n3. (done) Finished work\n');
   imported(f,{backlog});const plan=previewImport(f.s,{backlog,repair:true});

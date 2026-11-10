@@ -54,11 +54,19 @@ function completion(body: string): Item['status'] | undefined {
   }
   return undefined;
 }
-function answeredAction(raw: string, markers: string[]): Item['answerEvidence'] {
+function answeredAction(raw: string, markers: string[], timezoneAliases: Record<string,string>): Item['answerEvidence'] {
   const lines=raw.split(/\r?\n/);
-  const normalize=(value:string):string=>value.trim().replace(/^(?:[-*]\s+)?(?:#{1,6}\s+)?/,'').replace(/[*_~`]/g,'').trim();
+  const normalize=(value:string):string=>value.trim().replace(/^(?:[-*]\s+)?(?:#{1,6}\s+)?/,'').replace(/[*~`]/g,'').replace(/(?<![\p{L}\p{N}])_+|_+(?![\p{L}\p{N}])/gu,'').trim();
   const prefixes=markers.map(normalize).filter(Boolean).sort((a,b)=>b.length-a.length);
-  const dateOnly=(value:string):boolean=>/^[([]?\d{4}-\d{2}-\d{2}(?:[T\s]+\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?(?:\s*(?:Z|UTC|[+-]\d{2}:?\d{2}|[A-Za-z_]+\/[A-Za-z_/]+))?[)\]]?[.,;]?$/i.test(value.trim());
+  const dateOnlyPattern=new RegExp(`^[([]?${datePattern(timezoneAliases)}[)\\]]?[.,;]?$`,'i');
+  const dateOnly=(value:string):boolean=>{
+    const match=dateOnlyPattern.exec(value.trim());if(!match)return false;
+    const zone=match[5];
+    if(!zone||Object.hasOwn(timezoneAliases,zone.toLowerCase())||/^(?:Z|[+-]\d{2}:?\d{2})$/i.test(zone))return true;
+    // A standard slashless zone is metadata; arbitrary trailing prose is not.
+    // Date-shaped typos remain metadata rather than fabricating an answer.
+    try {validateTimezone(zone);return true;} catch {return false;}
+  };
   const markerFor=(line:string)=>prefixes.find(prefix=>line.toLowerCase().startsWith(prefix.toLowerCase())&&
     (!/[\p{L}\p{N}]$/u.test(prefix)||!line[prefix.length]||/^[\s:,(]/.test(line.slice(prefix.length))));
   const genericLabel=(line:string)=>/^(?:Answered\b|Answer\s*:|Decision\s*:)/i.test(line);
@@ -69,7 +77,7 @@ function answeredAction(raw: string, markers: string[]): Item['answerEvidence'] 
     // inferred from roles. Generic answer labels remain available by default.
     const marker=markerFor(line);
     if(!genericLabel(line)&&marker===undefined)continue;
-    let evidence='';
+    let evidence='',evidenceLine=i;
     const direct=/^(?:Answer(?:ed)?|Decision)\s*:\s*(.*)$/i.exec(line);
     if(direct)evidence=direct[1];
     else if(marker?.endsWith(':'))evidence=line.slice(marker.length).trim();
@@ -81,31 +89,35 @@ function answeredAction(raw: string, markers: string[]): Item['answerEvidence'] 
     }
     if(dateOnly(evidence))evidence='';
     if(!evidence) {
-      const next=lines.slice(i+1).find(value=>value.trim());
-      if(next&&!/^\s*#{1,6}\s/.test(next)) {
+      for(let j=i+1;j<lines.length;j++) {
+        const next=lines[j];
+        if(!next.trim())continue;
+        if(/^\s*#{1,6}\s/.test(next))break;
         const candidate=normalize(next);
-        // Another answer label must be parsed on its own iteration: a heading
-        // containing only a date is not a decision for the preceding heading.
-        if(!genericLabel(candidate)&&markerFor(candidate)===undefined)evidence=candidate;
+        // Skip timestamp metadata, but never consume a later answer heading or
+        // cross a placeholder into unrelated prose.
+        if(genericLabel(candidate)||markerFor(candidate)!==undefined)break;
+        if(dateOnly(candidate))continue;
+        evidence=candidate;evidenceLine=j;break;
       }
     }
-    if(substantive(evidence))return {line:i+1,excerpt:lines[i].trim().slice(0,300)};
+    if(substantive(evidence))return {line:evidenceLine+1,excerpt:lines[evidenceLine].trim().slice(0,300)};
   }
   return undefined;
 }
 const regexLiteral=(value:string):string=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-const datePattern=(aliases:Record<string,string>):string=>'(\\d{4}-\\d{2}-\\d{2})(?:[T\\s]+~?(\\d{1,2}):([x\\d]{2}))?(?:\\s*(UTC|Z|[+-]\\d{2}:\\d{2}|[A-Za-z_]+/[A-Za-z_/]+'+Object.keys(aliases).map(alias=>'|'+regexLiteral(alias)).join('')+'))?';
-function sourceTime(date:string,hours:string|undefined,minutes:string|undefined,zone:string|undefined,defaultZone:string,aliases:Record<string,string>):number|undefined {
+const datePattern=(aliases:Record<string,string>):string=>'(\\d{4}-\\d{2}-\\d{2})(?:[T\\s]+~?(\\d{1,2}):([x\\d]{2})(?::(\\d{2}(?:\\.\\d+)?))?)?(?:\\s*([+-]\\d{2}:?\\d{2}|[A-Za-z_]+/[A-Za-z_/]+|[A-Za-z][A-Za-z0-9_+-]*'+Object.keys(aliases).map(alias=>'|'+regexLiteral(alias)).join('')+'))?';
+function sourceTime(date:string,hours:string|undefined,minutes:string|undefined,seconds:string|undefined,zone:string|undefined,defaultZone:string,aliases:Record<string,string>):number|undefined {
   const hour=Number(hours??'0'),minute=Number((minutes??'00').replace(/x/gi,'9'));
-  if(hour>23||minute>59)return undefined;
-  let time=Date.parse(`${date}T${String(hour).padStart(2,'0')}:${String(minute).padStart(2,'0')}:00Z`);
+  if(hour>23||minute>59||Number(seconds??'0')>=60)return undefined;
+  let time=Date.parse(`${date}T${String(hour).padStart(2,'0')}:${String(minute).padStart(2,'0')}:${seconds??'00'}Z`);
   if(!Number.isFinite(time)||new Date(time).toISOString().slice(0,10)!==date)return undefined;
   const selected=zone ? (Object.hasOwn(aliases,zone.toLowerCase())?aliases[zone.toLowerCase()]:zone) : defaultZone;
-  const numeric=/^([+-])(\d{2}):(\d{2})$/.exec(selected);
+  const numeric=/^([+-])(\d{2}):?(\d{2})$/.exec(selected);
   if(numeric) {
     if(Number(numeric[2])>23||Number(numeric[3])>59)return undefined;
     time-=(numeric[1]==='+'?1:-1)*(Number(numeric[2])*60+Number(numeric[3]))*60_000;
-  } else if(!['UTC','Z'].includes(selected.toUpperCase())) {
+  } else if(!['UTC','GMT','Z'].includes(selected.toUpperCase())) {
     try {validateTimezone(selected);} catch {return undefined;}
     const zoneName=new Intl.DateTimeFormat('en',{timeZone:selected,timeZoneName:'shortOffset'}).formatToParts(new Date(time)).find(p=>p.type==='timeZoneName')?.value;
     const offset=/GMT([+-])(\d{1,2})(?::(\d{2}))?/.exec(zoneName??'');
@@ -119,17 +131,17 @@ function wipStamp(line:string,roleLabel:string,timezone:string,aliases:Record<st
   // Match only the author in a dated header, never a role mentioned in the body
   // or a subagent whose name merely starts with an existing role.
   const first=new RegExp(`^${dateLabel}\\s+\\(${roleLabel}(?:,[^)]*)?\\)\\s*(?::|$)`,'i').exec(header);
-  if(first){const time=sourceTime(first[1],first[2],first[3],first[4],timezone,aliases);if(time!==undefined)return {label:first[5],time};}
+  if(first){const time=sourceTime(first[1],first[2],first[3],first[4],first[5],timezone,aliases);if(time!==undefined)return {label:first[6],time};}
   const roleFirst=new RegExp(`^${roleLabel}\\s+(?:\\(\\s*)?${dateLabel}\\s*(?:\\)|:|$)`,'i').exec(header)
     ??new RegExp(`^\\(${roleLabel}\\s*,\\s*${dateLabel}\\s*(?:,|\\))`,'i').exec(header);
-  if(roleFirst){const time=sourceTime(roleFirst[2],roleFirst[3],roleFirst[4],roleFirst[5],timezone,aliases);if(time!==undefined)return {label:roleFirst[1],time};}
+  if(roleFirst){const time=sourceTime(roleFirst[2],roleFirst[3],roleFirst[4],roleFirst[5],roleFirst[6],timezone,aliases);if(time!==undefined)return {label:roleFirst[1],time};}
   const stopped=new RegExp(`\\(stopped\\s*,?\\s*${dateLabel}\\s*\\)`,'i').exec(header);
   if(stopped) {
     const before=header.slice(0,stopped.index),after=header.slice(stopped.index+stopped[0].length);
     const label=new RegExp(`^${roleLabel}\\s*:?\\s*$`,'i').exec(before)?.[1]
-      ??new RegExp(`^${dateLabel}\\s+\\(${roleLabel}(?:,[^)]*)?\\)\\s*:\\s*$`,'i').exec(before)?.[5]
+      ??new RegExp(`^${dateLabel}\\s+\\(${roleLabel}(?:,[^)]*)?\\)\\s*:\\s*$`,'i').exec(before)?.[6]
       ??new RegExp(`^\\s*\\(?${roleLabel}\\s*(?:\\)|:|$)`,'i').exec(after)?.[1];
-    const time=sourceTime(stopped[1],stopped[2],stopped[3],stopped[4],timezone,aliases);
+    const time=sourceTime(stopped[1],stopped[2],stopped[3],stopped[4],stopped[5],timezone,aliases);
     if(label&&time!==undefined)return {label,time};
   }
   return undefined;
@@ -148,7 +160,7 @@ function parse(store: Store, sources: Source[]): {items:Item[]; warnings:string[
   // Prefer an explicit complete alias before interpreting a generic prefix.
   const roleLabel='(?:session\\s+)??('+labels+')';
   const add=(source:Source,line:number,key:string,body:string,owner:string|null,flags:string[]=[],kind:Item['kind']='task',externalId?:string):Item=>{
-    const trimmed=body.trim(),finished=completion(trimmed),answerEvidence=source.kind==='action'?answeredAction(source.raw,settings.import_answer_markers):undefined;
+    const trimmed=body.trim(),finished=completion(trimmed),answerEvidence=source.kind==='action'?answeredAction(source.raw,settings.import_answer_markers,settings.import_timezone_aliases):undefined;
     let status:Item['status']=finished??'open';
     if(kind==='task'&&!finished) {
       if(source.kind==='action') {status=answerEvidence?'open':'blocked';if(!answerEvidence)flags.push('Legacy human action: review the remaining decision in the preserved source');}

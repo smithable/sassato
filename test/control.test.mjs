@@ -63,13 +63,13 @@ test('acknowledgement binds the exact active generation and human resume permits
   assert.deepEqual(s.all("SELECT action FROM events WHERE workspace_id=? AND entity='stop' AND entity_id=? ORDER BY id",s.ws,first.id).map(r=>r.action),['requested','acknowledged','cleared']);
 });
 
-test('stop status stays waiting for unregistered unfinished work and for unverified ended sessions',t=>{
+test('unfinished work does not imply a running session; unverified registrations still wait',t=>{
   const {s}=fixture(t);
   as(s,'a',()=>{const task=addTask(s,{title:'Unregistered active work'});takeTask(s,task.id);});
   as(s,'b',()=>{registerSession(s,{provider:'claude',external_id:'unverified'});endSession(s,'unverified');});
   requestStop(s,['a','b','c']);
   const states=Object.fromEntries(stopStatus(s).map(r=>[r.role,r]));
-  assert.equal(states.a.state,'waiting');assert.equal(states.a.pending_work,1);
+  assert.equal(states.a.state,'inactive');assert.equal(states.a.pending_work,1);
   assert.equal(states.b.session_state,'ended');assert.equal(states.b.state,'waiting','declared end without PID proof is not exit');
   assert.equal(states.c.state,'inactive');
 });

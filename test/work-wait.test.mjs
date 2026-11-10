@@ -6,8 +6,8 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Store} from '../dist/storage.js';
 import {initWorkspace} from '../dist/admin.js';
-import {send,inbox} from '../dist/coordination.js';
-import {requestStop,resumeWork} from '../dist/control.js';
+import {send,inbox,acknowledge} from '../dist/coordination.js';
+import {requestStop,resumeWork,acknowledgeStop} from '../dist/control.js';
 import {addTask,askHuman,answerQuestion,blockTask,resolveBlocker,addDependency,removeDependency,takeTask,doneTask,dropTask,reopenTask,releaseTask,handoffTask,updateTask} from '../dist/tasks.js';
 import {waitForWork} from '../dist/mail-wait.js';
 function fixture(t){
@@ -35,7 +35,7 @@ test('answers reach original asker after handoff and after explicit human task c
   handoffTask(f.s,work.id,'b','B handles implementation');const since=f.cursor();answerQuestion(f.s,question.id,'Yes');
   assert.equal((await wait(f,since)).reason,'answer');
   const human=addTask(f.s,{title:'Human decision',humanOnly:true}),q=askHuman(f.s,human.id,{question:'Approve and close?'}),cursor=f.cursor();answerQuestion(f.s,q.id,'Approved',{close:true});
-  f.reader.actor='human';const closed=await wait(f,cursor);assert.equal(closed.reason,'answer');assert.equal(closed.task,human.id);assert.equal(f.s.task(human.id).status,'done');
+  f.reader.actor='human';const closed=await wait(f,cursor);assert.equal(closed.reason,'timeout','own answer must not wake the answering human');assert.equal(f.s.task(human.id).status,'done');
 });
 
 test('resolved blocker wakes its owner even when another blocker still holds the task',async t=>{
@@ -54,9 +54,9 @@ test('one completion returns every eligible dependent and rearm does not lose a 
   assert.equal((await wait(f,next.cursor)).reason,'timeout');
 });
 
-test('default baseline ignores historical workflow and a read-only waiter sees later commits',async t=>{
+test('explicit snapshot baseline ignores historical workflow and a read-only waiter sees later commits',async t=>{
   const f=fixture(t);task(f.s,'Historical available work');send(f.s,['a'],'Ordinary mail');
-  let fresh;const pending=wait(f,undefined,{timeout:2});
+  let fresh;const pending=wait(f,f.cursor(),{timeout:2});
   const timer=setTimeout(()=>{assert.equal(f.reader.db.isTransaction,false);fresh=task(f.s,'Created after wait starts');},30);t.after(()=>clearTimeout(timer));
   const result=await pending;assert.equal(result.reason,'task-assigned');assert.equal(result.task,fresh.id);
   const snapshot=f.s.get('SELECT count(*) n FROM events').n;assert.equal((await wait(f,result.cursor)).reason,'timeout');assert.equal(f.s.get('SELECT count(*) n FROM events').n,snapshot);
@@ -86,16 +86,18 @@ test('release, reopen, target edits, permission edits and dependency removal pro
   const handed=task(f.s,'Handoff','b');cursor=f.cursor();handoffTask(f.s,handed.id,'a','Take over');result=await wait(f,cursor);assert.equal(result.reason,'task-assigned');assert.equal(result.task,handed.id);
 });
 
-test('dropped dependency and release retaining another role target never make work available',async t=>{
+test('dropped dependency notifies dependents without making work available',async t=>{
   const f=fixture(t),dep=task(f.s,'Dependency','b'),work=task(f.s,'Dependent');addDependency(f.s,work.id,dep.id);
   const locked=addTask(f.s,{title:'Target retained',owner:'b',forRole:'b'});const since=f.cursor();dropTask(f.s,dep.id,'Cancelled');releaseTask(f.s,locked.id,'Still for B');
-  assert.equal((await wait(f,since)).reason,'timeout');
+  const event=await wait(f,since);assert.equal(event.reason,'dependency-dropped');assert.equal(event.task,dep.id);assert.deepEqual(event.tasks,[work.id]);
+  assert.throws(()=>as(f.s,'a',()=>takeTask(f.s,work.id)),/blockers|dependenc/i);
+  assert.equal((await wait(f,event.cursor)).reason,'timeout');
 });
 
 test('urgent and stop have priority but never skip queued workflow on rearm',async t=>{
   const f=fixture(t),since=f.cursor(),work=task(f.s,'Queued workflow');send(f.s,['a'],'Urgent action',{urgent:true});requestStop(f.s,['a']);
   const stopped=await wait(f,since);assert.equal(stopped.reason,'stop');assert.equal(stopped.cursor,since);resumeWork(f.s,['a']);
-  const urgent=await wait(f,stopped.cursor);assert.equal(urgent.reason,'urgent');assert.equal(urgent.cursor,since);as(f.s,'a',()=>inbox(f.s));
+  const urgent=await wait(f,stopped.cursor);assert.equal(urgent.reason,'urgent');assert.equal(urgent.cursor,since);as(f.s,'a',()=>{inbox(f.s);acknowledge(f.s,urgent.message.id);});
   const event=await wait(f,urgent.cursor);assert.equal(event.reason,'task-assigned');assert.equal(event.task,work.id);
 });
 
@@ -140,4 +142,55 @@ test('dependency completion and removal wake owned doing work but respect other 
   assert.equal(result.reason,'task-ready');assert.deepEqual(result.tasks,[own.id]);assert.equal(f.s.task(own.id).status,'doing');
   const missing=task(f.s,'Unfinished prerequisite','b');addDependency(f.s,own.id,missing.id);const cursor=f.cursor();removeDependency(f.s,own.id,missing.id);
   const removed=await wait(f,cursor);assert.equal(removed.reason,'task-ready');assert.deepEqual(removed.tasks,[own.id]);
+});
+
+
+test('queued self actions are skipped without losing other-role blocker notifications',async t=>{
+  const f=fixture(t),work=task(f.s,'Reconcile blockers'),blockers=[];
+  for(let i=0;i<4;i++)blockers.push(blockTask(f.s,work.id,{kind:'agent',waitingOn:'b',body:`Blocker ${i}`}));
+  const since=f.cursor();as(f.s,'a',()=>{for(const blocker of blockers.slice(0,3))resolveBlocker(f.s,blocker.id,'Resolved during own reconciliation');});
+  resolveBlocker(f.s,blockers[3].id,'Human cleared the remaining blocker');
+  const external=await wait(f,since);assert.equal(external.reason,'blocker-resolved');assert.equal(external.blocker,blockers[3].id);
+  const next=blockTask(f.s,work.id,{kind:'external',waitingOn:'service',body:'One more'});
+  as(f.s,'a',()=>resolveBlocker(f.s,next.id,'I checked it'));as(f.s,'a',()=>addTask(f.s,{title:'Own assignment',owner:'a'}));
+  const skipped=await wait(f,external.cursor);assert.equal(skipped.reason,'timeout');assert.equal(skipped.cursor,f.cursor());
+  assert.equal((await wait(f,skipped.cursor)).reason,'timeout','rearm never loops on skipped self events');
+});
+
+test('self completion still wakes other dependent roles and own STOP takes priority',async t=>{
+  const f=fixture(t),dep=task(f.s,'My prerequisite'),own=task(f.s,'My dependent'),other=task(f.s,'Other dependent','b');
+  addDependency(f.s,own.id,dep.id);addDependency(f.s,other.id,dep.id);const since=f.cursor();finish(f.s,dep.id);
+  const self=await wait(f,since);assert.equal(self.reason,'timeout');
+  f.reader.actor='b';const notification=await wait(f,since);assert.equal(notification.reason,'task-ready');assert.deepEqual(notification.tasks,[other.id]);
+  const stop=requestStop(f.s,['a'])[0];as(f.s,'a',()=>acknowledgeStop(f.s,stop.id));f.reader.actor='a';const stopped=await wait(f,since);assert.equal(stopped.reason,'stop');assert.equal(stopped.cursor,since);
+});
+
+test('self-sent urgent mail does not wake or consume mail, while other senders still wake',async t=>{
+  const f=fixture(t),since=f.cursor();as(f.s,'a',()=>send(f.s,['a'],'Reminder to myself',{urgent:true}));
+  const result=await wait(f,since);assert.equal(result.reason,'timeout');
+  assert.equal(as(f.s,'a',()=>inbox(f.s,{peek:true}))[0].state,'unread');
+  const external=send(f.s,['a'],'Human urgent update',{urgent:true});const next=await wait(f,result.cursor);
+  assert.equal(next.reason,'urgent');assert.equal(next.message.id,external.id);
+});
+
+test('new blockers wake the role being waited on and ignore resolved or unrelated blockers',async t=>{
+  const f=fixture(t),work=task(f.s,'Needs another role','b'),since=f.cursor();
+  const blocker=as(f.s,'b',()=>blockTask(f.s,work.id,{kind:'agent',waitingOn:'a',body:'Please inspect the failure'}));
+  const result=await wait(f,since);assert.equal(result.reason,'blocker-assigned');assert.equal(result.blocker,blocker.id);assert.equal(result.task,work.id);
+  const unrelated=as(f.s,'b',()=>blockTask(f.s,work.id,{kind:'agent',waitingOn:'c',body:'Other role input'}));
+  const obsolete=as(f.s,'b',()=>blockTask(f.s,work.id,{kind:'agent',waitingOn:'a',body:'Already settled'}));
+  resolveBlocker(f.s,obsolete.id,'Resolved before the waiter returned');
+  assert.equal((await wait(f,result.cursor)).reason,'timeout');
+  resolveBlocker(f.s,blocker.id,'Settled original request');resolveBlocker(f.s,unrelated.id,'Settled other request');
+  assert.equal((await wait(f,since)).reason,'timeout','resolved assignments should not resurface after restart');
+});
+
+test('dropped dependencies notify blocked or review owners but ignore unrelated and withdrawn work',async t=>{
+  const f=fixture(t),dependency=task(f.s,'Shared prerequisite','b'),owned=task(f.s,'My blocked work'),foreign=task(f.s,'Other role work','c'),withdrawn=task(f.s,'Withdrawn work');
+  for(const work of [owned,foreign,withdrawn])addDependency(f.s,work.id,dependency.id);
+  blockTask(f.s,owned.id,{kind:'external',waitingOn:'service',body:'Also waiting externally'});dropTask(f.s,withdrawn.id,'Withdrawn');
+  const since=f.cursor();dropTask(f.s,dependency.id,'Cancelled');
+  const result=await wait(f,since);assert.equal(result.reason,'dependency-dropped');assert.deepEqual(result.tasks,[owned.id]);
+  assert.equal(f.s.task(owned.id).status,'blocked');
+  reopenTask(f.s,dependency.id,'Restored');assert.equal((await wait(f,since)).reason,'timeout','a reopened prerequisite supersedes its old drop notification');
 });

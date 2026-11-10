@@ -64,7 +64,9 @@ function view(s: Store, row: Row): StopRequest {
   // An end marker alone does not prove exit: an identified PID must be verified gone/reused.
   const verifiedExit = !!session?.pid && !!session?.process_start && (currentState === 'stale' || currentState === 'ended');
   const launcherPending = pendingLauncher(s,row.role);
-  const state: StopState = row.acknowledged_at ? 'acknowledged' : launcherPending ? 'waiting' : verifiedExit ? 'exited' : !session && pending === 0 ? 'inactive' : 'waiting';
+  // Tasks survive sessions and are not evidence of a running worker. Unknown
+  // registrations still require acknowledgement or verified exit.
+  const state: StopState = row.acknowledged_at ? 'acknowledged' : launcherPending ? 'waiting' : verifiedExit ? 'exited' : !session ? 'inactive' : 'waiting';
   return {
     id:`R${row.id}`,workspace_id:row.workspace_id,role:row.role,requested_at:row.requested_at,requested_by:row.requested_by,
     acknowledged_at:row.acknowledged_at,cleared_at:row.cleared_at,state,

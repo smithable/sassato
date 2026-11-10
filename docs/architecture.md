@@ -104,7 +104,11 @@ References: [Node SQLite](https://nodejs.org/api/sqlite.html),
 [SQLite WAL](https://www.sqlite.org/wal.html), [FTS5](https://www.sqlite.org/fts5.html).
 
 Schema v4 adds a checked urgent flag and partial index to messages. `wait --urgent`
-reads urgent unread receipts and durable stop requests in short snapshots; notification
+reads unacknowledged urgent receipts and durable stop requests in short snapshots; notification
 never changes delivery state. Build metadata records a source fingerprint independently
 of the release version. Existing-import repair binds its preview to eligible stored state
 and preserves later agent edits.
+
+Housekeeping events (session heartbeats, receipt reads/acks, notification progress)
+remain in the audit stream but are excluded from full-text search. Schema 6 removes
+older search copies without deleting events or changing notification cursors.

@@ -5,9 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../dist/storage.js';
 import { initWorkspace } from '../dist/admin.js';
-import { context,send,inbox } from '../dist/coordination.js';
+import { context,send,inbox,acknowledge } from '../dist/coordination.js';
 import { requestStop,resumeWork } from '../dist/control.js';
-import { addTask,takeTask,submitTask,reviewTask,updateTask,showTask,doneTask,dropTask,noteTask,reopenTask } from '../dist/tasks.js';
+import { addTask,takeTask,submitTask,reviewTask,updateTask,showTask,doneTask,dropTask,noteTask,reopenTask,blockTask,resolveBlocker } from '../dist/tasks.js';
 import { waitForWork } from '../dist/mail-wait.js';
 import { fixtureConfig } from './fixtures/team.mjs';
 
@@ -83,14 +83,14 @@ test('STOP and urgent mail preserve a queued review event for cursor rearm',asyn
   send(f.s,['b'],'An urgent decision',{urgent:true});requestStop(f.s,['b']);
   const stopped=await wait(f,'b',since);assert.equal(stopped.reason,'stop');assert.equal(stopped.cursor,since);resumeWork(f.s,['b']);
   const urgent=await wait(f,'b',stopped.cursor);assert.equal(urgent.reason,'urgent');assert.equal(urgent.cursor,since);
-  as(f.s,'b',()=>inbox(f.s));
+  as(f.s,'b',()=>{inbox(f.s);acknowledge(f.s,urgent.message.id);});
   const notification=await wait(f,'b',urgent.cursor);assert.equal(notification.reason,'review-submitted');assert.equal(notification.version,submitted.version);
   assert.equal((await wait(f,'b',notification.cursor)).reason,'timeout');
 });
 
 test('reviewer discovery follows existing human override and human-only review policy',async t=>{
   const f=fixture(t),task=work(f,'human',true),since=f.cursor();submit(f,task);
-  assert.equal((await wait(f,'human',since)).reason,'review-submitted','human operator self-review is allowed by reviewTask');
+  assert.equal((await wait(f,'human',since)).reason,'timeout','human self-review is allowed, but own submission must not wake own waiter');
   assert.equal((await wait(f,'b',since)).reason,'review-submitted','human-only execution does not prohibit independent review');
   const approved=review(f,task,true,'human');assert.equal(approved.reviewed_by,'human');
 });
@@ -153,4 +153,19 @@ test('only latest pending review edit wakes a late reviewer, while a later note 
   const notification=await wait(f,'b',since);
   assert.equal(notification.reason,'review-submitted');assert.equal(notification.version,latest.version);
   assert.equal((await wait(f,'b',notification.cursor)).reason,'timeout');
+});
+
+
+test('restoring blocked review wakes reviewers again and supersedes the original submission',async t=>{
+  const f=fixture(t),task=work(f),since=f.cursor();submit(f,task);
+  const original=await wait(f,'b',since);assert.equal(original.reason,'review-submitted');
+  const blocker=as(f.s,'a',()=>blockTask(f.s,task.id,{kind:'external',waitingOn:'service',body:'Await integration result'}));
+  resolveBlocker(f.s,blocker.id,'Integration passed');const restored=showTask(f.s,task.id);
+  assert.equal(restored.status,'review');assert.equal(restored.reviewed_by,null);
+  const next=await wait(f,'b',original.cursor);
+  assert.equal(next.reason,'review-submitted');assert.equal(next.task,task.id);assert.equal(next.version,restored.version);
+  assert.ok(next.cursor>original.cursor);
+  const late=await wait(f,'c',since);assert.equal(late.reason,'review-submitted');assert.equal(late.cursor,next.cursor);assert.equal(late.version,restored.version);
+  assert.equal((await wait(f,'b',next.cursor)).reason,'timeout');
+  const owner=await wait(f,'a',original.cursor);assert.equal(owner.reason,'blocker-resolved');assert.equal(owner.blocker,blocker.id);
 });

@@ -7,7 +7,7 @@ import { workspaceSettings } from './workspace-settings.js';
 import { getNotificationProgress } from './notification-progress.js';
 
 export interface WaitResult {
-  reason:'urgent'|'stop'|'timeout'|'answer'|'blocker-resolved'|'task-assigned'|'task-ready'|'review-submitted'|'review-approved'|'review-rejected';
+  reason:'urgent'|'stop'|'timeout'|'answer'|'blocker-resolved'|'blocker-assigned'|'dependency-dropped'|'task-assigned'|'task-ready'|'review-submitted'|'review-approved'|'review-rejected';
   role:string; cursor:number; message?:Row; stop?:Row;
   question?:string; blocker?:string; task?:string; tasks?:string[];
   /** Task version recorded by the workflow event, not a substitute for reading current work. */
@@ -25,6 +25,9 @@ function available(s:Store,actor:string,condition:string,params:Param[],includeD
     AND (${condition}) ORDER BY t.id`,s.ws,...(includeDoing?[actor]:[]),actor,actor,s.role(actor).kind==='human'?1:0,...params).map(t=>`T${t.id}`);
 }
 function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
+  // A role already observed its own successful action. Consume its event cursor
+  // without waking, while leaving other recipients' independent cursors intact.
+  if(event.actor===actor)return undefined;
   const base={role:actor,cursor:event.id};
   let detail:Row;try{detail=JSON.parse(event.detail);}catch{return undefined;}
   if(event.entity==='question'&&event.action==='answered') {
@@ -36,7 +39,8 @@ function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
   const id=Number(event.entity_id.slice(1));
   const reviewUpdate=event.action==='updated'&&detail.after?.reviewed_by===null&&
     !!s.get("SELECT 1 FROM tasks WHERE workspace_id=? AND id=? AND status='review'",s.ws,id);
-  if(reviewUpdate||['submitted','review-approved','review-rejected'].includes(event.action)) {
+  const reviewRestored=event.action==='blocker-resolved'&&detail.after?.status==='review';
+  if(reviewUpdate||reviewRestored||['submitted','review-approved','review-rejected'].includes(event.action)) {
     const task=s.get('SELECT owner,status,reviewed_by FROM tasks WHERE workspace_id=? AND id=?',s.ws,id);
     if(!task||task.status==='done'||task.status==='dropped')return undefined;
     // A late reader needs the current review transition, not every superseded
@@ -44,22 +48,48 @@ function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
     // replacing that transition, so compare workflow events rather than versions.
     const superseded=s.get(`SELECT 1 FROM events WHERE workspace_id=? AND entity='task' AND entity_id=? AND id>?
       AND (action IN ('submitted','review-approved','review-rejected','completed','dropped','reopened') OR
+        (action='blocker-resolved' AND CASE WHEN json_valid(detail) THEN json_extract(detail,'$.after.status')='review' ELSE 0 END) OR
         (?='review' AND action='updated' AND CASE WHEN json_valid(detail) THEN json_type(detail,'$.after.reviewed_by')='null' ELSE 0 END))
       LIMIT 1`,s.ws,event.entity_id,event.id,task.status);
     if(superseded)return undefined;
     const version=Number.isSafeInteger(detail.after?.version)&&detail.after.version>0?detail.after.version:undefined;
-    if(event.action==='submitted'||reviewUpdate) {
+    if(event.action==='submitted'||reviewUpdate||reviewRestored) {
       // Reviews are untargeted: use the existing reviewTask eligibility rule. Human
       // operators may review their own work; agents require an independent owner.
       // Updates that clear approval while keeping review open are new review requests.
       // An already settled or withdrawn submission no longer needs a reviewer.
-      if(task.status!=='review'||task.reviewed_by!==null||task.owner===actor&&s.role(actor).kind!=='human')return undefined;
-      return {...base,reason:'review-submitted',task:event.entity_id,version};
+      if(task.status==='review'&&task.reviewed_by===null&&(task.owner!==actor||s.role(actor).kind==='human'))
+        return {...base,reason:'review-submitted',task:event.entity_id,version};
+      // The owner still needs its blocker/answer notification below, even though
+      // an agent owner is not an eligible reviewer of the restored submission.
+      if(!reviewRestored)return undefined;
+    } else {
+      if(task.owner!==actor)return undefined;
+      if(event.action==='review-approved'&&(task.status!=='review'||task.reviewed_by===null))return undefined;
+      if(event.action==='review-rejected'&&(!['doing','blocked'].includes(task.status)||task.reviewed_by!==null))return undefined;
+      return {...base,reason:event.action==='review-approved'?'review-approved':'review-rejected',task:event.entity_id,version};
     }
-    if(task.owner!==actor)return undefined;
-    if(event.action==='review-approved'&&(task.status!=='review'||task.reviewed_by===null))return undefined;
-    if(event.action==='review-rejected'&&(!['doing','blocked'].includes(task.status)||task.reviewed_by!==null))return undefined;
-    return {...base,reason:event.action==='review-approved'?'review-approved':'review-rejected',task:event.entity_id,version};
+  }
+  if(event.action==='blocked') {
+    const blocker=/^B\d+$/.test(detail.blocker??'')?Number(detail.blocker.slice(1)):null;
+    const waiting=blocker===null?undefined:s.get(`SELECT b.id FROM blockers b JOIN tasks t ON t.workspace_id=b.workspace_id AND t.id=b.task_id
+      WHERE b.workspace_id=? AND b.id=? AND b.task_id=? AND b.status='open' AND b.waiting_on=?
+      AND b.kind IN ('agent','human') AND t.status NOT IN ('done','dropped')`,s.ws,blocker,id,actor);
+    if(waiting)return {...base,reason:'blocker-assigned',blocker:detail.blocker,task:event.entity_id};
+    return undefined;
+  }
+  if(event.action==='dropped') {
+    // Cancellation is not successful completion. Notify affected roles to reconcile
+    // the dependency, but keep the task unclaimable until its dependency is resolved.
+    const tasks=s.all(`SELECT t.id FROM dependencies d
+      JOIN tasks t ON t.workspace_id=d.workspace_id AND t.id=d.task_id
+      JOIN tasks p ON p.workspace_id=d.workspace_id AND p.id=d.depends_on
+      WHERE d.workspace_id=? AND d.depends_on=? AND p.status='dropped'
+      AND t.status NOT IN ('done','dropped') AND (t.owner=? OR
+        (t.owner IS NULL AND (t.for_role IS NULL OR t.for_role=?)))
+      AND (t.human_only=0 OR ?=1) ORDER BY t.id`,s.ws,id,actor,actor,s.role(actor).kind==='human'?1:0).map(row=>`T${row.id}`);
+    if(tasks.length)return {...base,reason:'dependency-dropped',task:event.entity_id,tasks};
+    return undefined;
   }
   if(event.action==='blocker-resolved') {
     const blocker=/^B\d+$/.test(detail.blocker??'')?Number(detail.blocker.slice(1)):null;
@@ -101,7 +131,11 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
     let cursor:number;
     if(options.since!==undefined) cursor=integer(options.since,'event cursor',0,Number.MAX_SAFE_INTEGER);
     else {
-      try {cursor=getNotificationProgress(s)?.cursor??latest;}
+      try {
+        const progress=getNotificationProgress(s);
+        check(progress || stopped,`No saved notification progress. Read sassato context --as ${actor} --workspace ${s.workspace}, then retain its cursor with wait --since CURSOR after reconciling pending work (or save it with progress save).`);
+        cursor=progress?.cursor??0;
+      }
       catch(error) {
         // Corrupt progress must not hide STOP. Cursor zero preserves all replayable
         // events and is returned only with STOP, never as a work/recovery fallback.
@@ -122,9 +156,9 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
     const result=s.snapshot(():WaitResult|undefined=>{
       const stop=s.get('SELECT id,acknowledged_at FROM stop_requests WHERE workspace_id=? AND role=? AND cleared_at IS NULL',s.ws,actor);
       if(stop)return {reason:'stop',role:actor,cursor,stop:{id:`R${stop.id}`,acknowledged:!!stop.acknowledged_at}};
-      const message=s.get("SELECT m.id,m.sender,substr(m.body,1,240) AS body FROM receipts r JOIN messages m ON m.workspace_id=r.workspace_id AND m.id=r.message_id WHERE r.workspace_id=? AND r.recipient=? AND r.state='unread' AND m.urgent=1 ORDER BY m.id LIMIT 1",s.ws,actor);
-      if(message)return {reason:'urgent',role:actor,cursor,message:{id:`M${message.id}`,sender:message.sender,summary:String(message.body).replace(/[\x00-\x1f\x7f]/g,' ').replace(/\s+/g,' ').trim()}};
-      const events=s.all('SELECT id,entity,entity_id,action,detail FROM events WHERE workspace_id=? AND id>? ORDER BY id LIMIT 200',s.ws,cursor);
+      const message=s.get("SELECT m.id,m.sender,substr(m.body,1,2000) AS body,length(m.body)>2000 AS truncated FROM receipts r JOIN messages m ON m.workspace_id=r.workspace_id AND m.id=r.message_id WHERE r.workspace_id=? AND r.recipient=? AND r.state IN ('unread','read') AND m.urgent=1 AND m.sender!=? ORDER BY m.id LIMIT 1",s.ws,actor,actor);
+      if(message)return {reason:'urgent',role:actor,cursor,message:{id:`M${message.id}`,sender:message.sender,summary:String(message.body).replace(/[\x00-\x1f\x7f]/g,' ').replace(/\s+/g,' ').trim(),truncated:!!message.truncated,...(message.truncated?{inbox_command:`sassato inbox --peek --as ${actor} --workspace ${s.workspace}`}:{})}};
+      const events=s.all('SELECT id,entity,entity_id,actor,action,detail FROM events WHERE workspace_id=? AND id>? ORDER BY id LIMIT 200',s.ws,cursor);
       more=events.length===200;
       for(const event of events){const wake=workflow(s,actor,event);cursor=event.id;if(wake)return wake;}
       return undefined;

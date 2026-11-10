@@ -66,6 +66,15 @@ Only a human may downgrade human-only work or remove a required review. To make 
 work human-only, release it first. Setting human-only clears owner and uses `--for`, an existing human target, or the default human routing below. Creating human-only work with `--owner` uses that human as its target unless `--for` is supplied.
 Tasks routed with `--for ROLE` can only be claimed by that role, even if another role
 created them. Untargeted work is available to any otherwise eligible worker.
+An unowned agent task may be edited or annotated by its creator or target role.
+Ordinary completion still requires a claim; an authorized editor may reconcile an
+imported item without manufacturing a new claim. Human-only restrictions still apply.
+
+`retitle [--owner ROLE]` previews active imported titles for one owner (your own by
+default). `retitle --apply` removes a recognized leading status parenthesis when the
+preserved body contains an unambiguous title after it. Original bodies and audit
+history remain unchanged. Only a human can run this pass for another owner;
+ambiguous titles are skipped and can be changed individually with `update`.
 
 Reviews require `--expect`: read `show T1`, inspect its contents and retain `version`.
 If the task changes before approval or rejection, the review fails without modifying
@@ -110,13 +119,21 @@ an answer. `show H1` and task history retain the cancelled question. Cancelled q
 cannot be answered and do not revive on reopening; ask a new question if still needed.
 Other blockers remain in place. Commands remain inert text.
 
+Resolving the last blocker restores the earlier review/open state, or doing when its
+retained lease is still valid. An expired claim returns to open without changing its
+owner. Multiple blockers do not overwrite the original state.
+
+`answer H1 'Approved' --as alice --relayed-by assistant` records the role that typed
+a human's decision in the audit event. It still requires a human actor; relay attribution
+does not grant permission or authenticate either identity.
+
 ## Mail, facts and WIP
 
 | Command | Behavior |
 | --- | --- |
 | `send ROLE[,ROLE]\|all TEXT [--re T1] [--urgent]` | Append message, snapshot recipients, optional task link |
 | `inbox [--peek] [--state unread\|read\|done] [--limit N]` | Unread first; marks only returned unread messages read unless --peek |
-| `outbox [--limit N]` | Sent messages with each recipient's receipt |
+| `sent [--limit N]` (alias `outbox`) | Sent messages with unread/read/acked status per recipient; JSON retains receipt timestamps |
 | `ack M1` | Recipient marks message done, preserving read/done timestamps |
 | `fact set KEY TEXT --source LOCATION [--checked-at ISO_DATE] [--expect VERSION]` | Create/correct shared fact; updates require expected version |
 | `fact get KEY` / `fact history KEY` | Current fact or immutable revisions |
@@ -220,7 +237,7 @@ bound, and no-match is never confused with a permission failure.
 | `stop [ROLE...] [--all] --as alice` | Request cooperative stop and wait; defaults to all agent roles |
 | `stop [ROLE...] --timeout SECONDS --as alice` | Bound the wait; timeout exits 4 and leaves requests active |
 | `stop [ROLE...] --no-wait --as alice` | Request stop and return immediately |
-| `stop [ROLE...] --force --as alice` | SIGKILL verified registered provider PIDs and return immediately |
+| `stop [ROLE...] --force --as alice` | SIGTERM verified registered provider PIDs, allow up to one second, then SIGKILL verified survivors |
 | `stop-status [ROLE...]` | Read active stop requests and their observed state |
 | `stop-status [ROLE...] --quiet [--stop-file PATH]` | Print no normal output; exit 4 if stop intent or the optional stop file is active, otherwise 0 |
 | `stopped R123 --as ROLE` | Acknowledge this exact current request after tools stop and WIP is saved |
@@ -234,11 +251,17 @@ An all-role stop (explicit `--all`, or no role arguments) also waits for the
 workspace's configured [busy checks](configuration.md#busy-checks-before-an-all-role-stop-completes).
 The same `--timeout` covers both agent acknowledgements and checks. Busy and unknown
 checks are reported by name and prevent successful completion; a timeout leaves
-stop intent active. Only non-idle checks are retried; idle observations are retained
-for that stop invocation. Default timeout 0 waits indefinitely, even if a check
+stop intent active. Only non-idle checks are retried while roles shut down; once
+all roles have stopped, every check is re-probed before reporting machine quiet.
+Idle observations from that final phase are then retained. Default timeout 0 waits indefinitely, even if a check
 keeps failing. Use `--timeout SECONDS` to bound this wait.
-`--no-wait` reports role completion without executing checks; it and `--force`
-return `machine_quiet: null` in JSON. Force still only signals verified provider PIDs.
+`--no-wait` and `--force` report role completion without executing checks; both
+return `machine_quiet: null` in JSON. Force still only signals verified provider PIDs;
+it rechecks process identity and stop intent before escalating. Force does not await
+cooperative completion or guarantee descendant jobs have stopped.
+A role with no registered session or pending launch is inactive even when it owns
+unfinished tasks. An unverifiable registration still requires acknowledgement or
+verified exit; absence of a usable PID is not proof that a session stopped.
 
 `stop-status --quiet` reads stop intent, including acknowledged requests that have
 not been cleared, and the optional configured `stop_file`. `--stop-file` overrides
@@ -259,17 +282,20 @@ fi
 - `done T123` permits the eligible owner or a human to complete an unclaimed imported item; a human may also complete an unclaimed human-only item. Blockers, dependencies and review gates still apply.
 - `answer H123 'answer' --close --as alice` answers and completes the associated task atomically. If another blocker or review prevents closing, neither change is committed.
 - `send b 'Please review now' --urgent --as a` stores urgent mail. Urgent unread mail is prioritized within the inbox.
-- `wait --as b [--since EVENT_CURSOR] [--timeout SECONDS] [--stop-file PATH]` waits for urgent unread mail, workflow changes relevant to b, or a stop request, prints one line and exits 0. Stop takes precedence; timeout exits 5. It never consumes receipts or spawns a provider. Default timeout 0 waits indefinitely.
+- `wait --as b [--since EVENT_CURSOR] [--timeout SECONDS] [--stop-file PATH]` waits for unacknowledged urgent mail, workflow changes relevant to b, or a stop request, prints one line and exits 0. Stop takes precedence; timeout exits 5. It never consumes receipts or spawns a provider. Default timeout 0 waits indefinitely.
 - `import ... --repair --dry-run` previews conservative corrections to existing imports; use the same options and `--confirm DIGEST` to apply. Agent-edited tasks and WIP are preserved; untouched imported WIP can be refreshed from a newer dated entry.
 
 Version 0.1.2 imports the newest dated WIP entry per role (ordinary or stopped), supports
 previewed repair of untouched imported WIP, and shows source age in context.
 WIP older than 24 hours has `stale=true`; new imports retain the source timestamp.
 
-`wait` also reports human answers (`answer`), resolved blockers (`blocker-resolved`),
+`wait` also reports human answers (`answer`), newly assigned blockers (`blocker-assigned`),
+resolved blockers (`blocker-resolved`), dropped prerequisites (`dependency-dropped`),
 new assignments/handoffs (`task-assigned`), claimable work (`task-ready`), review
 submissions (`review-submitted`), and owner review results (`review-approved` or
-`review-rejected`). Ordinary mail alone is ignored. An assigned task may still be blocked; `task-ready` means currently claimable work or already-owned work whose dependency
+`review-rejected`). Ordinary mail and the waiting role's own actions do not wake it. Self-authored
+workflow events still advance the returned cursor; their effects remain visible
+in context and history. STOP always takes precedence, including self-requested STOP. An assigned task may still be blocked; `task-ready` means currently claimable work or already-owned work whose dependency
 has cleared. Check current state before claiming, since another role may act.
 The optional `--urgent` flag remains accepted for compatibility and does not disable
 workflow notifications. Reviews are currently untargeted: an unapproved submission
@@ -289,5 +315,10 @@ or a later context cursor; leave progress absent if handling is incomplete.
 After safely handling each result, save that result's cursor, then re-arm the waiter.
 Timeout cursors can also be saved. If handling fails or the session crashes, leave
 progress unchanged so recovery replays the event. Never substitute a newer context
-`snapshot_cursor` for the last safely handled waiter cursor. Existing urgent unread
+`snapshot_cursor` for the last safely handled waiter cursor. Existing unacknowledged urgent
 mail and STOP still return independently of progress. See [notification recovery](context-management.md#durable-notification-progress).
+
+Urgent messages continue to wake the waiter after reading until `ack M1` records
+handling. Wait output includes up to 2,000 characters and an identity-qualified inbox
+command when truncated. Without `--since` or saved notification progress, `wait`
+fails with an input error instead of silently skipping events. STOP still takes precedence.
