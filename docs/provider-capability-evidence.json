@@ -72,7 +72,7 @@
   ],
   "managed_recovery_validation": {
     "observed_on": "2026-11-10",
-    "scope": "Actual disposable Sassato database/repository and runner-owned job; restricted read-only inspection before fresh replacement",
+    "scope": "Actual disposable Sassato database/repository and runner-owned job; intended read-only inspection before fresh replacement",
     "fixture_checks": "passed",
     "fixture_only_probe": "passed without model calls",
     "production_supervisor_enabled": false,
@@ -143,8 +143,19 @@
           "forced_cleanup": false,
           "owned_process_group_empty": true,
           "fixture_job_cleanup_exit_code": 0
+        },
+        {
+          "failure": "provider-tool-error-or-permission-denial",
+          "diagnostic_classification": "provider-permission-denied-no-approval-surface",
+          "classification_source": "Bounded private tool-result diagnostic; raw diagnostic not published",
+          "inspection_command_performed": false,
+          "owned_provider_exit_code": 0,
+          "forced_cleanup": false,
+          "owned_process_group_empty": true,
+          "fixture_job_cleanup_exit_code": 0
         }
-      ]
+      ],
+      "permission_mode_preserved": "default"
     },
     "gate": "closed: actual provider recovery and configuration continuity not established",
     "not_established": [
@@ -154,7 +165,12 @@
       "live provider handling and saving notification progress",
       "durable service adoption",
       "interactive TUI or Windows Terminal/WSL integration",
-      "supervisor crash, concurrent controller or lost acknowledgment reconciliation"
-    ]
+      "supervisor crash, concurrent controller or lost acknowledgment reconciliation",
+      "tool isolation or absence of side effects from inherited hooks and MCP"
+    ],
+    "tool_command_validation": "After provider tool events are emitted; protocol validation, not a sandbox or security boundary",
+    "inherited_hooks_and_mcp_isolated": false,
+    "only_scratch_provider_sessions_created": true,
+    "configured_permissions_preserved": true
   }
 }

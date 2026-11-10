@@ -138,12 +138,21 @@ tested modes:
   failure (`sandbox-helper-unavailable`). The installed executable exists on the
   host but was inaccessible in that sandbox execution. No executable relocation,
   configuration changes or broader permissions were used to work around it.
-- Claude Code `2.1.321` first requested commands outside the probe's exact allowed
-  state-inspection command. With a clarified prompt, it returned
-  `provider-tool-error-or-permission-denial`. This result does not distinguish an
-  underlying tool execution error from denial, and is not a successful recovery.
+- Claude Code `2.1.321` first emitted unexpected inspection commands in two
+  attempts. A clarified third attempt reported an ambiguous tool failure. A fourth
+  diagnostic attempt confirmed permission denial with no approval surface; the
+  inspection command was not performed. Its public report retains the original
+  generic label, while private diagnostics support
+  `provider-permission-denied-no-approval-surface`. The third and fourth processes
+  exited 0 without forced cleanup and with empty owned process groups. Recovery
+  remains unproved; private raw diagnostics are not published.
 
-No fresh real-state provider session was reached. Existing authentication was
+Managed-adapter command/path checks occur after provider tool events are emitted;
+they validate the expected protocol and are not sandbox enforcement. Rejection
+alone cannot prove a command did not run. Only scratch sessions were created,
+configured permissions were preserved, and inherited hooks/MCP were not isolated.
+These managed probes are distinct from the hardened no-tool conversational runner
+described above. No fresh real-state provider session was reached. Existing authentication was
 inherited without credential copying or changes; account status was not rechecked.
 The next step is to resolve the supported read-only execution path and rerun the
 bounded proof, not enable a supervisor or silently relax permissions. See the

@@ -2,7 +2,9 @@
 """Opt-in real Sassato recovery proof, using existing provider authentication.
 
 Requires a source checkout built with npm run build, Python 3 and POSIX. Invokes
-real models unless --fixture-only is supplied. Never controls existing sessions.
+real models unless --fixture-only is supplied, spending quota on the currently
+authenticated account and potentially incurring charges. Model runs never belong in
+CI. Never controls existing sessions.
 """
 import argparse
 import importlib

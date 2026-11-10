@@ -88,6 +88,27 @@ class RunTests(unittest.TestCase):
         self.assertNotIn("checkpoint", self.events)
         self.assertEqual(len(self.servers), 1)
 
+    def test_forced_descendant_cleanup_blocks_handoff_even_with_leader_exit_zero(self):
+        process = Mock(pid=43210, stdin=io.StringIO())
+        process.wait.return_value = 0
+        alive = True
+
+        def killpg(pid, sig):
+            nonlocal alive
+            if sig == signal.SIGTERM:
+                alive = False
+            elif sig == 0 and not alive:
+                raise ProcessLookupError()
+
+        with patch.object(adapter.AppServer, "close", side_effect=lambda: adapter._close(process)), patch.object(adapter.os, "killpg", side_effect=killpg) as kill:
+            result = adapter.run(self.fixture)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["failure"], "owned_process_required_forced_cleanup")
+        self.assertNotIn("checkpoint", self.events)
+        self.assertEqual(len(self.servers), 1)
+        self.assertNotIn("old_process_exited_before_replacement", result)
+        self.assertIn((43210, signal.SIGTERM), [call.args for call in kill.call_args_list])
+
     def test_settings_drift_stops_before_fresh_turn(self):
         self.drift = True
         result = adapter.run(self.fixture)
@@ -225,9 +246,17 @@ class CleanupTests(unittest.TestCase):
         process = Mock(pid=43210, stdin=io.StringIO())
         process.wait.return_value = 0
         with patch.object(adapter.os, "killpg", side_effect=[None, None, ProcessLookupError()]) as kill:
-            self.assertEqual(adapter._close(process), 0)
+            with self.assertRaisesRegex(adapter.ProbeFailure, "owned_process_required_forced_cleanup"):
+                adapter._close(process)
         self.assertEqual(kill.call_args_list[0].args, (43210, 0))
         self.assertEqual(kill.call_args_list[1].args, (43210, signal.SIGTERM))
+
+    def test_forced_leader_cleanup_is_not_a_clean_exit_when_signal_handler_returns_zero(self):
+        process = Mock(pid=43210, stdin=io.StringIO())
+        process.wait.side_effect = [subprocess.TimeoutExpired("provider", 8), 0]
+        with patch.object(adapter.os, "killpg", side_effect=[None, ProcessLookupError()]):
+            with self.assertRaisesRegex(adapter.ProbeFailure, "owned_process_required_forced_cleanup"):
+                adapter._close(process)
 
     def test_closed_stdin_and_empty_group(self):
         process = Mock(pid=43210, stdin=io.StringIO())

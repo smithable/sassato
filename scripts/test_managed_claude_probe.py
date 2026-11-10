@@ -7,7 +7,7 @@ import queue
 import signal
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location('managed_claude_probe', Path(__file__).with_name('managed_claude_probe.py'))
 probe = importlib.util.module_from_spec(spec)
@@ -80,6 +80,49 @@ class AdapterTest(unittest.TestCase):
             report = probe.run(self.fixture([]))
             self.assertFalse(report['ok']); create.assert_not_called()
             self.assertEqual(report['failure'], 'unsupported-provider-version')
+
+    def test_reader_start_failure_cleans_owned_process_before_failed_construction_returns(self):
+        for failed_reader in (0, 1):
+            with self.subTest(failed_reader=failed_reader):
+                events = []
+                process = types.SimpleNamespace(stdin=io.StringIO(), stdout=io.StringIO(), stderr=io.StringIO())
+                readers = [Mock(ident=None), Mock(ident=None)]
+                failure = RuntimeError('private reader startup failure')
+                readers[failed_reader].start.side_effect = failure
+                if failed_reader:
+                    readers[0].ident = 1
+                with patch.object(probe, '_version', return_value=probe.SUPPORTED_VERSION), patch.object(probe.subprocess, 'Popen', return_value=process) as launch, patch.object(probe.threading, 'Thread', side_effect=readers), patch.object(probe, '_close_owned', return_value={'exit_code': 0, 'forced': False, 'process_group_empty': True}) as close:
+                    report = probe.run(self.fixture(events))
+                close.assert_called_once_with(process)
+                self.assertEqual(launch.call_count, 1)
+                self.assertFalse(report['ok']); self.assertEqual(report['failure'], 'RuntimeError')
+                self.assertNotIn('handoff', events)
+                self.assertTrue(process.stdout.closed); self.assertTrue(process.stderr.closed)
+                readers[failed_reader].join.assert_not_called()
+                if failed_reader:
+                    readers[0].join.assert_called_once_with(timeout=2)
+                self.assertNotIn('private reader', json.dumps(report))
+
+    def test_interrupted_reader_start_also_cleans_owned_group(self):
+        process = types.SimpleNamespace(stdin=io.StringIO(), stdout=io.StringIO(), stderr=io.StringIO())
+        reader = Mock(ident=None); reader.start.side_effect = KeyboardInterrupt()
+        with patch.object(probe.subprocess, 'Popen', return_value=process), patch.object(probe.threading, 'Thread', return_value=reader), patch.object(probe, '_close_owned', return_value={'exit_code': 0, 'forced': False, 'process_group_empty': True}) as close:
+            with self.assertRaises(KeyboardInterrupt):
+                probe.Session(self.fixture([]))
+        close.assert_called_once_with(process)
+        self.assertTrue(process.stdout.closed); self.assertTrue(process.stderr.closed)
+
+    def test_reader_start_failure_retained_when_group_cleanup_also_fails(self):
+        events = []
+        process = types.SimpleNamespace(stdin=io.StringIO(), stdout=io.StringIO(), stderr=io.StringIO())
+        reader = Mock(ident=None); reader.start.side_effect = ValueError('private startup error')
+        with patch.object(probe, '_version', return_value=probe.SUPPORTED_VERSION), patch.object(probe.subprocess, 'Popen', return_value=process), patch.object(probe.threading, 'Thread', return_value=reader), patch.object(probe, '_close_owned', side_effect=RuntimeError('private cleanup error')) as close:
+            report = probe.run(self.fixture(events))
+        close.assert_called_once_with(process)
+        self.assertEqual(report['failure'], 'ValueError')
+        self.assertEqual(report['cleanup_failures'], ['RuntimeError'])
+        self.assertFalse(report['ok']); self.assertNotIn('handoff', events)
+        self.assertNotIn('private', json.dumps(report))
 
     def transport(self):
         session = probe.Session.__new__(probe.Session)

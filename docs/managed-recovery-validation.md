@@ -146,15 +146,18 @@ was controlled and no supervisor was enabled.
 | --- | --- | --- |
 | Fixture without model calls | Passed | Actual scratch database/repository, controller-owned job settlement, unchanged task/file state and repeated read-only notification replay |
 | Codex `0.167.0`, app-server with inherited read-only sandbox | Blocked before initial state inspection completed | Command tool failed. A separate non-model sandbox check reproduced `sandbox-helper-unavailable`: bwrap could not execute the installed Codex binary path even though it exists outside the sandbox. Fresh replacement was not reached. |
-| Claude Code `2.1.321`, native streaming CLI | Blocked before initial state inspection completed | Two attempts requested shell commands outside the probe's exact allowed inspection command. After clarifying the bounded prompt, the next attempt returned `provider-tool-error-or-permission-denial`. Fresh replacement was not reached. |
+| Claude Code `2.1.321`, native streaming CLI | Blocked before initial state inspection completed | Two attempts emitted shell commands outside the expected inspection protocol. A clarified third attempt returned an ambiguous tool failure. A fourth diagnostic attempt confirmed permission denial with no approval surface: the inspection command was not performed. Fresh replacement was not reached. |
 
 Codex's two failed model probes exited the owned provider process with code 0 during
 cleanup. Claude's first two were terminated within the owned process group (exit 143);
-the clarified retry exited 0 without forced cleanup, with an empty owned process
-group reported. The disposable job was reaped with exit 0 on every recorded attempt.
+the third and fourth attempts exited 0 without forced cleanup, each with an empty
+owned process group reported. The disposable job was reaped with exit 0 on every recorded attempt.
 The read-only command failures were not worked around by altering permissions,
 provider configuration or credentials. Authentication was inherited; this batch did
 not repeat the earlier login-status investigation or establish another billing mode.
+The fourth Claude run's public report retains the older generic error label; bounded
+private diagnostics establish `provider-permission-denied-no-approval-surface`. No
+private diagnostic text, account details or local paths are copied into this evidence.
 
 The prior successful conversation-only compaction probes remain valid within their
 original scope. They do not cancel these failed actual-state recovery results. See
@@ -174,17 +177,26 @@ python3 scripts/managed-recovery-probe.py --provider codex --fixture-only
 It requires Python 3, POSIX process groups and the selected installed provider. It
 is an opt-in live-model test using existing authentication, not part of normal unit
 tests or package smoke. `scripts/managed-recovery-fixture.mjs` creates a scratch Git
-repository and Sassato database. The provider's read-only tool invokes the fixture's
-inspection command to query actual task, checkpoint, progress, inbox and file state.
+repository and Sassato database. The intended inspection command reads actual task, checkpoint, progress, inbox and
+file state; neither provider completed that command in the recorded live runs.
 
-When initial inspection succeeds, the runner requires old-process exit before its
+When initial inspection succeeds, the runner requires clean old-process/group exit
+without forced cleanup before its
 fresh-start callback settles the scratch job, saves recovery state and creates a
 notification in the replacement gap. The replacement must then read that state;
 the controller checks file bytes, full Git status, HEAD, task ownership/version,
 role configuration, event state, progress, mail and job exit independently. The live
 attempts above stopped before this path; only the fixture checks exercised it.
 
-This is a restrictive read-only baseline. Hooks, interactive UI and arbitrary
+The fixture expects read-only inspection, but the managed adapters' command/path
+checks validate provider protocol events after a tool request has been emitted.
+They are not a sandbox or a security boundary and do not establish that a rejected
+command never ran. The runner created only scratch provider sessions; it did not
+attach to existing workers. Configured permissions were preserved, including
+Claude's default mode. Inherited hooks and MCP remain outside the proof: no tool
+isolation or freedom from their side effects is established. This differs from the
+separate hardened conversation-only runner, which disables tools before startup
+and has not been live revalidated. Hooks, interactive UI and arbitrary
 tools/settings continuity remain unproved. The adapters accept only the versions
 named above and reject other versions until validated. Scripts are source-checkout
 tools and are not included in the npm package. A future passing probe would still

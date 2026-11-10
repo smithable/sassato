@@ -147,10 +147,20 @@ class Session:
             env={**os.environ, **fixture.get('env', {})}, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,
             start_new_session=True)
-        self.readers = [threading.Thread(target=self._pump, daemon=True),
-                        threading.Thread(target=self._discard_stderr, daemon=True)]
-        for reader in self.readers:
-            reader.start()
+        self.readers = []
+        try:
+            self.readers = [threading.Thread(target=self._pump, daemon=True),
+                            threading.Thread(target=self._discard_stderr, daemon=True)]
+            for reader in self.readers:
+                reader.start()
+        except BaseException as error:
+            # run() cannot register this session until construction returns.
+            # Settle the already-owned group here and retain the startup failure.
+            try:
+                self.close()
+            except BaseException as cleanup_error:
+                error.cleanup_failure = type(cleanup_error).__name__
+            raise
 
     def _put(self, value):
         try:
@@ -318,7 +328,8 @@ class Session:
     def close(self):
         outcome = _close_owned(self.process)
         for reader in self.readers:
-            reader.join(timeout=2)
+            if reader.ident is not None:
+                reader.join(timeout=2)
         for stream in (self.process.stdout, self.process.stderr):
             if stream:
                 stream.close()
@@ -383,6 +394,8 @@ def run(fixture):
         report['ok'] = True
     except Exception as error:
         report['failure'] = str(error) if isinstance(error, ProbeFailure) else type(error).__name__
+        if getattr(error, 'cleanup_failure', None):
+            report.setdefault('cleanup_failures', []).append(error.cleanup_failure)
     finally:
         for session in sessions:
             try:

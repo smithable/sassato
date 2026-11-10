@@ -56,10 +56,18 @@ def _close(process):
     except (OSError, ValueError):
         pass
     exit_code = None
+    forced = False
+
+    def finished():
+        if forced:
+            raise ProbeFailure("owned_process_required_forced_cleanup")
+        return exit_code
+
     try:
         exit_code = process.wait(timeout=8)
     except subprocess.TimeoutExpired:
         for sig in (signal.SIGTERM, signal.SIGKILL):
+            forced = True
             try:
                 os.killpg(process.pid, sig)
             except ProcessLookupError:
@@ -77,17 +85,18 @@ def _close(process):
         try:
             os.killpg(process.pid, 0)
         except ProcessLookupError:
-            return exit_code
+            return finished()
+        forced = True
         try:
             os.killpg(process.pid, sig)
         except ProcessLookupError:
-            return exit_code
+            return finished()
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
             try:
                 os.killpg(process.pid, 0)
             except ProcessLookupError:
-                return exit_code
+                return finished()
             time.sleep(0.05)
     raise ProbeFailure("owned_process_group_cleanup_timeout")
 
