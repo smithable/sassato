@@ -1,8 +1,10 @@
 # Context checkpoints and advice
 
 Sassato helps an agent recover after compaction or a fresh session. It stores work
-state and recommends when to retain or reduce conversation context. Recommendations
-are advisory: Sassato does not compact, clear, terminate or launch a provider through
+state and offers optional hints about retaining or reducing conversation context.
+Recovery is the primary feature; advice is experimental and need not be consulted
+at every task boundary. Recommendations are hints for a human, not commands an
+agent can execute through Sassato: Sassato does not compact, clear, terminate or launch a provider through
 these commands, and advice never grants permission.
 
 ## At a task boundary
@@ -21,7 +23,6 @@ sassato checkpoint save --expect 3 \
   --next 'Review the unrelated billing task; read its requirements before claiming' \
   --notes 'Preserve the parser API. Rejected regex-only parsing. Parser tests pass. No running jobs or unresolved parser questions.'
 
-sassato context advise --relation unrelated --pressure low --jobs idle
 ```
 
 All three text fields are required and nonempty, up to 10,000 characters each.
@@ -34,15 +35,23 @@ records as well. Store secret locations, never secret values.
 Saving a checkpoint updates your own WIP and appends a recovery record in one
 transaction. It does not complete tasks, acknowledge mail or STOP, commit files,
 or claim that jobs have finished. Existing WIP version checks prevent stale writes.
-Ordinary `wip set` remains supported but does not create a recovery checkpoint.
+The WIP row is the current state; the checkpoint is an immutable snapshot of it,
+not a second editable copy. Ordinary `wip set` remains supported and makes the old
+checkpoint stale. Use `checkpoint save` in place of a WIP update when preparing
+for a handoff or reset; there is no need to write both.
 
-## Ask for advice
+## Optional advice for a human
 
 ```sh
 sassato context advise --relation same --pressure high --jobs idle --json
 sassato context advise --relation related --pressure low --jobs running
 sassato context advise --unsaved
 ```
+
+Keep native automatic compaction as the normal workflow. Ask for advice only when
+a manual reset is actually being considered. The benefit of proactive resets is
+not established by these rules: relatedness and pressure are reports, not measured
+predictions of quality or cost. Unknown inputs mean continue, even for unrelated work.
 
 These inputs describe the agent's assessment **at the time of the request**:
 
@@ -64,9 +73,9 @@ the normal single-waiter workflow after recovery only when STOP is absent.
 | --- | --- |
 | Active durable STOP or configured stop file | `stop`: follow STOP instructions and remain stopped |
 | Missing/stale checkpoint, unsaved discoveries, unread mail, or jobs not confirmed idle | `continue`: address the reasons before considering a reset |
-| Next work unrelated; no owned tasks doing, blocked or in review; checkpoint current; jobs idle | `fresh`: start a fresh conversation and recover from Sassato |
-| Same/related work; reported high pressure; checkpoint current; jobs idle | `compact`: retain useful reasoning through native compaction |
-| Related work with low pressure, unknown inputs, or unrelated work with unfinished owned tasks | `continue`: retain context; settle or hand off unfinished work first |
+| Next work unrelated; pressure known; no owned or targeted tasks doing, blocked or in review; checkpoint current; jobs idle | `fresh`: ask the human whether to start a fresh conversation |
+| Same/related work; reported high pressure; checkpoint current; jobs idle | `compact`: an optional hint for the human to consider native compaction |
+| Related work with low pressure, unknown inputs, or unrelated work with unfinished owned or targeted tasks | `continue`: retain context; settle or hand off unfinished work first |
 
 `continue` may mean checkpointing, reading mail or settling jobs, rather than starting
 new work. It never overrides a blocker, permission rule or task ownership. There is
@@ -85,15 +94,19 @@ sassato checkpoint show
 sassato checkpoint show reviewer
 ```
 
-The bounded context includes a checkpoint reference when one exists. Read the full
+The bounded context includes a checkpoint reference and its freshness state when
+one exists. Unsupported older checkpoint formats require a fresh save; their
+recovery text remains available. Read the full
 record with `checkpoint show`; it returns `null` if none exists. Recovery records
 are role-owned and workspace-scoped; other roles can read them, just like WIP.
 They survive provider changes and new session IDs. Audit events retain older records.
 
 A checkpoint is stale after 24 hours, or when its saved inputs change: WIP version;
 owned or targeted task versions; relevant blockers, questions and dependencies;
-pending mail receipts; shared facts; workspace settings/attachments; or the role's
-configuration. Unrelated roles' tasks and session heartbeats do not invalidate it.
+pending mail receipts; workspace settings/attachments; or the role's configuration.
+Unrelated roles' tasks, shared fact edits and session heartbeats do not invalidate
+it. Sassato does not track which facts a role relied on; read relevant facts during
+recovery rather than treating checkpoint freshness as fact validation.
 This is a conservative freshness check, not proof that the summary is complete.
 Sassato cannot see unsaved reasoning, changed files, provider context usage or live
 tool jobs through these commands. The agent must assess those explicitly.
@@ -122,9 +135,12 @@ integrate with that API. See [Codex configuration](https://learn.chatgpt.com/doc
 [commands](https://learn.chatgpt.com/docs/developer-commands?surface=cli) and
 [app-server](https://learn.chatgpt.com/docs/app-server).
 
-Use supported controls available in your installed provider version. If an agent
-cannot invoke them, it can prepare a checkpoint and suggest the action to the user,
-or continue with native automatic compaction. Do not inject terminal keystrokes or
+Manual reset hints are for the human using supported controls in the installed
+provider version. The agent can prepare recovery state and explain the hint; the
+advice command does not give it access to those controls. Continue with native
+automatic compaction when no manual action is needed. Do not inject terminal keystrokes or
 rewrite provider transcript files. For a fresh process, the existing human-only
 `sassato launch ROLE --fresh --as HUMAN` still requires the old session to have ended;
-advice neither ends it nor bypasses launch checks. No watcher or daemon is added.
+advice neither ends it nor bypasses launch checks. Never mark a still-running
+provider session ended merely to permit another launch. The human should close the
+old provider process before replacing it. No watcher or daemon is added.

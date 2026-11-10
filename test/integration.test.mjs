@@ -17,7 +17,7 @@ function fixture(t) {
   run(['init']); return {dir,db,raw,run};
 }
 test('CLI cross-provider work, decisions, receipts and recovery across attached repositories',t=>{
-  const {dir,db,run}=fixture(t);
+  const {dir,db,run,raw}=fixture(t);
   const engine=join(dir,'engine'),cloud=join(dir,'cloud');mkdirSync(engine);mkdirSync(cloud);
   for(const path of [engine,cloud])run(['workspace','attach',path,'--as','human']);
   run(['role','set','codex','--provider','codex','--as','human']);
@@ -30,8 +30,11 @@ test('CLI cross-provider work, decisions, receipts and recovery across attached 
   const ctx=run(['context','--as','a']);assert.equal(ctx.counts.inbox_unread,1);
   run(['context','--as','a']);assert.equal(run(['context','--as','a']).counts.inbox_unread,1);
   const msg=run(['inbox','--as','a'])[0];run(['ack',msg.id,'--as','a']);
-  run(['submit',task.id,'Fixed; tests passed','--as','a']);
-  run(['review',task.id,'--approve','--note','Verified independently','--as','codex']);
+  const submission=run(['submit',task.id,'Fixed; tests passed','--as','a']);
+  assert.equal(raw(['review',task.id,'--approve','--note','Missing version','--as','codex']).status,2);
+  for(const verdict of ['--approve','--reject']) assert.equal(raw(['review',task.id,verdict,'--expect',String(submission.version-1),'--note','Stale review','--as','codex']).status,4);
+  assert.equal(run(['show',task.id]).version,submission.version);
+  run(['review',task.id,'--approve','--expect',String(submission.version),'--note','Verified independently','--as','codex']);
   run(['done',task.id,'--ref','demo#12','--as','a']);
   for(const cwd of [engine,cloud]) {
     const r=spawnSync(process.execPath,[bin,'--db',db,'tasks','--status','done','--json'],{cwd,encoding:'utf8',env:{...process.env,SASSATO_WORKSPACE:'',SASSATO_ROLE:''}});

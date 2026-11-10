@@ -171,3 +171,58 @@ test('import confirmation binds the human recipient even for ownerless reconcili
     assert.equal(tasks.showTask(s,result.created[0]).blockers[0].waiting_on,'alice');
   });
 });
+
+
+test('context hides legacy pending questions and blockers on closed tasks without erasing history',t=>{
+  const {s}=fixture(t);
+  for(const status of ['done','dropped']) {
+    const task=tasks.addTask(s,{title:`Legacy ${status}`,owner:'builder'});
+    const question=tasks.askHuman(s,task.id,{question:`Obsolete ${status} decision?`});
+    const blocker=tasks.blockTask(s,task.id,{kind:'agent',waitingOn:'reviewer',body:'Old explicit blocker'});
+    // Simulate a legacy closed row that retained its pending question and open blockers.
+    s.run('UPDATE tasks SET status=? WHERE workspace_id=? AND id=?',status,s.ws,Number(task.id.slice(1)));
+    for(const role of ['builder','alice','reviewer'])as(s,role,()=>{
+      const data=context(s);
+      assert.ok(!data.sections.questions.some(row=>row.id===question.id),`${role}: obsolete ${status} question`);
+      assert.ok(!data.sections.blockers.some(row=>row.task===task.id),`${role}: obsolete ${status} blockers`);
+    });
+    const detail=tasks.showTask(s,task.id);assert.equal(detail.questions[0].id,question.id);assert.equal(detail.questions[0].status,'pending');
+    assert.ok(detail.blockers.some(row=>row.id===blocker.id));assert.equal(showRecord(s,question.id).status,'pending');
+  }
+  const active=tasks.addTask(s,{title:'Current decision',owner:'builder'}),question=tasks.askHuman(s,active.id,{question:'Still needed?'});
+  assert.ok(context(s).sections.questions.some(row=>row.id===question.id));
+  assert.ok(as(s,'alice',()=>context(s)).sections.blockers.some(row=>row.task===active.id));
+});
+
+test('dropping and reopening work keeps cancelled questions out of actionable context',t=>{
+  const {s}=fixture(t),task=tasks.addTask(s,{title:'Deferred decision',owner:'builder'}),old=tasks.askHuman(s,task.id,{question:'Proceed now?'});
+  tasks.dropTask(s,task.id,'No longer needed');
+  for(const role of ['builder','alice'])as(s,role,()=>{
+    const data=context(s);assert.ok(!data.sections.questions.some(row=>row.id===old.id));assert.ok(!data.sections.blockers.some(row=>row.task===task.id));
+  });
+  assert.equal(showRecord(s,old.id).status,'cancelled');
+  tasks.reopenTask(s,task.id,'A new requirement');
+  assert.ok(!context(s).sections.questions.some(row=>row.id===old.id));
+  const fresh=tasks.askHuman(s,task.id,{question:'Proceed under the new requirement?'});
+  assert.notEqual(fresh.id,old.id);assert.deepEqual(context(s).sections.questions.map(row=>row.id),[fresh.id]);
+  assert.deepEqual(as(s,'alice',()=>tasks.humanQueue(s)).map(row=>row.id),[fresh.id]);
+  const history=tasks.showTask(s,task.id).questions;assert.equal(history.find(q=>q.id===old.id).status,'cancelled');assert.equal(history.find(q=>q.id===fresh.id).status,'pending');
+});
+
+
+test('actionable reviews exclude approved work and permit human self-review',t=>{
+  const {s}=fixture(t),own=tasks.addTask(s,{title:'Builder implementation',owner:'builder'});
+  tasks.takeTask(s,own.id);tasks.submitTask(s,own.id,'Ready for another reviewer');
+  assert.ok(!context(s).sections.reviews.some(row=>row.id===own.id),'agent cannot review its own work');
+  assert.ok(as(s,'reviewer',()=>context(s)).sections.reviews.some(row=>row.id===own.id));
+  as(s,'reviewer',()=>tasks.reviewTask(s,own.id,{approve:true,note:'Approved reviewed version',expected_version:s.task(own.id).version}));
+  assert.equal(s.task(own.id).status,'review');
+  for(const role of ['builder','reviewer','alice'])assert.ok(!as(s,role,()=>context(s)).sections.reviews.some(row=>row.id===own.id),'approval is no longer an actionable review');
+  as(s,'alice',()=>{
+    const human=tasks.addTask(s,{title:'Human-owned change',owner:'alice',humanOnly:true});
+    tasks.takeTask(s,human.id);tasks.submitTask(s,human.id,'Ready for my review');
+    assert.ok(context(s).sections.reviews.some(row=>row.id===human.id),'human may review own work');
+    tasks.reviewTask(s,human.id,{approve:true,note:'Human self-review complete',expected_version:s.task(human.id).version});
+    assert.ok(!context(s).sections.reviews.some(row=>row.id===human.id));
+  });
+});

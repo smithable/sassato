@@ -11,20 +11,25 @@ Context is a bounded snapshot and does not mark messages read. Use the IDs to re
 full items before making decisions. Keep task ownership and your WIP accurate.
 Expired leases do not authorize taking another role's work; use an explicit handoff.
 
-At task boundaries and before an intended reset, read `sassato wip`, then save
+Before a handoff or intended reset, read `sassato wip`, then save
 `sassato checkpoint save --current 'objective and progress' --next 'next action'
 --notes 'constraints, discoveries, rejected approaches, files, tests, open questions and jobs'
 --expect VERSION` using the WIP version (omit --expect on first WIP). Supply all
 three fields and review their contents rather than carrying old notes forward.
 
-Consult `sassato context advise --relation same --pressure unknown --jobs unknown`.
-Report same/related/unrelated for the next work, low/high context pressure if known,
-and idle/running for jobs. Include --unsaved for discoveries not yet recorded.
-Unknown is acceptable; never invent context usage. A background waiter counts as
-running: settle it through native controls and retain its cursor before a reset.
-Advice never executes a reset or grants permission. Keep native auto-compaction;
-if a suggested reset needs a user command, explain it rather than injecting keys
-or modifying transcripts. After recovery, re-establish one waiter only if STOP is absent.
+Keep native auto-compaction as the default. `sassato context advise` is optional
+when a human is considering a manual reset, not a check to run after every task.
+Its relation, pressure and job reports must be honest; use unknown when unavailable.
+A running waiter counts as a job. Save discoveries, settle jobs and retain the waiter
+cursor before an intended reset. Advice never executes a reset or grants permission.
+Ask the human to use supported controls; never mark a live session ended to enable
+a fresh launch, inject keystrokes, or modify provider transcripts.
+After recovery, read current context and `sassato checkpoint show`, inspect full
+records and verify working files. Re-establish a waiter only if STOP is absent.
+
+Before approving or rejecting a review, read `sassato show T123` and retain its
+version. Supply `sassato review T123 --approve --expect VERSION --note 'evidence'`
+(or --reject). On a version conflict, inspect the changed task before reviewing again.
 
 ### Compact instructions
 
@@ -55,7 +60,7 @@ Do not block the foreground turn or detach it with shell `&`, nohup, or an outer
 shell loop: those do not provide the same tool-completion notification.
 
 The waiter ends for urgent mail, your human answers, resolved blockers, assignment
-or handoff, eligible ready work, or STOP. Ordinary mail alone does not wake it.
+or handoff, eligible ready work, review submissions or results, or STOP. Ordinary mail alone does not wake it.
 After completion, inspect context/inbox and the reported IDs, handle the change,
 and re-arm one waiter with the returned cursor. One readiness event can name several
 tasks; inspect them all before claiming work. Keep the returned cursor on timeout

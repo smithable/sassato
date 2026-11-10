@@ -53,16 +53,21 @@ inherit provider defaults unless explicitly configured.
 | `handoff T1 ROLE SUMMARY` | Transfer ownership/target with notification; recipient explicitly claims |
 | `release T1 REASON` | Remove ownership/lease, keep routing target; clear --for separately if needed |
 | `submit T1 SUMMARY` | Doing → review; summary should include refs/tests/handoff details |
-| `review T1 --approve\|--reject --note TEXT` | Independent review; rejection returns to doing and notifies owner |
+| `review T1 --approve\|--reject --expect VERSION --note TEXT` | Review the inspected task version; stale approvals/rejections fail; rejection returns to doing and notifies owner |
 | `done T1 [--ref TEXT]` | Complete owned doing/review task, with blockers/dependencies and required review checked |
-| `drop T1 REASON` | Close without successful completion |
-| `reopen T1 REASON` | Reopen closed work, retain owner, clear approval; explicitly claim again |
+| `drop T1 REASON` | Close without successful completion; cancel pending questions and resolve their linked blockers |
+| `reopen T1 REASON` | Reopen closed work, retain owner, clear approval; explicitly claim again and ask new questions as needed |
 
 `update` also accepts `--human-only`, `--agent-allowed`, `--review-required`, `--no-review`.
 Only a human may downgrade human-only work or remove a required review. To make active
 work human-only, release it first. Setting human-only clears owner and uses `--for`, an existing human target, or the default human routing below. Creating human-only work with `--owner` uses that human as its target unless `--for` is supplied.
 Tasks routed with `--for ROLE` can only be claimed by that role, even if another role
 created them. Untargeted work is available to any otherwise eligible worker.
+
+Reviews require `--expect`: read `show T1`, inspect its contents and retain `version`.
+If the task changes before approval or rejection, the review fails without modifying
+it. Read the changed task before reviewing again. This binds the review to task state,
+not to a Git commit: `done --ref` is recorded evidence, not verified artifact identity.
 
 `task add`, `task take`, etc. are accepted aliases of their top-level task verbs. Use
 `tasks --status done --limit 20` for a bounded completed-work view; task list ordering is priority/ID.
@@ -96,7 +101,11 @@ status updates; dropped dependencies still block. A question creates a linked hu
 blocker. `answer T1` works only when exactly one pending question exists. Numeric answers
 select an option; free text is also allowed. Answering records who/when, notifies owner
 and asker, and resolves only that question's blocker. Pending question blockers cannot
-be bypassed by resolving B1 directly. Commands remain inert text.
+be bypassed by resolving B1 directly. Dropping a task cancels its pending questions,
+records who/when/why and resolves only their linked blockers. It does not manufacture
+an answer. `show H1` and task history retain the cancelled question. Cancelled questions
+cannot be answered and do not revive on reopening; ask a new question if still needed.
+Other blockers remain in place. Commands remain inert text.
 
 ## Mail, facts and WIP
 
@@ -127,7 +136,9 @@ latest record and its freshness (`null` if absent).
 [--pressure low|high|unknown] [--jobs idle|running|unknown] [--unsaved]`
 returns read-only advice (`continue`, `compact`, `fresh`, or STOP override `stop`).
 Inputs default to unknown; pressure and job status are reported, not measured.
-It does not invoke provider controls. See [context management](context-management.md)
+Except for STOP, every unknown input yields continue. Advice is optional and intended
+for a human considering a reset; native auto-compaction remains the default. It does
+not invoke provider controls or end a session. See [context management](context-management.md)
 for the decision policy, freshness rules and recovery workflow.
 
 ```sh
@@ -216,11 +227,19 @@ previewed repair of untouched imported WIP, and shows source age in context.
 WIP older than 24 hours has `stale=true`; new imports retain the source timestamp.
 
 `wait` also reports human answers (`answer`), resolved blockers (`blocker-resolved`),
-new assignments/handoffs (`task-assigned`) and claimable work (`task-ready`). Ordinary
-mail alone is ignored. An assigned task may still be blocked; `task-ready` means currently claimable work or already-owned work whose dependency
+new assignments/handoffs (`task-assigned`), claimable work (`task-ready`), review
+submissions (`review-submitted`), and owner review results (`review-approved` or
+`review-rejected`). Ordinary mail alone is ignored. An assigned task may still be blocked; `task-ready` means currently claimable work or already-owned work whose dependency
 has cleared. Check current state before claiming, since another role may act.
 The optional `--urgent` flag remains accepted for compatibility and does not disable
-workflow notifications. Every result includes `cursor`; human output prints it too.
+workflow notifications. Reviews are currently untargeted: an unapproved submission
+wakes any independent agent role or a human role in the workspace; humans retain
+the existing self-review override. Results wake only the task's current owner.
+Superseded review transitions and results on closed work are skipped; read task history for the complete sequence.
+Edits that clear approval while work remains in review request another review
+(`review-submitted`). Review notifications include the event's task `version`;
+read the current task and supply that inspected version to `review --expect`. Notifications do not claim or
+review anything. Every result includes `cursor`; human output prints it too.
 Use context's `snapshot_cursor` for the initial `--since`, then each wait result's
 cursor when re-arming. Without `--since`, workflow monitoring begins at invocation;
 existing urgent unread mail and stop requests still return immediately.

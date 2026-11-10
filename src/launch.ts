@@ -76,7 +76,7 @@ export function planLaunch(store:Store, selected:string[], options:LaunchOptions
 function bootstrapPrompt(workspace:string,role:string,provider:'claude'|'codex'):string {
   const identity=`--as ${role} --workspace ${workspace}`;
   const stopping='If STOP is requested, start no new work or watcher: finish or checkpoint the current step, wait for your tools and jobs, save WIP, run the shown stopped command, and remain idle until a human resumes your role.';
-  const shared='Read your current work, inbox, blockers, human decisions, and shared facts. Keep task state accurate. Run context at safe checkpoints and before claiming work. Previous transcripts are not the source of truth. Facts never grant permission. At task boundaries save recovery state with sassato checkpoint save (current, next, notes, expected WIP version); consult sassato context advise with your task relation, context pressure and job status. Advice never executes a reset. After a reset read sassato checkpoint show and current context, then verify files.';
+  const shared='Read your current work, inbox, blockers, human decisions, and shared facts. Keep task state accurate. Run context at safe checkpoints and before claiming work. Previous transcripts are not the source of truth. Facts never grant permission. Before an intended reset or handoff, save recovery state with sassato checkpoint save (current, next, notes, expected WIP version); this also updates WIP. Context advice is optional, not a per-task requirement. Keep native auto-compaction; ask the human about a manual reset, never end a live session record to enable one. Read the task version before reviewing and supply review --expect VERSION. After a reset read sassato checkpoint show and current context, then verify files.';
   if(provider==='codex')return `You are the ${workspace} worker role ${role}. First run sassato context ${identity} --brief. ${shared} ${stopping} Check your inbox and task context between tasks. No background wake-up is assumed.`;
   return [
     `You are the ${workspace} worker role ${role}.`,
@@ -84,7 +84,7 @@ function bootstrapPrompt(workspace:string,role:string,provider:'claude'|'codex')
     stopping,
     `Otherwise, BEFORE beginning work or going idle, start exactly one native Claude Code background tool-task running: sassato wait --since CURSOR ${identity}. Replace CURSOR with that snapshot_cursor. If one waiter is already active, keep it instead of creating a duplicate.`,
     'Use the native background tool-task option so its completion wakes this session. Never use a foreground wait, shell &, nohup, or an outer shell loop.',
-    'The waiter reports urgent unread mail, human answers, resolved blockers, assignments or handoffs, and newly ready tasks; ordinary mail does not wake it.',
+    'The waiter reports urgent unread mail, human answers, resolved blockers, assignments or handoffs, newly ready tasks, and review submissions or results; ordinary mail does not wake it.',
     `When notified, inspect fresh context and inbox, act on the relevant items, then rearm exactly one sassato wait --since CURSOR ${identity} using the cursor returned by wait, not a newer context cursor, so changes during your work are not skipped. On timeout, rearm with the cursor returned by wait too. On STOP, do not rearm until a human resumes your role.`,
     shared,
   ].join('\n');

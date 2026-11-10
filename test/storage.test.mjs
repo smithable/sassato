@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Store,SCHEMA_VERSION } from '../dist/storage.js';
 import { initWorkspace,attachWorkspace,restoreDatabase,search } from '../dist/admin.js';
-import { addTask,takeTask } from '../dist/tasks.js';
+import { addTask,takeTask,askHuman,answerQuestion,blockTask,showTask,reopenTask,humanQueue } from '../dist/tasks.js';
 import { send,setFact,setWip,registerSession } from '../dist/coordination.js';
 import { normalizeOption,validateRoleOptions } from '../dist/role-options.js';
 import { safe,integer } from '../dist/errors.js';
@@ -74,6 +74,64 @@ test('failed v2 migration rolls back earlier ALTER statements and leaves origina
   assert.equal(db.prepare('SELECT count(*) n FROM schema_migrations').get().n,1);
   assert.equal(db.prepare('PRAGMA table_info(roles)').all().some(r=>r.name==='reasoning_effort'),false);
   assert.equal(JSON.stringify(db.prepare('SELECT * FROM events ORDER BY rowid').all()),baseline.events);db.close();
+});
+
+function questionV4Fixture(t) {
+  const dir=mkdtempSync(join(tmpdir(),'sassato-v4-questions-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const path=join(dir,'state.db'),s=new Store(path,'a',{create:true});initWorkspace(s,'legacy',fixtureConfig);
+  const dropped=addTask(s,{title:'Dropped decision task',owner:'a'}), pending=askHuman(s,dropped.id,{question:'Retired quartz question?',options:['Yes','No']});
+  const external=blockTask(s,dropped.id,{kind:'external',waitingOn:'supplier',body:'Unrelated blocker'});
+  const completed=addTask(s,{title:'Completed legacy task',owner:'a'}), obsolete=askHuman(s,completed.id,{question:'Completed task question?'});
+  const active=addTask(s,{title:'Active decision',owner:'a'}), live=askHuman(s,active.id,{question:'Still relevant?'});
+  const answeredTask=addTask(s,{title:'Answered question',owner:'a'}), answered=askHuman(s,answeredTask.id,{question:'Earlier decision?'});
+  s.actor='human';answerQuestion(s,answered.id,'Recorded answer');s.actor='a';
+  s.run("UPDATE tasks SET status='dropped',lease_until=NULL WHERE id=?",Number(dropped.id.slice(1)));
+  s.run("UPDATE tasks SET status='done',lease_until=NULL WHERE id=?",Number(completed.id.slice(1)));
+  const before={events:s.all('SELECT * FROM events ORDER BY id'),answered:showTask(s,answeredTask.id).questions[0],active:showTask(s,active.id),droppedVersion:showTask(s,dropped.id).version};
+  s.close();
+  const db=new DatabaseSync(path);
+  db.exec(`BEGIN IMMEDIATE;
+    CREATE TABLE questions_v4(id INTEGER PRIMARY KEY AUTOINCREMENT,workspace_id INTEGER NOT NULL,task_id INTEGER NOT NULL,blocker_id INTEGER NOT NULL,asked_by TEXT NOT NULL,question TEXT NOT NULL,options TEXT NOT NULL DEFAULT '[]',recommendation TEXT,command TEXT,status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','answered')),answer TEXT,answered_by TEXT,created_at TEXT NOT NULL,answered_at TEXT,UNIQUE(workspace_id,id),FOREIGN KEY(workspace_id,task_id) REFERENCES tasks(workspace_id,id),FOREIGN KEY(workspace_id,blocker_id) REFERENCES blockers(workspace_id,id));
+    INSERT INTO questions_v4(id,workspace_id,task_id,blocker_id,asked_by,question,options,recommendation,command,status,answer,answered_by,created_at,answered_at) SELECT id,workspace_id,task_id,blocker_id,asked_by,question,options,recommendation,command,status,answer,answered_by,created_at,answered_at FROM questions;
+    DROP TABLE questions;ALTER TABLE questions_v4 RENAME TO questions;CREATE INDEX questions_status ON questions(workspace_id,status,id);
+    UPDATE sqlite_sequence SET seq=100 WHERE name='questions';
+    DELETE FROM schema_migrations WHERE version>=5;PRAGMA user_version=4;COMMIT;`);
+  db.close();return {path,dropped,pending,completed,obsolete,active,live,answeredTask,answered,external,before};
+}
+
+test('v5 preserves decisions and audit history, cancelling obsolete requests without reviving them on reopen',t=>{
+  const f=questionV4Fixture(t);assert.throws(()=>new Store(f.path,undefined,{readonly:true}),/writable migration/);
+  const s=new Store(f.path,'a');t.after(()=>s.close());s.use('legacy');
+  assert.equal(s.get('PRAGMA user_version').user_version,SCHEMA_VERSION);assert.deepEqual(s.all('PRAGMA foreign_key_check'),[]);
+  assert.deepEqual(s.all('SELECT * FROM events WHERE id<=? ORDER BY id',f.before.events.at(-1).id),f.before.events);
+  assert.deepEqual(showTask(s,f.answeredTask.id).questions[0],f.before.answered);assert.deepEqual(showTask(s,f.active.id),f.before.active);
+  for(const [task,q] of [[f.dropped,f.pending],[f.completed,f.obsolete]]) {
+    const question=showTask(s,task.id).questions.find(row=>row.id===q.id);
+    assert.equal(question.status,'cancelled');assert.equal(question.cancelled_by,'schema-migration');assert.match(question.cancel_reason,/already closed/);assert.equal(question.answer,null);
+    assert.equal(s.get("SELECT status FROM documents WHERE type='question' AND entity_id=?",q.id).status,'cancelled');
+    const event=s.get("SELECT * FROM events WHERE entity='question' AND entity_id=? AND action='cancelled'",q.id);assert.equal(JSON.parse(event.detail).migration,5);
+    assert.ok(s.get("SELECT 1 FROM documents WHERE type='event' AND entity_id=?",`E${event.id}`));
+  }
+  assert.equal(showTask(s,f.dropped.id).version,f.before.droppedVersion+1);
+  assert.deepEqual(showTask(s,f.dropped.id).blockers.map(b=>b.id),[f.external.id]);
+  assert.deepEqual(humanQueue(s).filter(q=>q.kind==='question').map(q=>q.id),[f.live.id]);
+  assert.ok(search(s,'quartz',{type:'question'}).some(q=>q.id===f.pending.id));
+  reopenTask(s,f.dropped.id,'New request needed');assert.ok(!humanQueue(s).some(q=>q.id===f.pending.id));
+  const next=askHuman(s,f.dropped.id,{question:'New question after migration?'});assert.equal(next.id,'H101','the existing AUTOINCREMENT high-water mark is preserved');
+});
+
+test('failed v5 cancellation rolls back table rebuild, metadata, audit and search',t=>{
+  const f=questionV4Fixture(t),db=new DatabaseSync(f.path);
+  db.exec("CREATE TRIGGER reject_cancel BEFORE UPDATE ON blockers BEGIN SELECT RAISE(ABORT,'migration blocker failure'); END");
+  const documents=db.prepare('SELECT * FROM documents ORDER BY id').all();db.close();
+  assert.throws(()=>new Store(f.path),/migration blocker failure/);
+  const old=new DatabaseSync(f.path,{readOnly:true});t.after(()=>old.close());
+  assert.equal(old.prepare('PRAGMA user_version').get().user_version,4);
+  assert.equal(old.prepare('PRAGMA table_info(questions)').all().some(c=>c.name==='cancelled_at'),false);
+  assert.equal(old.prepare('SELECT status FROM questions WHERE id=?').get(Number(f.pending.id.slice(1))).status,'pending');
+  assert.deepEqual(old.prepare('SELECT * FROM events ORDER BY id').all(),f.before.events);
+  assert.deepEqual(old.prepare('SELECT * FROM documents ORDER BY id').all(),documents);
+  assert.deepEqual(old.prepare('PRAGMA foreign_key_check').all(),[]);
 });
 
 test('restoring a v1 backup migrates only its fresh destination and never overwrites',async t=>{

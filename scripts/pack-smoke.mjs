@@ -13,8 +13,8 @@ try {
   const packed=JSON.parse(run('npm',['pack','--json','--ignore-scripts','--pack-destination',dir],root))[0];
   const tarball=join(dir,packed.filename);run('tar',['-xzf',tarball,'-C',dir]);
   const pkg=join(dir,'package');assert.ok(existsSync(join(pkg,'dist','cli.js')));assert.ok(!existsSync(join(pkg,'node_modules')));
-  for(const required of ['dist/build-info.json','dist/context-advice.js','docs/commands.md','docs/architecture.md','docs/permissions.md','docs/benchmark.md','docs/integrations.md','examples/claude-hook.mjs','examples/team.config.json','docs/configuration.md','docs/compatibility.md','docs/context-management.md','CONTRIBUTING.md','SECURITY.md','LICENSE'])assert.ok(packed.files.some(f=>f.path===required),`Missing package resource ${required}`);
-  assert.ok(!packed.files.some(f=>/checkpoint|HANDOFF|implementation-plan|\.artifacts|smithable.config|\.db$|node_modules/.test(f.path)));
+  for(const required of ['dist/build-info.json','dist/context-advice.js','dist/checkpoints.js','docs/commands.md','docs/architecture.md','docs/permissions.md','docs/benchmark.md','docs/integrations.md','examples/claude-hook.mjs','examples/team.config.json','docs/configuration.md','docs/compatibility.md','docs/context-management.md','CONTRIBUTING.md','SECURITY.md','LICENSE'])assert.ok(packed.files.some(f=>f.path===required),`Missing package resource ${required}`);
+  assert.ok(!packed.files.some(f=>/docs\/checkpoint|HANDOFF|implementation-plan|\.artifacts|smithable.config|\.db$|node_modules/.test(f.path)));
   const info=JSON.parse(run(process.execPath,[join(pkg,'bin','sassato.js'),'--version','--json']));assert.match(info.build,/^[0-9a-f]{16}$/);
   const clean=join(dir,'clean'),cache=join(dir,'cache');mkdirSync(clean);
   const db=join(clean,'state.db'),env={npm_config_cache:cache,npm_config_registry:'http://127.0.0.1:9',SASSATO_DB:db,SASSATO_WORKSPACE:'packtest',SASSATO_ROLE:''};

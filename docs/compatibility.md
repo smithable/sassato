@@ -22,3 +22,25 @@ Markdown import recognizes configured role names and configured humans in answer
 Historical role-label and time-zone spellings remain accepted by a small compatibility
 adapter. Preview all imports; raw source and previous answers are preserved, and ambiguous
 items remain marked for reconciliation rather than silently treated as current work.
+
+## Review and recovery update
+
+Review approvals and rejections now require `--expect VERSION`. Update scripts to
+read the task and pass the version they inspected; missing versions are input errors,
+and stale versions are conflicts. On a conflict, review the new state rather than
+blindly retrying with its version. Completion references remain unverified metadata.
+
+Database schema 5 adds cancelled human questions and cancellation metadata. Run
+`sassato migrate --db PATH` with the new CLI before using read-only commands on an
+older database; normal writes also migrate automatically. The upgrade is atomic.
+Older CLIs refuse the newer schema. Keep a database backup before upgrading if you
+need the option to return to the old CLI.
+
+Pending questions on already closed tasks are cancelled during migration; answered
+questions and original audit history are preserved. Reopening a task requires a new
+question when a decision is still needed. Nothing is answered on the human's behalf.
+
+Recovery checkpoints saved with the older fingerprint format remain readable but
+report `unsupported`; review the current state and save a new checkpoint. Ordinary
+WIP remains intact. Optional context advice now returns `continue` whenever an input
+is unknown, unless STOP takes precedence.

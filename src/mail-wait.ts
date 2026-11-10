@@ -6,9 +6,11 @@ import { check, integer } from './errors.js';
 import { workspaceSettings } from './workspace-settings.js';
 
 export interface WaitResult {
-  reason:'urgent'|'stop'|'timeout'|'answer'|'blocker-resolved'|'task-assigned'|'task-ready';
+  reason:'urgent'|'stop'|'timeout'|'answer'|'blocker-resolved'|'task-assigned'|'task-ready'|'review-submitted'|'review-approved'|'review-rejected';
   role:string; cursor:number; message?:Row; stop?:Row;
   question?:string; blocker?:string; task?:string; tasks?:string[];
+  /** Task version recorded by the workflow event, not a substitute for reading current work. */
+  version?:number;
 }
 export interface WaitOptions { timeout?:number; stopFile?:string; since?:number }
 const maximum=(s:Store):number=>Number(s.get('SELECT coalesce(max(id),0) n FROM events WHERE workspace_id=?',s.ws)!.n);
@@ -31,6 +33,33 @@ function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
   }
   if(event.entity!=='task'||!/^T\d+$/.test(event.entity_id))return undefined;
   const id=Number(event.entity_id.slice(1));
+  const reviewUpdate=event.action==='updated'&&detail.after?.reviewed_by===null&&
+    !!s.get("SELECT 1 FROM tasks WHERE workspace_id=? AND id=? AND status='review'",s.ws,id);
+  if(reviewUpdate||['submitted','review-approved','review-rejected'].includes(event.action)) {
+    const task=s.get('SELECT owner,status,reviewed_by FROM tasks WHERE workspace_id=? AND id=?',s.ws,id);
+    if(!task||task.status==='done'||task.status==='dropped')return undefined;
+    // A late reader needs the current review transition, not every superseded
+    // submission/result. Metadata notes may advance the task version without
+    // replacing that transition, so compare workflow events rather than versions.
+    const superseded=s.get(`SELECT 1 FROM events WHERE workspace_id=? AND entity='task' AND entity_id=? AND id>?
+      AND (action IN ('submitted','review-approved','review-rejected') OR
+        (?='review' AND action='updated' AND CASE WHEN json_valid(detail) THEN json_type(detail,'$.after.reviewed_by')='null' ELSE 0 END))
+      LIMIT 1`,s.ws,event.entity_id,event.id,task.status);
+    if(superseded)return undefined;
+    const version=Number.isSafeInteger(detail.after?.version)&&detail.after.version>0?detail.after.version:undefined;
+    if(event.action==='submitted'||reviewUpdate) {
+      // Reviews are untargeted: use the existing reviewTask eligibility rule. Human
+      // operators may review their own work; agents require an independent owner.
+      // Updates that clear approval while keeping review open are new review requests.
+      // An already settled or withdrawn submission no longer needs a reviewer.
+      if(task.status!=='review'||task.reviewed_by!==null||task.owner===actor&&s.role(actor).kind!=='human')return undefined;
+      return {...base,reason:'review-submitted',task:event.entity_id,version};
+    }
+    if(task.owner!==actor)return undefined;
+    if(event.action==='review-approved'&&(task.status!=='review'||task.reviewed_by===null))return undefined;
+    if(event.action==='review-rejected'&&(!['doing','blocked'].includes(task.status)||task.reviewed_by!==null))return undefined;
+    return {...base,reason:event.action==='review-approved'?'review-approved':'review-rejected',task:event.entity_id,version};
+  }
   if(event.action==='blocker-resolved') {
     const blocker=/^B\d+$/.test(detail.blocker??'')?Number(detail.blocker.slice(1)):null;
     // answerQuestion resolves its blocker first, then emits the canonical answer event

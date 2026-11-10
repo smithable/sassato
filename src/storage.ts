@@ -7,7 +7,7 @@ import { check, name, now, safe, id } from './errors.js';
 // SQLite rows deliberately stay flexible at this small adapter boundary.
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 export function databasePath(value?: string): string {
   const path = resolve(value ?? process.env.SASSATO_DB ?? `${process.env.XDG_DATA_HOME ?? `${homedir()}/.local/share`}/sassato/sassato.db`);
   let ancestor = path;
@@ -107,8 +107,45 @@ export class Store {
       if (current === 0) { this.db.exec(SCHEMA); current = 1; }
       if (current === 1) { this.db.exec(MIGRATION_2); current = 2; }
       if (current === 2) { this.db.exec(MIGRATION_3); current = 3; }
-      if (current === 3) this.db.exec(MIGRATION_4);
+      if (current === 3) { this.db.exec(MIGRATION_4); current = 4; }
+      if (current === 4) {
+        const questionSequence = this.get("SELECT seq FROM sqlite_sequence WHERE name='questions'")?.seq ?? 0;
+        this.db.exec(MIGRATION_5);
+        this.run("UPDATE sqlite_sequence SET seq=max(seq,?) WHERE name='questions'",questionSequence);
+        this.cancelClosedQuestions();
+      }
     });
+  }
+  private cancelClosedQuestions(): void {
+    // Older releases left pending decisions attached to closed work. Preserve the
+    // requests and existing answers, but do not let reopening revive those requests.
+    const at = now(), actor = 'schema-migration', reason = 'Schema 5 migration: task was already closed; ask a new question after reopening.';
+    const rows = this.all("SELECT q.*,b.waiting_on,b.body AS blocker_body FROM questions q JOIN tasks t ON t.workspace_id=q.workspace_id AND t.id=q.task_id JOIN blockers b ON b.workspace_id=q.workspace_id AND b.id=q.blocker_id WHERE q.status='pending' AND t.status IN ('done','dropped') ORDER BY q.workspace_id,q.task_id,q.id");
+    const index = (workspace: number, type: string, entity: string, title: string, body: string, role: string | null, status: string | null) => {
+      this.run('INSERT INTO documents(workspace_id,type,entity_id,title,body,role,status,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(workspace_id,type,entity_id) DO UPDATE SET title=excluded.title,body=excluded.body,role=excluded.role,status=excluded.status,updated_at=excluded.updated_at',workspace,type,entity,title,body,role,status,at);
+    };
+    const event = (workspace: number, entity: string, entityId: string, action: string, detail: Row) => {
+      const body = JSON.stringify({...detail,migration:5});
+      const id = this.run('INSERT INTO events(workspace_id,entity,entity_id,actor,action,detail,created_at) VALUES(?,?,?,?,?,?,?)',workspace,entity,entityId,actor,action,body,at).lastInsertRowid;
+      index(workspace,'event',`E${id}`,`${entityId} ${action}`,body,actor,null);
+    };
+    const tasks = new Map<string,{workspace:number;id:number;questions:string[]}>();
+    for (const q of rows) {
+      const task = `T${q.task_id}`, question = `H${q.id}`, blocker = `B${q.blocker_id}`;
+      this.run("UPDATE questions SET status='cancelled',cancelled_at=?,cancelled_by=?,cancel_reason=? WHERE workspace_id=? AND id=?",at,actor,reason,q.workspace_id,q.id);
+      this.run("UPDATE blockers SET status='resolved',resolved_at=? WHERE workspace_id=? AND id=? AND status='open'",at,q.workspace_id,q.blocker_id);
+      index(q.workspace_id,'question',question,q.question,JSON.stringify({options:JSON.parse(q.options),recommendation:q.recommendation,command:q.command,cancel_reason:reason}),q.waiting_on,'cancelled');
+      index(q.workspace_id,'blocker',blocker,`${task} waits on ${q.waiting_on}`,q.blocker_body,q.waiting_on,'resolved');
+      event(q.workspace_id,'question',question,'cancelled',{task,blocker,reason});
+      const key = `${q.workspace_id}/${q.task_id}`, affected = tasks.get(key) ?? {workspace:q.workspace_id,id:q.task_id,questions:[] as string[]};
+      affected.questions.push(question); tasks.set(key,affected);
+    }
+    for (const affected of tasks.values()) {
+      const task = this.get('SELECT * FROM tasks WHERE workspace_id=? AND id=?',affected.workspace,affected.id)!;
+      this.run('UPDATE tasks SET version=version+1,updated_at=? WHERE workspace_id=? AND id=?',at,affected.workspace,affected.id);
+      event(affected.workspace,'task',`T${task.id}`,'questions-cancelled',{before:{version:task.version,updated_at:task.updated_at},after:{version:task.version+1,updated_at:at},cancelled_questions:affected.questions,reason});
+      index(affected.workspace,'task',`T${task.id}`,task.title,task.body,task.owner??task.for_role,task.status);
+    }
   }
 }
 const SCHEMA = `
@@ -180,4 +217,14 @@ ALTER TABLE messages ADD COLUMN urgent INTEGER NOT NULL DEFAULT 0 CHECK(urgent I
 CREATE INDEX urgent_messages ON messages(workspace_id,id) WHERE urgent=1;
 INSERT INTO schema_migrations VALUES(4,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 PRAGMA user_version=4;
+`;
+
+const MIGRATION_5 = `
+CREATE TABLE questions_v5(id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id INTEGER NOT NULL, task_id INTEGER NOT NULL, blocker_id INTEGER NOT NULL, asked_by TEXT NOT NULL, question TEXT NOT NULL, options TEXT NOT NULL DEFAULT '[]', recommendation TEXT, command TEXT, status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','answered','cancelled')), answer TEXT, answered_by TEXT, created_at TEXT NOT NULL, answered_at TEXT, cancelled_at TEXT, cancelled_by TEXT, cancel_reason TEXT, UNIQUE(workspace_id,id), FOREIGN KEY(workspace_id,task_id) REFERENCES tasks(workspace_id,id), FOREIGN KEY(workspace_id,blocker_id) REFERENCES blockers(workspace_id,id));
+INSERT INTO questions_v5(id,workspace_id,task_id,blocker_id,asked_by,question,options,recommendation,command,status,answer,answered_by,created_at,answered_at) SELECT id,workspace_id,task_id,blocker_id,asked_by,question,options,recommendation,command,status,answer,answered_by,created_at,answered_at FROM questions;
+DROP TABLE questions;
+ALTER TABLE questions_v5 RENAME TO questions;
+CREATE INDEX questions_status ON questions(workspace_id,status,id);
+INSERT INTO schema_migrations VALUES(5,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+PRAGMA user_version=5;
 `;

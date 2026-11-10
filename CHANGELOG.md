@@ -2,6 +2,17 @@
 
 ## 0.1.2 — unreleased
 
+Review and recovery fixes:
+
+- Reviews now require `--expect VERSION`; stale approval and rejection fail atomically.
+- Review submissions and results wake eligible waiting roles, preserving event cursors.
+- Dropped tasks cancel pending questions with retained history; reopening requires new
+  questions. Database upgrades preserve existing records and are transactional.
+- Checkpoint freshness covers targeted task dependencies, avoids workspace-wide fact
+  invalidation, and is visible in brief context. Old checkpoint formats need refreshing.
+- Context advice remains optional, requires known reports, and leaves manual resets
+  to the human. Native auto-compaction remains the default.
+
 First public source release preparation:
 
 - Recovery checkpoints and advisory continue/compact/fresh recommendations with STOP

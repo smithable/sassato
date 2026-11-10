@@ -12,7 +12,8 @@ transactions for ownership checks, task changes, audit and FTS updates. A contes
 checks open status and ownership inside the transaction. Expired leases do not authorize
 stealing. Readers use snapshot transactions where multiple queries must agree.
 
-Task/fact/WIP edits use expected versions where stale client edits could overwrite newer
+Task reviews require the inspected version for approval and rejection. Task/fact/WIP
+edits use expected versions where stale client edits could overwrite newer
 work. Mutations made by state-machine commands operate on the current row inside the
 transaction. Events are append-only, with database triggers rejecting updates/deletes.
 The first migration runs atomically, records schema_migrations and PRAGMA user_version;
@@ -30,6 +31,8 @@ Recursive cycle checks and root-blocker traversal use the same transaction/snaps
 The human queue combines pending questions and human-directed tasks. Answering resolves
 only the question's blocker; unrelated blockers remain and the task is never auto-completed.
 One optional review gate requires a recorded independent approval before completion.
+Dropping a task cancels pending questions with an audit record and resolves their
+linked blockers; reopening requires new questions rather than reviving old requests.
 
 ## Search and context
 
@@ -37,8 +40,8 @@ Recovery checkpoints use append-only `checkpoint` events and the existing WIP ro
 no schema change is required. Saving both is atomic and uses WIP optimistic version
 checks. A fingerprint of relevant durable state and a 24-hour age check mark old
 recovery records stale. Session heartbeats do not affect freshness. `context advise`
-combines that state with explicit agent reports in a read-only snapshot; it never
-measures provider context or invokes compaction. See [context management](context-management.md).
+is an optional human-facing hint that combines saved state with explicit agent reports
+in a read-only snapshot; it never measures provider context or invokes compaction. See [context management](context-management.md).
 
 A shared documents table feeds an external-content FTS5 index with unicode61 and prefix
 indexes. SQLite triggers update the index in the source mutation transaction. Search ranks

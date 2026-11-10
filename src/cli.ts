@@ -30,7 +30,7 @@ Tasks:      add TITLE [--body TEXT] [--for ROLE] [--owner ROLE] [--human-only]
             show T1 | take T1 [--hours 4] | renew T1 | note T1 TEXT
             update T1 --expect VERSION [--title TEXT] [--body TEXT]
             handoff T1 ROLE SUMMARY | release T1 REASON
-            submit T1 SUMMARY | review T1 --approve|--reject --note TEXT
+            submit T1 SUMMARY | review T1 --approve|--reject --expect VERSION --note TEXT
             done T1 [--ref COMMIT] | drop T1 REASON | reopen T1 REASON
             after T1 T2 | unafter T1 T2
 Blockers:   block T1 TEXT --kind agent|human|external|other --waits-on NAME
@@ -75,7 +75,7 @@ const globalFlags = ['db','workspace','as','json','help'];
 const allowed: Record<string,string[]> = {
   init:['config','humans','interactive','no-interactive','launch','dry-run','fresh','resume','no-prompt','terminal','distro','window','stop-file','new-window'], 'workspace attach':[], 'workspace settings':[], 'workspace set':['default-human','import-timezone','stop-file'],roles:[], 'role set':['provider','model','effort','permission-mode','sandbox','approval','dir','kind'],
   add:['title','body','for','owner','priority','human-only','review-required'],tasks:['status','owner','for','available','limit','after'],show:['limit','before-event'],
-  take:['hours'],renew:['hours'],note:[],update:['expect','title','body','priority','for','human-only','agent-allowed','review-required','no-review'],handoff:[],release:[],submit:[],review:['approve','reject','note'],done:['ref'],drop:[],reopen:[],after:[],unafter:[],block:['kind','waits-on'],blockers:['task','chain','limit','all'],resolve:[],
+  take:['hours'],renew:['hours'],note:[],update:['expect','title','body','priority','for','human-only','agent-allowed','review-required','no-review'],handoff:[],release:[],submit:[],review:['approve','reject','note','expect'],done:['ref'],drop:[],reopen:[],after:[],unafter:[],block:['kind','waits-on'],blockers:['task','chain','limit','all'],resolve:[],
   'ask-human':['for','options','recommend','command'],'ask-johan':['options','recommend','command'],answer:['close'],humans:['for','limit'],johan:['limit'],send:['re','urgent'],wait:['urgent','timeout','stop-file','since'],inbox:['peek','state','limit'],outbox:['limit'],ack:[],
   'fact set':['source','checked-at','expect'],'fact get':[],'fact history':[],facts:['limit'],
   'wip show':[],'wip set':['current','next','notes','expect'],sessions:[], 'session register':['provider','session-id','pid','replace'],'session heartbeat':['session-id'],'session end':['session-id'],usage:['until'],
@@ -92,6 +92,9 @@ function humanOutput(value: unknown): string {
     else if(event.reason==='stop') summary=event.stop!.file?`STOP ${event.stop!.file} for ${event.role}: follow repository stop instructions.`:`STOP ${event.stop!.id} for ${event.role}: check context and stop work.`;
     else if(event.reason==='answer') summary=`ANSWER ${event.question} for ${event.task}: read the human answer.`;
     else if(event.reason==='blocker-resolved') summary=`BLOCKER ${event.blocker} resolved for ${event.task}: check remaining work.`;
+    else if(event.reason==='review-submitted') summary=`REVIEW ${event.task} needs review (version ${event.version}): read the current task before reviewing.`;
+    else if(event.reason==='review-approved') summary=`REVIEW ${event.task} approved (version ${event.version}): check context before completing.`;
+    else if(event.reason==='review-rejected') summary=`REVIEW ${event.task} rejected (version ${event.version}): read the review and revise.`;
     else if(event.reason==='task-assigned') summary=`TASK ${event.task} assigned to ${event.role}: check context.`;
     else if(event.reason==='task-ready') {const tasks=event.tasks??[event.task!];summary=`TASK ${tasks.slice(0,8).join(', ')} ready for ${event.role}${tasks.length>8?` (+${tasks.length-8} more; inspect context/tasks)`:''}.`;}
     else summary=`Timed out waiting for work notifications for ${event.role}.`;
@@ -212,7 +215,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'note': case 'release': case 'submit': case 'drop': case 'reopen': {const task=arg('task'),note=rest('note');result=({note:t.noteTask,release:t.releaseTask,submit:t.submitTask,drop:t.dropTask,reopen:t.reopenTask}[command]!)(s,task,note);break;}
         case 'update': {const task=arg('task');empty();check(!(bool('human-only')&&bool('agent-allowed')),'Conflicting human flags');check(!(bool('review-required')&&bool('no-review')),'Conflicting review flags');result=t.updateTask(s,task,{version:integer(need('expect'),'expect',1),title:str('title'),body:str('body'),priority:num('priority'),forRole:str('for')==='none'?null:str('for'),humanOnly:bool('human-only')?true:bool('agent-allowed')?false:undefined,reviewRequired:bool('review-required')?true:bool('no-review')?false:undefined});break;}
         case 'handoff': {const task=arg('task'),to=arg('role');result=t.handoffTask(s,task,to,rest('summary'));break;}
-        case 'review': {const task=arg('task');empty();check(bool('approve')!==bool('reject'),'Choose --approve or --reject');result=t.reviewTask(s,task,{approve:bool('approve'),note:need('note')});break;}
+        case 'review': {const task=arg('task');empty();check(bool('approve')!==bool('reject'),'Choose --approve or --reject');result=t.reviewTask(s,task,{approve:bool('approve'),note:need('note'),expected_version:integer(need('expect'),'expected version',1)});break;}
         case 'done': {const task=arg('task');empty();result=t.doneTask(s,task,{ref:str('ref')});break;}
         case 'after': case 'unafter': {const task=arg('task'),dep=arg('dependency');empty();result=(command==='after'?t.addDependency:t.removeDependency)(s,task,dep);break;}
         case 'block': {const task=arg('task');result=t.blockTask(s,task,{body:rest('reason'),kind:need('kind'),waitingOn:need('waits-on')});break;}

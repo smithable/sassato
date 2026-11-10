@@ -47,9 +47,10 @@ bounded context. Merge `examples/claude-settings.example.json` into your own set
 after editing its script path. Existing settings are never overwritten. No Codex hook
 configuration is installed; Codex workers read context and inbox between tasks.
 
-At task boundaries, save recovery state with `checkpoint save` and consult
-`context advise` using an honest report of task relatedness, context pressure and
-running jobs. After clearing or compaction, read `checkpoint show` and current
+Before a handoff or reset, save recovery state with `checkpoint save` (this also
+updates WIP). `context advise` is optional when a human considers a manual reset;
+use honest reports of task relatedness, context pressure and running jobs. Native
+automatic compaction remains the default. After clearing or compaction, read `checkpoint show` and current
 context, then verify the working files. The hook reloads context but does not save
 discoveries before a reset. See [context management](context-management.md) for
 commands, provider limits and the conservative recommendation policy.
@@ -81,7 +82,7 @@ never deletes an external stop signal.
 
 `sassato wait --since CURSOR --as ROLE` is a read-only notification command. It returns
 for urgent unread mail, a human answer, resolved blockers, assignments/handoffs, newly
-available work, stop, or timeout. Ordinary mail does not wake it. Reads do not consume
+available work, review submissions/results, stop, or timeout. Ordinary mail does not wake it. Reads do not consume
 inbox receipts. Use the returned cursor when rearming so intervening events are not lost.
 
 The Claude launch prompt instructs the worker to keep exactly one provider-native background
@@ -132,4 +133,5 @@ exports and backups as private workspace data.
 Install an updated local package, compare `sassato --version` with the intended build,
 and run `doctor`. Writable commands apply supported schema migrations; reads do not
 mutate schemas. `restore BACKUP --db NEW_FILE` validates and restores into a new file.
-Current human/configuration changes keep schema v4; existing state is preserved.
+Schema v5 adds explicit question cancellation; existing records and audit history are
+preserved. See [upgrade compatibility](compatibility.md) before switching CLI versions.

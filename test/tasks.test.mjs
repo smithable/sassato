@@ -128,18 +128,81 @@ test('review gate enforces independent approval, rejection explanation and edits
   expectCode(() => tasks.doneTask(s, task.id), 4);
   expectCode(() => tasks.updateTask(s, task.id, { version: tasks.showTask(s, task.id).version, reviewRequired: false }), 3);
   tasks.submitTask(s, task.id, 'Tests pass');
-  expectCode(() => tasks.reviewTask(s, task.id, { approve: true, note: 'Self-review' }), 3);
-  as(s, 'b', () => tasks.reviewTask(s, task.id, { approve: false, note: 'Fix race' }));
+  expectCode(() => tasks.reviewTask(s, task.id, { expected_version: tasks.showTask(s, task.id).version, approve: true, note: 'Self-review' }), 3);
+  as(s, 'b', () => tasks.reviewTask(s, task.id, { expected_version: tasks.showTask(s, task.id).version, approve: false, note: 'Fix race' }));
   assert.equal(tasks.showTask(s, task.id).status, 'doing');
   assert.equal(tasks.showTask(s, task.id).review_note, 'Fix race');
   tasks.submitTask(s, task.id, 'Race fixed');
-  as(s, 'c', () => tasks.reviewTask(s, task.id, { approve: true, note: 'Verified' }));
+  as(s, 'c', () => tasks.reviewTask(s, task.id, { expected_version: tasks.showTask(s, task.id).version, approve: true, note: 'Verified' }));
   const reviewed = tasks.showTask(s, task.id);
   tasks.updateTask(s, task.id, { version: reviewed.version, body: 'new scope' });
   expectCode(() => tasks.doneTask(s, task.id), 4);
-  as(s, 'c', () => tasks.reviewTask(s, task.id, { approve: true, note: 'New scope checked' }));
+  as(s, 'c', () => tasks.reviewTask(s, task.id, { expected_version: tasks.showTask(s, task.id).version, approve: true, note: 'New scope checked' }));
   assert.equal(tasks.doneTask(s, task.id, { ref: 'repo#42' }).status, 'done');
   assert.ok(tasks.showTask(s, task.id).history.some(e => e.action === 'review-rejected' && e.detail.note === 'Fix race'));
+});
+
+test('review approval and rejection require the inspected current version and fail atomically when stale', t => {
+  const { s } = fixture(t), task = tasks.addTask(s, { title: 'Version-bound review', reviewRequired: true });
+  tasks.takeTask(s, task.id);const submitted=tasks.submitTask(s,task.id,'Inspect this revision');
+  tasks.updateTask(s,task.id,{version:submitted.version,body:'Material change after reviewer read'});
+  const before=tasks.showTask(s,task.id), events=count(s,'events'), messages=count(s,'messages');
+  for(const approve of [true,false]) as(s,'b',()=>{
+    expectCode(()=>tasks.reviewTask(s,task.id,{approve,note:'Missing version'}),2);
+    expectCode(()=>tasks.reviewTask(s,task.id,{approve,note:'Old revision',expected_version:submitted.version}),4);
+  });
+  assert.deepEqual(tasks.showTask(s,task.id),before);assert.equal(count(s,'events'),events);assert.equal(count(s,'messages'),messages);
+  expectCode(()=>tasks.doneTask(s,task.id),4);
+  const approved=as(s,'b',()=>tasks.reviewTask(s,task.id,{approve:true,note:'Re-read updated revision',expected_version:before.version}));
+  assert.equal(approved.reviewed_by,'b');assert.equal(approved.review_note,'Re-read updated revision');
+  as(s,'c',()=>expectCode(()=>tasks.reviewTask(s,task.id,{approve:false,note:'Stale competing review',expected_version:before.version}),4));
+  assert.equal(tasks.doneTask(s,task.id).status,'done');
+});
+
+test('drop cancels pending questions permanently, preserving answers and unrelated blockers', t => {
+  const { s } = fixture(t), task=tasks.addTask(s,{title:'Obsolete work',owner:'a'});
+  const answered=tasks.askHuman(s,task.id,{question:'Earlier decision?'});
+  as(s,'human',()=>tasks.answerQuestion(s,answered.id,'Keep earlier answer'));
+  const pending=tasks.askHuman(s,task.id,{question:'Obsolete decision?',options:['Continue','Stop']});
+  const another=tasks.askHuman(s,task.id,{question:'Other obsolete decision?'});
+  const external=tasks.blockTask(s,task.id,{kind:'external',waitingOn:'vendor',body:'Independent requirement'});
+  const other=tasks.addTask(s,{title:'Still needed',owner:'a'}), otherQuestion=tasks.askHuman(s,other.id,{question:'Keep this request?'});
+  const before=tasks.showTask(s,task.id);
+  as(s,'b',()=>expectCode(()=>tasks.dropTask(s,task.id,'Unauthorized'),3));
+  assert.deepEqual(tasks.showTask(s,task.id),before);
+  tasks.dropTask(s,task.id,'Scope removed');
+  const dropped=tasks.showTask(s,task.id);
+  assert.equal(dropped.questions.find(q=>q.id===answered.id).answer,'Keep earlier answer');
+  for(const id of [pending.id,another.id]){
+    const q=dropped.questions.find(q=>q.id===id);assert.equal(q.status,'cancelled');assert.equal(q.answer,null);assert.equal(q.cancelled_by,'a');assert.equal(q.cancel_reason,'Scope removed');assert.ok(q.cancelled_at);
+    assert.equal(s.get("SELECT status FROM documents WHERE type='question' AND entity_id=?",id).status,'cancelled');
+    assert.equal(s.get("SELECT action FROM events WHERE entity='question' AND entity_id=? ORDER BY id DESC LIMIT 1",id).action,'cancelled');
+  }
+  assert.deepEqual(dropped.blockers.map(b=>b.id),[external.id]);
+  assert.deepEqual(tasks.humanQueue(s).filter(q=>q.kind==='question').map(q=>q.id),[otherQuestion.id]);
+  as(s,'human',()=>expectCode(()=>tasks.answerQuestion(s,pending.id,'Too late'),4));
+  assert.equal(tasks.reopenTask(s,task.id,'New scope').status,'blocked');
+  as(s,'human',()=>expectCode(()=>tasks.answerQuestion(s,pending.id,'Still obsolete'),4));
+  tasks.resolveBlocker(s,external.id,'Vendor ready');
+  const renewed=tasks.askHuman(s,task.id,{question:'New scope decision?'});assert.notEqual(renewed.id,pending.id);
+  assert.ok(tasks.humanQueue(s).some(q=>q.id===renewed.id));assert.ok(!tasks.humanQueue(s).some(q=>q.id===pending.id));
+});
+
+test('closed legacy questions cannot be answered and failed drop rolls back cancellations and search', t => {
+  const { s } = fixture(t), task=tasks.addTask(s,{title:'Transactional cancellation',owner:'a'});
+  const q=tasks.askHuman(s,task.id,{question:'Should this survive rollback?'});
+  const snapshot=tasks.showTask(s,task.id), events=count(s,'events');
+  s.db.exec("CREATE TRIGGER reject_drop BEFORE UPDATE ON tasks WHEN new.status='dropped' BEGIN SELECT RAISE(ABORT,'simulated drop failure'); END");
+  assert.throws(()=>tasks.dropTask(s,task.id,'Fails after cancellation'),/simulated drop failure/);
+  assert.deepEqual(tasks.showTask(s,task.id),snapshot);assert.equal(count(s,'events'),events);
+  assert.equal(s.get("SELECT status FROM documents WHERE type='question' AND entity_id=?",q.id).status,'pending');
+  s.db.exec('DROP TRIGGER reject_drop');
+  for(const status of ['done','dropped']) {
+    s.run('UPDATE tasks SET status=? WHERE id=?',status,Number(task.id.slice(1)));
+    as(s,'human',()=>expectCode(()=>tasks.answerQuestion(s,q.id,'Reject closed work'),4));
+    assert.ok(!tasks.humanQueue(s).some(row=>row.id===q.id));
+  }
+  assert.equal(s.get('SELECT status FROM questions WHERE id=?',Number(q.id.slice(1))).status,'pending');
 });
 
 test('dependencies reject cycles, show root causes, clear on completion and block completion', t => {

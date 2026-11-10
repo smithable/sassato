@@ -170,9 +170,11 @@ export function submitTask(s: Store, task: string, note: string): Row {
     return change(s, row, { status: 'review', lease_until: null, reviewed_by: null, review_note: null }, 'submitted', { note });
   });
 }
-export function reviewTask(s: Store, task: string, options: { approve: boolean; note: string }): Row {
+export function reviewTask(s: Store, task: string, options: { approve: boolean; note: string; expected_version: number }): Row {
   return s.tx(() => {
     const row = s.task(task), actor = s.requireActor(); text(options.note, 'review explanation');
+    const expected = integer(options.expected_version, 'expected version', 1);
+    check(row.version === expected, 'Task changed; reload it and review the current version', 4);
     check(row.status === 'review', 'Task is not awaiting review', 4);
     check(human(s) || actor !== row.owner, 'The owner cannot approve or reject their own review', 3);
     if (options.approve) { unblocked(s, row); return change(s, row, { reviewed_by: actor, review_note: options.note }, 'review-approved', { note: options.note }); }
@@ -199,7 +201,20 @@ export function doneTask(s: Store, task: string, options: { ref?: string } = {})
   });
 }
 export function dropTask(s: Store, task: string, note: string): Row {
-  return s.tx(() => { const row = s.task(task); writable(s, row); active(row); text(note, 'drop reason'); return change(s, row, { status: 'dropped', lease_until: null, completed_at: now() }, 'dropped', { note }); });
+  return s.tx(() => {
+    const row = s.task(task), actor = writable(s, row); active(row); text(note, 'drop reason');
+    const at = now(), cancelled: string[] = [];
+    for (const question of s.all("SELECT q.*,b.waiting_on,b.body AS blocker_body FROM questions q JOIN blockers b ON b.workspace_id=q.workspace_id AND b.id=q.blocker_id WHERE q.workspace_id=? AND q.task_id=? AND q.status='pending' ORDER BY q.id", s.ws, row.id)) {
+      const questionId = `H${question.id}`, blockerId = `B${question.blocker_id}`;
+      s.run("UPDATE questions SET status='cancelled',cancelled_at=?,cancelled_by=?,cancel_reason=? WHERE workspace_id=? AND id=?", at, actor, note, s.ws, question.id);
+      s.run("UPDATE blockers SET status='resolved',resolved_at=? WHERE workspace_id=? AND id=? AND status='open'", at, s.ws, question.blocker_id);
+      s.index('blocker', blockerId, `${task} waits on ${question.waiting_on}`, question.blocker_body, { role: question.waiting_on, status: 'resolved', updated_at: at });
+      s.index('question', questionId, question.question, JSON.stringify({ options: JSON.parse(question.options), recommendation: question.recommendation, command: question.command, cancel_reason: note }), { role: question.waiting_on, status: 'cancelled', updated_at: at });
+      s.event('question', questionId, 'cancelled', { task, blocker: blockerId, reason: note });
+      cancelled.push(questionId);
+    }
+    return change(s, row, { status: 'dropped', lease_until: null, completed_at: at }, 'dropped', { note, cancelled_questions: cancelled });
+  });
 }
 export function reopenTask(s: Store, task: string, note: string): Row {
   return s.tx(() => {
@@ -308,7 +323,8 @@ export function answerQuestion(s: Store, questionOrTask: string, answer: string,
       const row = s.task(questionOrTask), questions = s.all("SELECT * FROM questions WHERE workspace_id=? AND task_id=? AND status='pending' ORDER BY id", s.ws, row.id);
       check(questions.length === 1, questions.length ? 'This task has several pending questions; answer a specific H<number>' : 'No pending question for this task', 4); question = questions[0];
     } else question = s.get('SELECT * FROM questions WHERE workspace_id=? AND id=?', s.ws, id(questionOrTask, 'H'));
-    check(question, 'Question not found in this workspace', 3); check(question.status === 'pending', 'Question has already been answered', 4);
+    check(question, 'Question not found in this workspace', 3); check(question.status === 'pending', `Question is ${question.status}; ask a new question if needed`, 4);
+    active(s.task(`T${question.task_id}`));
     const at = now(), choices = JSON.parse(question.options) as string[];
     let recorded = answer;
     if (/^[1-9][0-9]*$/.test(answer) && choices.length) { const choice = integer(answer, 'option number', 1, choices.length); recorded = `${choice}: ${choices[choice - 1]}`; }
@@ -331,7 +347,7 @@ export function humanQueue(s: Store, options: { limit?: number; forRole?: string
   const limit = integer(options.limit ?? 50, 'limit', 1, 1000);
   return s.snapshot(() => {
     const recipient = options.forRole === undefined ? null : humanRole(s, options.forRole);
-    const questions = s.all("SELECT q.*,b.waiting_on AS for_role,t.title,t.owner,t.priority,t.human_only,t.status AS task_status FROM questions q JOIN tasks t ON t.workspace_id=q.workspace_id AND t.id=q.task_id JOIN blockers b ON b.workspace_id=q.workspace_id AND b.id=q.blocker_id WHERE q.workspace_id=? AND q.status='pending' AND (? IS NULL OR b.waiting_on=?) ORDER BY t.priority DESC,q.created_at,q.id LIMIT ?", s.ws, recipient, recipient, limit).map((q): Row => ({ ...questionView(q), kind: 'question' }));
+    const questions = s.all("SELECT q.*,b.waiting_on AS for_role,t.title,t.owner,t.priority,t.human_only,t.status AS task_status FROM questions q JOIN tasks t ON t.workspace_id=q.workspace_id AND t.id=q.task_id JOIN blockers b ON b.workspace_id=q.workspace_id AND b.id=q.blocker_id WHERE q.workspace_id=? AND q.status='pending' AND t.status NOT IN ('done','dropped') AND (? IS NULL OR b.waiting_on=?) ORDER BY t.priority DESC,q.created_at,q.id LIMIT ?", s.ws, recipient, recipient, limit).map((q): Row => ({ ...questionView(q), kind: 'question' }));
     const tasks = s.all("SELECT t.* FROM tasks t WHERE t.workspace_id=? AND t.status NOT IN ('done','dropped') AND (t.human_only=1 OR EXISTS (SELECT 1 FROM roles r WHERE r.workspace_id=t.workspace_id AND r.kind='human' AND r.name IN (t.for_role,t.owner))) AND (? IS NULL OR t.for_role=? OR t.owner=?) AND NOT EXISTS (SELECT 1 FROM questions q WHERE q.workspace_id=t.workspace_id AND q.task_id=t.id AND q.status='pending') ORDER BY t.priority DESC,t.created_at,t.id LIMIT ?", s.ws, recipient, recipient, recipient, limit).map((t): Row => ({ ...taskView(t), kind: 'task' }));
     return [...questions, ...tasks].sort((a, b) => b.priority - a.priority || a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)).slice(0, limit);
   });
