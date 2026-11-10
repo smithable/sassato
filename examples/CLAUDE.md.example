@@ -102,3 +102,6 @@ Use `sassato send ROLE 'message' --urgent` for time-sensitive coordination. Ordi
 mail remains appropriate for routine updates. Provider-native SendMessage is only a
 fallback when available and authorized; never access private messaging sockets or
 use another agent to bypass a refused action.
+
+After safely handling urgent mail, run `sassato ack MESSAGE_ID --as ROLE --workspace WORKSPACE`
+before rearming the waiter. Reading the inbox alone leaves urgent notifications pending.

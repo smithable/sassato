@@ -8,6 +8,7 @@ import * as t from './tasks.js';
 import * as c from './coordination.js';
 import * as m from './migration.js';
 import * as l from './launch.js';
+import { retitleImportedTasks } from './retitle.js';
 import { setup } from './setup.js';
 import { promptSetup } from './setup-prompt.js';
 import { loadConfig, configPath } from './config.js';
@@ -31,6 +32,7 @@ Tasks:      add TITLE [--body TEXT] [--for ROLE] [--owner ROLE] [--human-only]
             tasks [--status open,doing,blocked,review|all] [--available] [--limit N] [--after T1]
             show T1 | take T1 [--hours 4] | renew T1 | note T1 TEXT
             update T1 --expect VERSION [--title TEXT] [--body TEXT]
+            retitle [--owner ROLE] [--apply] (preview imported titles by default)
             handoff T1 ROLE SUMMARY | release T1 REASON
             submit T1 SUMMARY | review T1 --approve|--reject --expect VERSION --note TEXT
             done T1 [--ref COMMIT] | drop T1 REASON | reopen T1 REASON
@@ -38,10 +40,10 @@ Tasks:      add TITLE [--body TEXT] [--for ROLE] [--owner ROLE] [--human-only]
 Blockers:   block T1 TEXT --kind agent|human|external|other --waits-on NAME
             blockers [--task T1 | --chain T1] | resolve B1 REASON
 Decisions:  ask-human T1 QUESTION [--for HUMAN] [--options 'one|two'] [--recommend TEXT]
-            [--command TEXT] | humans [--for HUMAN] | answer H1 ANSWER (or answer T1 ANSWER) [--close]
+            [--command TEXT] | humans [--for HUMAN] | answer H1 ANSWER (or answer T1 ANSWER) [--close] [--relayed-by ROLE]
 Mail:       send ROLE[,ROLE]|all TEXT [--re T1] [--urgent]
             wait [--since EVENT_CURSOR] [--timeout SECONDS] [--urgent]
-            inbox [--peek] [--state unread|read|done] | outbox | ack M1
+            inbox [--peek] [--state unread|read|done] | sent (or outbox) | ack M1
 Knowledge:  fact set KEY TEXT --source LOCATION [--expect VERSION]
             fact get KEY | fact history KEY | facts
 WIP:        wip [show ROLE] | wip set --current TEXT --next TEXT --notes TEXT
@@ -70,14 +72,14 @@ select workspace when not explicit. Writes require --as; human actions require a
 Lists default to bounded results; --limit N. Context never consumes inbox receipts.
 Exit codes: 0 success/no matches; 1 storage/runtime; 2 input; 3 identity/access; 4 conflict; 5 mail-wait timeout.
 `;
-const strings = ['db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor'];
-const booleans = ['json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','urgent','close','repair','interactive','no-interactive','quiet'];
+const strings = ['db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by'];
+const booleans = ['json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','urgent','close','repair','interactive','no-interactive','quiet','apply'];
 const globalFlags = ['db','workspace','as','json','help'];
 const allowed: Record<string,string[]> = {
   init:['config','humans','interactive','no-interactive','launch','dry-run','fresh','resume','no-prompt','terminal','distro','window','stop-file','new-window'], 'workspace attach':[], 'workspace settings':[], 'workspace set':['default-human','import-timezone','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases'],roles:[], 'role set':['provider','model','effort','permission-mode','sandbox','approval','dir','kind'],
   add:['title','body','for','owner','priority','human-only','review-required'],tasks:['status','owner','for','available','limit','after'],show:['limit','before-event'],
   take:['hours'],renew:['hours'],note:[],update:['expect','title','body','priority','for','human-only','agent-allowed','review-required','no-review'],handoff:[],release:[],submit:[],review:['approve','reject','note','expect'],done:['ref'],drop:[],reopen:[],after:[],unafter:[],block:['kind','waits-on'],blockers:['task','chain','limit','all'],resolve:[],
-  'ask-human':['for','options','recommend','command'],answer:['close'],humans:['for','limit'],send:['re','urgent'],wait:['urgent','timeout','stop-file','since'],inbox:['peek','state','limit'],outbox:['limit'],ack:[],
+  'ask-human':['for','options','recommend','command'],answer:['close','relayed-by'],humans:['for','limit'],send:['re','urgent'],wait:['urgent','timeout','stop-file','since'],inbox:['peek','state','limit'],outbox:['limit'],sent:['limit'],retitle:['owner','apply'],ack:[],
   'fact set':['source','checked-at','expect'],'fact get':[],'fact history':[],facts:['limit'],
   'wip show':[],'wip set':['current','next','notes','expect'],sessions:[], 'session register':['provider','session-id','pid','replace'],'session heartbeat':['session-id'],'session end':['session-id'],usage:['until'],
   stop:['all','timeout','no-wait','force'],'stop-status':['quiet','stop-file'],stopped:[],'resume-work':['all'],
@@ -104,13 +106,29 @@ function checkpointEvidence(path: string | undefined): unknown {
     check(false,'Evidence file could not be read; provide a readable regular JSON file');
   } finally {closeSync(fd);}
 }
-function humanOutput(value: unknown): string {
+function humanOutput(value: unknown, command?: string): string {
+  if(Array.isArray(value)&&(command==='sent'||command==='outbox')) {
+    return value.length?value.map((message:Row)=>`${message.id}: ${String(message.body).replace(/\s+/g,' ').slice(0,240)}\n  ${message.receipts.map((r:Row)=>`${r.recipient}: ${r.state==='done'?'acked':r.state}`).join(', ')}`).join('\n'):'No sent messages.';
+  }
+  if(Array.isArray(value)&&command==='retitle') {
+    return value.length?value.map((row:Row)=>`${row.id}${row.applied?' updated':' preview'}: ${row.before} → ${row.title}`).join('\n'):'No imported titles need cleanup.';
+  }
+  if(value && typeof value==='object' && command==='done') {
+    const task=value as Row;
+    return `${task.id} done: ${String(task.title).replace(/[\x00-\x1f\x7f]/g,' ').replace(/\s+/g,' ').trim().slice(0,220)}`;
+  }
+  if(value && typeof value==='object' && command==='resolve') {
+    const blocker=value as Row;
+    return `${blocker.id} resolved for ${blocker.task_id}.`;
+  }
   if(value && typeof value==='object' && 'reason' in value && 'role' in value) {
     const event=value as WaitResult;
     let summary:string;
     if(event.reason==='urgent') summary=`URGENT ${event.message!.id} from ${event.message!.sender}: ${event.message!.summary}`;
     else if(event.reason==='stop') summary=event.stop!.file?`STOP ${event.stop!.file} for ${event.role}: follow repository stop instructions.`:`STOP ${event.stop!.id} for ${event.role}: check context and stop work.`;
     else if(event.reason==='answer') summary=`ANSWER ${event.question} for ${event.task}: read the human answer.`;
+    else if(event.reason==='blocker-assigned') summary=`BLOCKER ${event.blocker} on ${event.task} waits on ${event.role}: inspect the blocker.`;
+    else if(event.reason==='dependency-dropped') summary=`DEPENDENCY ${event.task} dropped; inspect affected tasks ${(event.tasks??[]).join(', ')}.`;
     else if(event.reason==='blocker-resolved') summary=`BLOCKER ${event.blocker} resolved for ${event.task}: check remaining work.`;
     else if(event.reason==='review-submitted') summary=`REVIEW ${event.task} needs review (version ${event.version}): read the current task before reviewing.`;
     else if(event.reason==='review-approved') summary=`REVIEW ${event.task} approved (version ${event.version}): check context before completing.`;
@@ -118,7 +136,7 @@ function humanOutput(value: unknown): string {
     else if(event.reason==='task-assigned') summary=`TASK ${event.task} assigned to ${event.role}: check context.`;
     else if(event.reason==='task-ready') {const tasks=event.tasks??[event.task!];summary=`TASK ${tasks.slice(0,8).join(', ')} ready for ${event.role}${tasks.length>8?` (+${tasks.length-8} more; inspect context/tasks)`:''}.`;}
     else summary=`Timed out waiting for work notifications for ${event.role}.`;
-    return `${summary} · cursor ${event.cursor}`;
+    return `${summary} · cursor ${event.cursor}${event.message?.inbox_command?`\nRead full mail: ${event.message.inbox_command}`:""}`;
   }
   if(value && typeof value==='object' && 'items' in value && 'has_more' in value) {
     const page=value as t.TaskPage;
@@ -211,8 +229,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     else if(command==='restore') {const source=arg('backup');empty();check(str('db'),'Restore requires explicit --db NEW_FILE');result=await a.restoreDatabase(source,db);}
     else if(command==='machine') {empty();result=a.machine();}
     else {
-      const reads=['tasks','show','blockers','humans','outbox','fact get','fact history','facts','wip show','sessions','roles','workspace settings','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
-      const readonly=reads.includes(command)||command==='inbox'&&bool('peek')||['launch','import'].includes(command)&&bool('dry-run');
+      const reads=['tasks','show','blockers','humans','outbox','sent','fact get','fact history','facts','wip show','sessions','roles','workspace settings','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
+      const readonly=reads.includes(command)||command==='retitle'&&!bool('apply')||command==='inbox'&&bool('peek')||['launch','import'].includes(command)&&bool('dry-run');
       store=new Store(db,actor,{readonly});
       const s=store;
       if(command!=='migrate') s.use(workspace);
@@ -235,6 +253,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'add': {const title=str('title')??rest('title');empty();result=t.addTask(s,{title,body:str('body'),owner:str('owner'),forRole:str('for'),priority:num('priority'),humanOnly:bool('human-only'),reviewRequired:bool('review-required')});break;}
         case 'tasks': empty();result=t.listTaskPage(s,{status:str('status'),owner:str('owner'),forRole:str('for'),available:bool('available'),limit:num('limit'),after:str('after')});break;
         case 'show': {const task=arg('task');empty();result=task.startsWith('T')?t.showTask(s,task,{historyLimit:num('limit'),beforeEvent:num('before-event')}):a.showRecord(s,task);break;}
+        case 'retitle': empty();result=retitleImportedTasks(s,{owner:str('owner'),apply:bool('apply')});break;
         case 'take': case 'renew': {const task=arg('task');empty();result=(command==='take'?t.takeTask:t.renewTask)(s,task,{hours:num('hours')});break;}
         case 'note': case 'release': case 'submit': case 'drop': case 'reopen': {const task=arg('task'),note=rest('note');result=({note:t.noteTask,release:t.releaseTask,submit:t.submitTask,drop:t.dropTask,reopen:t.reopenTask}[command]!)(s,task,note);break;}
         case 'update': {const task=arg('task');empty();check(!(bool('human-only')&&bool('agent-allowed')),'Conflicting human flags');check(!(bool('review-required')&&bool('no-review')),'Conflicting review flags');result=t.updateTask(s,task,{version:integer(need('expect'),'expect',1),title:str('title'),body:str('body'),priority:num('priority'),forRole:str('for')==='none'?null:str('for'),humanOnly:bool('human-only')?true:bool('agent-allowed')?false:undefined,reviewRequired:bool('review-required')?true:bool('no-review')?false:undefined});break;}
@@ -246,12 +265,12 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'blockers': empty();result=t.listBlockers(s,{task:str('task'),chain:str('chain'),open:!bool('all'),limit:num('limit')});break;
         case 'resolve': {const blocker=arg('blocker');result=t.resolveBlocker(s,blocker,rest('resolution'));break;}
         case 'ask-human': {const task=arg('task');result=t.askHuman(s,task,{question:rest('question'),forRole:str('for'),options:str('options')?.split('|'),recommendation:str('recommend'),command:str('command')});break;}
-        case 'answer': {const question=arg('question or task');result=t.answerQuestion(s,question,rest('answer'),{close:bool('close')});break;}
+        case 'answer': {const question=arg('question or task');result=t.answerQuestion(s,question,rest('answer'),{close:bool('close'),relayedBy:str('relayed-by')});break;}
         case 'humans': empty();result=t.humanQueue(s,{limit:num('limit'),forRole:str('for')});break;
         case 'send': {const to=arg('recipient');result=c.send(s,to==='all'?'all':to.split(','),rest('message'),{task:str('re'),urgent:bool('urgent')});break;}
         case 'wait': {empty();result=await waitForWork(s,{timeout:num('timeout'),stopFile:str('stop-file'),since:num('since')});if((result as WaitResult).reason==='timeout')process.exitCode=5;break;}
         case 'inbox': empty();result=c.inbox(s,{peek:bool('peek'),state:str('state') as 'unread'|'read'|'done'|undefined,limit:num('limit')});break;
-        case 'outbox': empty();result=c.outbox(s,{limit:num('limit')});break;
+        case 'sent': case 'outbox': empty();result=c.outbox(s,{limit:num('limit')});break;
         case 'ack': {const message=arg('message');empty();result=c.acknowledge(s,message);break;}
         case 'fact set': {const key=arg('key');result=c.setFact(s,key,{body:rest('fact'),source:need('source'),checked_at:str('checked-at'),expected_version:num('expect')});break;}
         case 'fact get': case 'fact history': {const key=arg('key');empty();result=command==='fact get'?c.facts(s,{key}):c.factHistory(s,key);break;}
@@ -295,7 +314,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'backup': {const path=arg('backup destination');empty();result=await a.backupDatabase(s,path);break;}
       }
     }
-    console.log(bool('json')?JSON.stringify(result):command==='context'?c.renderContext(result as c.ContextData):humanOutput(result));
+    console.log(bool('json')?JSON.stringify(result):command==='context'?c.renderContext(result as c.ContextData):humanOutput(result,command));
   } catch(error) {
     const code=error instanceof AppError?error.code:typeof (error as NodeJS.ErrnoException)?.code==='string'&&(error as NodeJS.ErrnoException).code!.startsWith('ERR_PARSE_ARGS')?2:1;
     const message=error instanceof Error?error.message:'Unexpected failure';

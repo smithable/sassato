@@ -11,6 +11,7 @@ import { processIdentity, registerSession } from '../dist/coordination.js';
 import { requestStop, stopStatus, acknowledgeStop, resumeWork } from '../dist/control.js';
 import { stop } from '../dist/stop.js';
 import { planLaunch, launch } from '../dist/launch.js';
+import { addTask, takeTask } from '../dist/tasks.js';
 
 function fixture(t) {
   const dir=mkdtempSync(join(tmpdir(),'sassato-stop-')),s=new Store(join(dir,'state.db'),'human',{create:true});
@@ -24,9 +25,9 @@ function unknownSession(s,role='a') {
   const actor=s.actor;s.actor=role;
   try{return registerSession(s,{provider:'claude',external_id:'unknown'});}finally{s.actor=actor;}
 }
-async function provider(f,t,filename='claude') {
+async function provider(f,t,filename='claude',onTerm='') {
   const path=join(f.dir,filename),ready=join(f.dir,filename+'.ready');
-  writeFileSync(path,`require('node:fs').writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{},1000);\n`);
+  writeFileSync(path,`${onTerm}require('node:fs').writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{},1000);\n`);
   const child=spawn(process.execPath,[path],{stdio:'ignore'});
   const exit=new Promise(res=>{child.once('exit',(code,signal)=>res({code,signal}));child.once('error',error=>res({error}));});
   t.after(async()=>{if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');await exit;});
@@ -64,12 +65,22 @@ test('inactive roles complete immediately and agents cannot request runtime stop
   f.s.actor='a';await assert.rejects(()=>stop(f.s,['b'],{force:true}),/human role/);
 });
 
-test('force kills only a verified fixture provider and never fabricates acknowledgement',async t=>{
+test('stop all completes for unregistered roles with unfinished tasks without changing their work',async t=>{
+  const f=fixture(t);f.s.actor='a';const task=takeTask(f.s,addTask(f.s,{title:'Saved unfinished work'}).id);f.s.actor='human';
+  const result=await stop(f.s,[],{all:true,timeout:1});
+  assert(result.complete);assert(!result.timed_out);assert.equal(result.statuses.find(row=>row.role==='a').state,'inactive');
+  assert.equal(result.statuses.find(row=>row.role==='a').pending_work,1);assert.equal(f.s.task(task.id).status,'doing');
+});
+
+test('force terminates only a verified fixture provider and never fabricates acknowledgement',async t=>{
   const f=fixture(t),p=await provider(f,t);register(f.s,p.child.pid);
   const result=await stop(f.s,['a'],{force:true});
-  assert.equal(result.signals.length,1);assert.equal(result.signals[0].status,'sent');assert.equal(result.signals[0].pid,p.child.pid);assert(!result.complete);
-  assert.equal(result.statuses[0].acknowledged_at,null);assert.equal((await p.exit).signal,'SIGKILL');
+  assert.equal(result.signals.length,1);assert.equal(result.signals[0].status,'sent');assert.equal(result.signals[0].pid,p.child.pid);
+  // A child can briefly be a zombie before the parent's exit callback reaps it.
+  assert.equal(result.complete,result.statuses[0].state==='exited');
+  assert.equal(result.statuses[0].acknowledged_at,null);assert.equal((await p.exit).signal,'SIGTERM');assert.equal(result.signals[0].signal,'SIGTERM');
   assert.equal(stopStatus(f.s,['a'])[0].state,'exited');
+  assert.equal((await stop(f.s,['a'],{force:true})).complete,true);
   assert.equal(f.s.get("SELECT count(*) n FROM events WHERE action='force-stop-signal'").n,1);
 });
 
@@ -77,7 +88,42 @@ test('force inspects live ended registrations even when a newer dead row exists'
   const f=fixture(t),p=await provider(f,t);register(f.s,p.child.pid);f.s.run('UPDATE sessions SET ended_at=?',now());
   rawSession(f.s,{pid:2_147_483_647,fingerprint:'old-boot:1',ended:now()});
   const result=await stop(f.s,['a'],{force:true});
-  assert.equal(result.signals.filter(s=>s.status==='sent').length,1);assert.equal(result.signals[0].pid,p.child.pid);assert.equal((await p.exit).signal,'SIGKILL');
+  assert.equal(result.signals.filter(s=>s.status==='sent').length,1);assert.equal(result.signals[0].pid,p.child.pid);assert.equal((await p.exit).signal,'SIGTERM');
+});
+
+test('force gives SIGTERM a bounded grace period before escalating a stubborn provider',async t=>{
+  const f=fixture(t),term=join(f.dir,'term');
+  const p=await provider(f,t,'claude',`process.on('SIGTERM',()=>require('node:fs').writeFileSync(${JSON.stringify(term)},'received'));`);register(f.s,p.child.pid);
+  const began=performance.now(),result=await stop(f.s,['a'],{force:true});
+  assert(existsSync(term),'provider handled SIGTERM before escalation');
+  assert.deepEqual(result.signals.map(row=>[row.signal,row.status]),[['SIGTERM','sent'],['SIGKILL','sent']]);
+  assert(performance.now()-began>=900,'provider received the grace period');
+  assert(performance.now()-began<2500,'force remains bounded');assert.equal((await p.exit).signal,'SIGKILL');
+  assert.deepEqual(f.s.all("SELECT detail FROM events WHERE action='force-stop-signal' ORDER BY id").map(row=>JSON.parse(row.detail).signal),['SIGTERM','SIGKILL']);
+});
+
+test('force respects resume and cancellation during its grace period',async t=>{
+  for(const mode of ['resume','abort']) {
+    const f=fixture(t),term=join(f.dir,'term');
+    const p=await provider(f,t,'claude',`process.on('SIGTERM',()=>require('node:fs').writeFileSync(${JSON.stringify(term)},'received'));`);register(f.s,p.child.pid);
+    const abort=new AbortController();
+    const resultPromise=stop(f.s,['a'],{force:true,signal:abort.signal});
+    for(let i=0;i<100&&!existsSync(term);i++)await new Promise(resolve=>setTimeout(resolve,5));
+    assert(existsSync(term));
+    if(mode==='resume')resumeWork(f.s,['a']);else abort.abort();
+    const result=await resultPromise;
+    assert(result.interrupted);assert(!result.complete);process.kill(p.child.pid,0);
+    assert(!result.signals.some(row=>row.signal==='SIGKILL'&&row.status==='sent'));
+  }
+});
+
+test('force does not escalate after the registered process identity changes during grace',async t=>{
+  const f=fixture(t),term=join(f.dir,'term');
+  const p=await provider(f,t,'claude',`process.on('SIGTERM',()=>require('node:fs').writeFileSync(${JSON.stringify(term)},'received'));`);register(f.s,p.child.pid);
+  const resultPromise=stop(f.s,['a'],{force:true});
+  for(let i=0;i<100&&!existsSync(term);i++)await new Promise(resolve=>setTimeout(resolve,5));
+  assert(existsSync(term));f.s.run('UPDATE sessions SET process_start=? WHERE pid=?','changed:1',p.child.pid);
+  const result=await resultPromise;assert.deepEqual(result.signals.map(row=>row.signal),['SIGTERM']);process.kill(p.child.pid,0);
 });
 
 test('force refuses reused fingerprints, unrelated executables and unverifiable sessions',async t=>{

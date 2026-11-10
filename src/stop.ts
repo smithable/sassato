@@ -13,8 +13,8 @@ export interface StopOptions {
   onProgress?:(statuses:StopRequest[],checks:BusyStatus[])=>void;
 }
 export interface StopSignal {
-  role:string; session_id:string|null; pid:number|null;
-  status:'sent'|'refused'; reason:string;
+  role:string; session_id:string|null; pid:number|null; process_start:string|null;
+  status:'sent'|'refused'; reason:string; signal:'SIGTERM'|'SIGKILL';
 }
 export interface StopResult {
   requests:StopRequest[]; statuses:StopRequest[]; complete:boolean; timed_out:boolean;
@@ -42,14 +42,14 @@ function ancestors():Set<number>|null {
   }catch{return null;}
   return null;
 }
-function forceSignals(store:Store,requested:StopRequest[]):StopSignal[] {
+function forceSignals(store:Store,requested:StopRequest[],signal:'SIGTERM'|'SIGKILL',targets?:Set<string>):StopSignal[] {
   const protectedPids=ancestors(),signals:StopSignal[]=[],handled=new Set<string>();
   const capturedRequests=new Map(requested.map(r=>[r.role,r.id]));
   for(const request of requested) {
     const rows=store.all('SELECT * FROM sessions WHERE workspace_id=? AND role=? ORDER BY id DESC',store.ws,request.role);
     let considered=false;
     const result=(row:Row|undefined,status:StopSignal['status'],reason:string)=>{
-      signals.push({role:request.role,session_id:row?`S${row.id}`:null,pid:row?.pid??null,status,reason});
+      signals.push({role:request.role,session_id:row?`S${row.id}`:null,pid:row?.pid??null,process_start:row?.process_start??null,status,reason,signal});
     };
     for(const row of rows) {
       const state=sessionState(row),identity=row.pid?processIdentity(Number(row.pid)):null;
@@ -59,6 +59,7 @@ function forceSignals(store:Store,requested:StopRequest[]):StopSignal[] {
       if(state!=='running'&&!(row.id===rows[0].id&&(state==='unknown'||reused)))continue;
       considered=true;
       const key=`${row.pid}:${row.process_start}`;
+      if(targets&&!targets.has(key))continue;
       if(handled.has(key))continue;
       handled.add(key);
       if(!protectedPids) {result(row,'refused','Cannot establish this CLI process ancestry safely');continue;}
@@ -86,18 +87,18 @@ function forceSignals(store:Store,requested:StopRequest[]):StopSignal[] {
           result(row,'refused','Process changed before signalling; no signal sent');return;
         }
         try {
-          process.kill(Number(current.pid),'SIGKILL');
+          process.kill(Number(current.pid),signal);
         }catch(error) {
           const code=(error as NodeJS.ErrnoException).code;
           result(row,'refused',code==='ESRCH'?'Process exited before the signal could be delivered':`Signal could not be delivered${code?` (${code})`:''}`);
           return;
         }
-        result(row,'sent','SIGKILL sent to the verified registered provider');
-        try {store.event('session',`S${row.id}`,'force-stop-signal',{role:request.role,pid:row.pid,request_id:request.id,signal:'SIGKILL'});}
+        result(row,'sent',`${signal} sent to the verified registered provider`);
+        try {store.event('session',`S${row.id}`,'force-stop-signal',{role:request.role,pid:row.pid,request_id:request.id,signal});}
         catch {signals[signals.length-1].reason+='; audit could not be recorded (signal was delivered)';}
       });
     }
-    if(!considered&&request.state==='waiting')result(rows[0],'refused','No verifiable registered provider process is available to signal');
+    if(!targets&&!considered&&request.state==='waiting')result(rows[0],'refused','No verifiable registered provider process is available to signal');
   }
   return signals;
 }
@@ -110,28 +111,51 @@ export async function stop(store:Store,selected:string[],options:StopOptions={})
   const requests=requestStop(store,selected,{all:options.all});
   const roles=requests.map(r=>r.role),ids=new Map(requests.map(r=>[r.role,r.id]));
   let statuses=stopStatus(store,roles);
+  let checkedAfterStopped=false;
   const result:StopResult={requests,statuses,complete:false,timed_out:false,interrupted:false,force:!!options.force,signals:[],limitations:options.force?[...forceLimitations]:[],busy_checks:checks.map(check=>({name:check.name,state:'unknown',reason:'Not checked'})),machine_quiet:null};
   const update=()=>{
     result.statuses=statuses;
     result.interrupted=!!options.signal?.aborted||requests.some(request=>!statuses.some(row=>row.role===request.role&&row.id===ids.get(request.role)));
-    result.complete=!result.interrupted&&statuses.length===requests.length&&statuses.every(row=>finished.has(row.state))&&(options.noWait||result.busy_checks.every(check=>check.state==='idle'));
+    const rolesFinished=statuses.length===requests.length&&statuses.every(row=>finished.has(row.state));
+    if(!rolesFinished)checkedAfterStopped=false;
+    result.complete=!result.interrupted&&rolesFinished&&(options.noWait||options.force||!checks.length||(checkedAfterStopped&&result.busy_checks.every(check=>check.state==='idle')));
     result.machine_quiet=options.force||options.noWait||!(options.all||selected.length===0)?null:result.complete;
   };
   const refreshChecks=async()=>{
-    // Once idle is observed, retain that observation for this stop invocation.
-    // Starting another stop performs a new complete round of checks.
-    const pending=checks.filter((_,index)=>result.busy_checks[index].state!=='idle');
+    // Shutdown can start new jobs after an early idle observation. Require a full
+    // round begun after the final role stops, then retry only non-idle checks.
+    const afterStopped=statuses.length===requests.length&&statuses.every(row=>finished.has(row.state));
+    if(afterStopped&&!checkedAfterStopped)result.busy_checks=checks.map(check=>({name:check.name,state:'unknown',reason:'Awaiting observation after all roles stopped'}));
+    const pending=checks.filter((_,index)=>(afterStopped&&!checkedAfterStopped)||result.busy_checks[index].state!=='idle');
     const observations=new Map((await observeBusyChecks(pending,deadline,options.signal)).map(row=>[row.name,row]));
     result.busy_checks=result.busy_checks.map(row=>observations.get(row.name)??row);
+    if(afterStopped)checkedAfterStopped=pending.every(check=>observations.has(check.name));
   };
   update();options.onProgress?.(statuses,result.busy_checks);
   if(options.signal?.aborted){update();return result;}
   if(options.force) {
-    result.signals=forceSignals(store,requests);
-    // The status snapshot predates signalling. Never convert delivery into a successful stop.
-    const stillActive=stopStatus(store,roles);
-    result.interrupted=requests.some(request=>!stillActive.some(row=>row.id===request.id));
-    if(result.signals.length||result.interrupted)result.complete=false;
+    result.signals=forceSignals(store,requests,'SIGTERM');
+    // Capture the identities actually signalled; never escalate to a replacement
+    // provider that registered during the grace period.
+    const targets=new Set<string>(),pending=new Map<number,string>();
+    for(const sent of result.signals.filter(row=>row.status==='sent')) {
+      if(sent.pid&&sent.process_start){targets.add(`${sent.pid}:${sent.process_start}`);pending.set(sent.pid,sent.process_start);}
+    }
+    const graceDeadline=Math.min(deadline,performance.now()+1000);
+    while(pending.size&&!options.signal?.aborted&&performance.now()<graceDeadline) {
+      for(const [pid,identity] of pending)if(processIdentity(pid)!==identity){pending.delete(pid);targets.delete(`${pid}:${identity}`);}
+      if(!pending.size)break;
+      await new Promise<void>(resolveDelay=>{
+        const done=()=>{clearTimeout(timer);options.signal?.removeEventListener('abort',done);resolveDelay();};
+        const timer=setTimeout(done,Math.min(50,Math.max(0,graceDeadline-performance.now())));
+        options.signal?.addEventListener('abort',done,{once:true});if(options.signal?.aborted)done();
+      });
+    }
+    if(pending.size&&!options.signal?.aborted)result.signals.push(...forceSignals(store,requests,'SIGKILL',targets));
+    statuses=stopStatus(store,roles);update();
+    // Signal delivery alone is not a cooperative stop acknowledgement.
+    // update() uses fresh observed statuses: a verified exit during grace may
+    // complete the request, while a delivered signal alone never does.
     return result;
   }
   if(options.noWait||result.interrupted)return result;

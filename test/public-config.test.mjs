@@ -150,6 +150,7 @@ test('import alias configuration validates bounded literal maps and requires hum
     ['import-role-aliases',{'builder':'reviewer'}],['import-role-aliases',{'old':'missing'}],['import-role-aliases',{['x'.repeat(101)]:'builder'}],
     ['import-role-aliases',Object.fromEntries(Array.from({length:33},(_,i)=>['alias'+i,'builder']))],
     ['import-timezone-aliases',[]],['import-timezone-aliases',{'local':'Invalid/Zone'}],['import-timezone-aliases',{'UTC':'America/New_York'}],
+    ['import-timezone-aliases',{'GMT':'America/New_York'}],['import-timezone-aliases',{'eSt':'UTC'}],['import-timezone-aliases',{'Japan':'UTC'}],
     ['import-timezone-aliases',{'+02:00':'UTC'}],['import-timezone-aliases',{'Local':'UTC',' local ':'UTC'}]
   ]) {
     const response=f.raw([...settings,'--'+flag,JSON.stringify(value)]);assert.notEqual(response.status,0,flag+' '+JSON.stringify(value));

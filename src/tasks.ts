@@ -11,9 +11,10 @@ const taskId = (row: Row): string => `T${row.id}`;
 const taskView = (row: Row): Row => ({ ...row, id: taskId(row), human_only: Boolean(row.human_only), review_required: Boolean(row.review_required), stale: Boolean(row.lease_until && row.lease_until < now() && !terminal(row)) });
 const blockerView = (row: Row): Row => ({ ...row, id: `B${row.id}`, task_id: `T${row.task_id}` });
 const questionView = (row: Row): Row => ({ ...row, id: `H${row.id}`, task_id: `T${row.task_id}`, blocker_id: `B${row.blocker_id}`, options: JSON.parse(row.options) });
+const unownedEditor = (row: Row, actor: string): boolean => !row.owner && (row.creator === actor || (!row.human_only && row.for_role === actor));
 function writable(s: Store, row: Row): string {
   const actor = s.requireActor();
-  check(human(s) || row.owner === actor || (!row.owner && row.creator === actor), 'Only the owner (or a human role) may modify this task', 3);
+  check(human(s) || row.owner === actor || unownedEditor(row, actor), 'Only the owner, an unowned task\'s creator or target, or a human role may modify this task', 3);
   return actor;
 }
 function active(row: Row): void { check(!terminal(row), 'Task is closed; reopen it before changing work state', 4); }
@@ -192,10 +193,10 @@ function completeTask(s: Store, row: Row, options: { ref?: string }, allowOpen: 
 export function doneTask(s: Store, task: string, options: { ref?: string } = {}): Row {
   return s.tx(() => {
     const row = s.task(task), actor = s.requireActor(), isHuman = human(s);
-    // Imported status is historical: its owner may reconcile finished work without
+    // Imported status is historical: an authorized editor may reconcile finished work without
     // manufacturing a new claim. Ordinary open agent work still requires take.
     const imported = s.get("SELECT 1 FROM events WHERE workspace_id=? AND entity='task' AND entity_id=? AND action='imported' LIMIT 1", s.ws, task);
-    const allowOpen = Boolean((imported && (isHuman || row.owner === actor)) || (row.human_only && isHuman));
+    const allowOpen = Boolean((imported && (isHuman || row.owner === actor || unownedEditor(row, actor))) || (row.human_only && isHuman));
     return completeTask(s, row, options, allowOpen);
   });
 }
@@ -256,6 +257,21 @@ export function blockTask(s: Store, task: string, options: BlockOptions): Row {
     return blockerView(s.get('SELECT * FROM blockers WHERE workspace_id=? AND id=?', s.ws, n)!);
   });
 }
+function restoredState(s: Store, task: Row, at: string): Row {
+  // Existing transition events retain the status before the first blocker. Skip
+  // additional blockers; release/handoff/reopen deliberately start a new open phase.
+  const transition = s.get(`SELECT action,detail FROM events WHERE workspace_id=? AND entity='task' AND entity_id=?
+    AND json_extract(detail,'$.after.status')='blocked'
+    AND (json_extract(detail,'$.before.status')!='blocked' OR action IN ('released','handed-off','reopened'))
+    ORDER BY id DESC LIMIT 1`, s.ws, taskId(task));
+  const before = transition && !['released', 'handed-off', 'reopened'].includes(transition.action)
+    ? JSON.parse(transition.detail).before.status : transition ? 'open' : null;
+  if (before === 'review') return { status: 'review', lease_until: null, reviewed_by: null, review_note: null };
+  // Imports predating transition history may only have their retained claim.
+  const claimed = task.owner && task.lease_until && task.lease_until > at;
+  return (before === 'doing' || before === null) && claimed
+    ? { status: 'doing' } : { status: 'open', lease_until: null };
+}
 function resolve(s: Store, blocker: Row, note: string): Row {
   check(blocker.status === 'open', 'Blocker is already resolved', 4);
   const at = now();
@@ -263,7 +279,7 @@ function resolve(s: Store, blocker: Row, note: string): Row {
   s.index('blocker', `B${blocker.id}`, `T${blocker.task_id} waits on ${blocker.waiting_on}`, blocker.body, { role: blocker.waiting_on, status: 'resolved', updated_at: at });
   const task = s.task(`T${blocker.task_id}`);
   const remaining = s.get("SELECT 1 FROM blockers WHERE workspace_id=? AND task_id=? AND status='open' LIMIT 1", s.ws, task.id);
-  const patch = task.status === 'blocked' && !remaining ? { status: task.lease_until ? 'doing' : 'open' } : {};
+  const patch = task.status === 'blocked' && !remaining ? restoredState(s, task, at) : {};
   change(s, task, patch, 'blocker-resolved', { blocker: `B${blocker.id}`, note });
   return blockerView({ ...blocker, status: 'resolved', resolved_at: at });
 }
@@ -272,7 +288,7 @@ export function resolveBlocker(s: Store, blockerId: string, note: string): Row {
     text(note, 'resolution');
     const blocker = s.get('SELECT * FROM blockers WHERE workspace_id=? AND id=?', s.ws, id(blockerId, 'B')); check(blocker, 'Blocker not found in this workspace', 3);
     const task = s.task(`T${blocker.task_id}`), actor = s.requireActor();
-    check(human(s) || task.owner === actor || (!task.owner && task.creator === actor) || blocker.waiting_on === actor, 'Only the owner, waiting role or a human can resolve this blocker', 3);
+    check(human(s) || task.owner === actor || unownedEditor(task, actor) || blocker.waiting_on === actor, 'Only a task editor, waiting role or a human can resolve this blocker', 3);
     check(!s.get("SELECT 1 FROM questions WHERE workspace_id=? AND blocker_id=? AND status='pending'", s.ws, blocker.id), 'Answer the linked human question instead of resolving its blocker directly', 4);
     return resolve(s, blocker, note);
   });
@@ -311,9 +327,11 @@ export function askHuman(s: Store, task: string, options: AskOptions): Row {
     return { ...questionView(question), for_role: recipient };
   });
 }
-export function answerQuestion(s: Store, questionOrTask: string, answer: string, options: { close?: boolean } = {}): Row {
+export function answerQuestion(s: Store, questionOrTask: string, answer: string, options: { close?: boolean; relayedBy?: string } = {}): Row {
   return s.tx(() => {
     const actor = s.requireHuman(); text(answer, 'answer');
+    if (options.relayedBy !== undefined) s.role(options.relayedBy);
+    const attribution = options.relayedBy === undefined ? {} : { relayed_by: options.relayedBy };
     let question: Row | undefined;
     if (questionOrTask.startsWith('T')) {
       const row = s.task(questionOrTask), questions = s.all("SELECT * FROM questions WHERE workspace_id=? AND task_id=? AND status='pending' ORDER BY id", s.ws, row.id);
@@ -329,13 +347,13 @@ export function answerQuestion(s: Store, questionOrTask: string, answer: string,
     resolve(s, blocker, `H${question.id}: ${recorded}`);
     const row = s.task(`T${question.task_id}`);
     s.index('question', `H${question.id}`, question.question, JSON.stringify({ options: choices, recommendation: question.recommendation, command: question.command, answer: recorded }), { role: blocker.waiting_on, status: 'answered', updated_at: at });
-    s.event('task', taskId(row), 'human-answered', { question: `H${question.id}`, answer: recorded, answered_by: actor });
-    s.event('question', `H${question.id}`, 'answered', { task: taskId(row), answer: recorded });
+    s.event('task', taskId(row), 'human-answered', { question: `H${question.id}`, answer: recorded, answered_by: actor, ...attribution });
+    s.event('question', `H${question.id}`, 'answered', { task: taskId(row), answer: recorded, answered_by: actor, ...attribution });
     // Explicit human closure shares this transaction: any remaining blocker or review
     // requirement rolls back the answer, blocker resolution, events and notification.
     if (options.close) completeTask(s, row, { ref: `H${question.id}` }, true);
     notify(s, [row.owner, question.asked_by].filter((r): r is string => Boolean(r)), `H${question.id} on ${taskId(row)} answered by ${actor}: ${recorded}${options.close ? ' Task closed.' : ''}`, row);
-    const result = questionView({ ...question, status: 'answered', answer: recorded, answered_by: actor, answered_at: at });
+    const result = questionView({ ...question, status: 'answered', answer: recorded, answered_by: actor, answered_at: at, ...attribution });
     return options.close ? { ...result, task_status: 'done' } : result;
   });
 }

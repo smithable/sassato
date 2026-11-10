@@ -7,7 +7,7 @@ import { check, name, now, safe, id } from './errors.js';
 // SQLite rows deliberately stay flexible at this small adapter boundary.
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 export function databasePath(value?: string): string {
   const path = resolve(value ?? process.env.SASSATO_DB ?? `${process.env.XDG_DATA_HOME ?? `${homedir()}/.local/share`}/sassato/sassato.db`);
   let ancestor = path;
@@ -90,7 +90,10 @@ export class Store {
     safe(detail);
     const actor = this.requireActor(), at = now();
     const n = this.run('INSERT INTO events(workspace_id,entity,entity_id,actor,action,detail,created_at) VALUES(?,?,?,?,?,?,?)', this.ws, entity, entityId, actor, action, JSON.stringify(detail), at).lastInsertRowid;
-    this.index('event', `E${n}`, `${entityId} ${action}`, JSON.stringify(detail), { role: actor, updated_at: at }); return n;
+    if (!((entity==='session'&&action==='heartbeat') || (entity==='message'&&['read','done'].includes(action)) || entity==='notification-progress')) {
+      this.index('event', `E${n}`, `${entityId} ${action}`, JSON.stringify(detail), { role: actor, updated_at: at });
+    }
+    return n;
   }
   index(type: string, entityId: string, title: string, body: string, fields: { role?: string | null; status?: string | null; updated_at?: string } = {}): void {
     safe([title, body]);
@@ -113,7 +116,9 @@ export class Store {
         this.db.exec(MIGRATION_5);
         this.run("UPDATE sqlite_sequence SET seq=max(seq,?) WHERE name='questions'",questionSequence);
         this.cancelClosedQuestions();
+        current = 5;
       }
+      if (current === 5) this.db.exec(MIGRATION_6);
     });
   }
   private cancelClosedQuestions(): void {
@@ -227,4 +232,15 @@ ALTER TABLE questions_v5 RENAME TO questions;
 CREATE INDEX questions_status ON questions(workspace_id,status,id);
 INSERT INTO schema_migrations VALUES(5,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 PRAGMA user_version=5;
+`;
+
+// Remove search copies only; the complete audit stream and its cursors survive.
+const MIGRATION_6 = `
+DELETE FROM documents WHERE type='event' AND entity_id IN (
+  SELECT 'E'||e.id FROM events e WHERE ((e.entity='session' AND e.action='heartbeat')
+      OR (e.entity='message' AND e.action IN ('read','done'))
+      OR e.entity='notification-progress')
+);
+INSERT INTO schema_migrations VALUES(6,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+PRAGMA user_version=6;
 `;

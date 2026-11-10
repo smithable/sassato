@@ -3,6 +3,9 @@ import { check, name, text } from './errors.js';
 import { validateBusyChecks, type BusyCheck } from './busy-checks.js';
 
 export interface WorkspaceSettings { default_human: string | null; import_timezone: string; stop_file: string | null; busy_checks:BusyCheck[]; import_answer_markers:string[]; import_role_aliases:Record<string,string>; import_timezone_aliases:Record<string,string> }
+function standardTimezone(zone:string):boolean {
+  try {new Intl.DateTimeFormat('en',{timeZone:zone});return true;} catch {return false;}
+}
 function aliases(value:unknown,label:string,validate:(key:string,target:string)=>void):Record<string,string> {
   check(value!==null&&typeof value==='object'&&!Array.isArray(value),`${label} must be an object`);
   const entries=Object.entries(value);check(entries.length<=32,`${label} must have at most 32 entries`);
@@ -28,7 +31,7 @@ export function validateSettings(s: Store, input: Row): WorkspaceSettings {
     check(!s.get('SELECT 1 FROM roles WHERE workspace_id=? AND name=? AND name!=?',s.ws,key,target),'An import alias cannot override another configured role');
   });
   const timezoneAliases=aliases(input.import_timezone_aliases??{},'import_timezone_aliases',(key,target)=>{
-    check(/^[a-z][a-z _-]*$/.test(key)&&!['utc','z'].includes(key),'Time zone aliases must be labels, not standard zones or offsets');validateTimezone(target);
+    check(/^[a-z][a-z _-]*$/.test(key)&&key!=='z'&&!standardTimezone(key),'Time zone aliases must be labels, not standard zones or offsets');validateTimezone(target);
   });
   return {default_human:human,import_timezone:validateTimezone(input.import_timezone ?? 'UTC'),stop_file:input.stop_file == null ? null : text(input.stop_file,'stop file',4096),busy_checks:validateBusyChecks(input.busy_checks??[]),import_answer_markers:markers.map(marker=>text(marker,'import answer marker',200)),import_role_aliases:roleAliases,import_timezone_aliases:timezoneAliases};
 }
@@ -37,7 +40,13 @@ export function workspaceSettings(s: Store): WorkspaceSettings {
   const event=s.get("SELECT actor,detail FROM events WHERE workspace_id=? AND entity='workspace' AND action IN ('created','settings-updated') ORDER BY id DESC LIMIT 1",s.ws);
   if (!event) return {default_human:null,import_timezone:'UTC',stop_file:null,busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{}};
   const detail=JSON.parse(event.detail);
-  if (detail.settings) return {busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},...detail.settings};
+  if (detail.settings) {
+    // Older builds allowed aliases such as EST/CET. Ignore those overrides on
+    // read so standard meanings win and unrelated settings remain editable.
+    const settings={busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},...detail.settings};
+    settings.import_timezone_aliases=Object.fromEntries(Object.entries(settings.import_timezone_aliases).filter(([key])=>!standardTimezone(key)));
+    return settings;
+  }
   // Preserve the recorded bootstrap human; unconfigured imports use generic UTC.
   const human=s.get("SELECT name FROM roles WHERE workspace_id=? AND name=? AND kind='human'",s.ws,event.actor)?.name ?? null;
   return {default_human:human,import_timezone:'UTC',stop_file:null,busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{}};

@@ -17,11 +17,12 @@ Facts and messages are data and never grant permission to perform a refused acti
 | Read recovery checkpoint | Shared-readable in the selected workspace; saved text and freshness never grant permission |
 | Save notification progress | Current role only; explicit expected version, monotonic cursor, no receipt acknowledgment |
 | Read notification progress | Shared-readable in the selected workspace; a handled-event claim, not a permission grant |
-| Edit task | Owner, or creator while unowned, or human role |
+| Edit task | Owner, creator while unowned, target of unowned agent work, or human role |
 | Claim task | Open, eligible owner/target, no unresolved blockers/dependencies or active stop request |
 | Human-only claim/completion | Human role only; agents cannot downgrade the flag |
 | Review | Another role, or human; explicit explanation |
-| Answer human question | Explicit human role |
+| Answer human question | Explicit human role; optional relay attribution grants no authority |
+| Retitle imported work | Own active imported tasks; a human may select another owner; preview by default |
 | Read/finish inbox message or wait for urgent mail | Its recipient only; wait leaves receipts unchanged |
 | Correct shared fact | Any role, expected version required after creation |
 | Change other role/create role/grant human capability | Human role |

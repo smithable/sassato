@@ -18,13 +18,14 @@ test('task pages expose a continuation in JSON and terminal output',t=>{
 });
 test('CLI waiter exits on later urgent mail, prints one line, and timeout exits 5',async t=>{
  const {args,run,raw,stopFile}=fixture(t);
- const child=spawn(process.execPath,[bin,...args,'wait','--urgent','--as','b','--timeout','3','--stop-file',stopFile],{stdio:['ignore','pipe','pipe']});
+ const cursor=String(run(['context','--as','b']).snapshot_cursor);
+ const child=spawn(process.execPath,[bin,...args,'wait','--since',cursor,'--urgent','--as','b','--timeout','3','--stop-file',stopFile],{stdio:['ignore','pipe','pipe']});
  t.after(()=>{if(child.exitCode===null)child.kill();});let out='',err='';child.stdout.on('data',d=>out+=d);child.stderr.on('data',d=>err+=d);const done=new Promise(resolveExit=>child.on('close',code=>resolveExit(code)));
  const message=run(['send','b','Please inspect the failure','--urgent','--as','a']);assert.equal(message.urgent,true);
  assert.equal(await done,0,err);assert.match(out,/^URGENT M\d+ from a: Please inspect the failure · cursor \d+\n$/);
- assert.equal(run(['inbox','--peek','--as','b'])[0].state,'unread');run(['inbox','--as','b']);
- const timed=raw(['wait','--urgent','--timeout','1','--as','b','--json']);assert.equal(timed.status,5,timed.stderr);assert.equal(JSON.parse(timed.stdout).reason,'timeout');
- assert.equal(raw(['wait','--as','b','--timeout','1']).status,5);
+ assert.equal(run(['inbox','--peek','--as','b'])[0].state,'unread');run(['inbox','--as','b']);run(['ack',message.id,'--as','b']);
+ const timed=raw(['wait','--since',cursor,'--urgent','--timeout','1','--as','b','--json']);assert.equal(timed.status,5,timed.stderr);assert.equal(JSON.parse(timed.stdout).reason,'timeout');
+ assert.equal(raw(['wait','--since',cursor,'--as','b','--timeout','1']).status,5);
 });
 test('answer --close completes a human-only task without a separate claim',t=>{
  const {run}=fixture(t);const task=run(['add','Human decision','--human-only','--as','a']);const q=run(['ask-human',task.id,'Approve?','--as','a']);run(['answer',q.id,'yes','--close','--as','human']);assert.equal(run(['show',task.id]).status,'done');
@@ -43,4 +44,25 @@ test('wait distinguishes blocked assignment from resolved work and ignores ordin
  run(['send','b','Ordinary update','--as','a']);const timed=raw(['wait','--since',String(assigned.cursor),'--as','b','--timeout','1','--json']);assert.equal(timed.status,5,timed.stderr);
  const nextCursor=JSON.parse(timed.stdout).cursor;run(['resolve',blocker.id,'Operator finished','--as','human']);
  const ready=run(['wait','--since',String(nextCursor),'--as','b','--timeout','1']);assert.equal(ready.reason,'blocker-resolved');assert.equal(ready.blocker,blocker.id);assert.equal(ready.task,task.id);
+});
+
+
+test('WIP version errors tell the caller the current expected version',t=>{
+ const {run,raw}=fixture(t);run(['wip','set','--current','Initial work','--as','a']);
+ const missing=raw(['wip','set','--current','Overwrite','--as','a']);assert.equal(missing.status,4);assert.match(missing.stderr,/current version is 1.*--expect 1/);
+ run(['wip','set','--current','Updated work','--expect','1','--as','a']);
+ const zero=raw(['wip','set','--current','Stale creation','--expect','0','--as','a']);assert.equal(zero.status,4);assert.match(zero.stderr,/current version is 2.*--expect 2/);
+ const stale=raw(['wip','set','--current','Stale work','--expect','1','--as','a']);assert.equal(stale.status,4);assert.match(stale.stderr,/current version is 2.*--expect 2/);
+ assert.equal(run(['wip','show','--as','a']).current,'Updated work');
+});
+
+test('resolve and done give concise terminal success while JSON keeps full records',t=>{
+ const {run,raw}=fixture(t),task=run(['add','Clear confirmation','--as','a']);run(['take',task.id,'--as','a']);
+ const blocker=run(['block',task.id,'Wait for validation','--kind','agent','--waits-on','b','--as','a']);
+ const resolved=raw(['resolve',blocker.id,'Validated','--as','b']);assert.equal(resolved.status,0,resolved.stderr);assert.equal(resolved.stdout,`${blocker.id} resolved for ${task.id}.\n`);
+ const completed=raw(['done',task.id,'--as','a']);assert.equal(completed.status,0,completed.stderr);assert.equal(completed.stdout,`${task.id} done: Clear confirmation\n`);
+ const another=run(['add','JSON unchanged','--as','a']);run(['take',another.id,'--as','a']);
+ const held=run(['block',another.id,'Wait','--kind','agent','--waits-on','b','--as','a']);
+ const json=run(['resolve',held.id,'Done','--as','b']);assert.equal(json.id,held.id);assert.equal(json.task_id,another.id);assert.equal(json.status,'resolved');assert.equal(json.body,'Wait');
+ const done=run(['done',another.id,'--as','a']);assert.equal(done.id,another.id);assert.equal(done.status,'done');assert.equal(done.title,'JSON unchanged');assert.ok(done.completed_at);
 });

@@ -71,8 +71,9 @@ the current step, wait for their tools/jobs, save WIP and run the exact `stopped
 command shown in context. Acknowledgment leaves them stopped until a human resumes them.
 A timeout leaves the request active. Resume permits new work; it does not start sessions.
 
-Force stop kills only verified registered provider PIDs and reports refusals for uncertain
-identities. It does not guarantee termination of every detached child process. Acknowledgment
+Force stop sends SIGTERM only to verified registered provider PIDs, waits up to one
+second, then rechecks identities and stop intent before sending SIGKILL to survivors.
+It reports refusals for uncertain identities. It does not guarantee termination of every detached child process. Acknowledgment
 and process termination are distinct states.
 
 An optional external `stop_file` can be set in workspace configuration or passed with
@@ -82,10 +83,10 @@ never deletes an external stop signal.
 ## Notifications
 
 `sassato wait [--since CURSOR] --as ROLE` is a read-only notification command. It returns
-for urgent unread mail, a human answer, resolved blockers, assignments/handoffs, newly
+for unacknowledged urgent mail, a human answer, assigned/resolved blockers, dropped dependencies, assignments/handoffs, newly
 available work, review submissions/results, stop, or timeout. Ordinary mail does not wake it. Reads do not consume
 inbox receipts. Without `--since` it uses the role's saved notification progress if
-present, otherwise the latest event at invocation. The explicit cursor always wins.
+present; without either, it reports an input error. The explicit cursor always wins.
 Updated worker instructions initialize absent progress from the initial context
 `cursor` only after reading full inbox/records and reconciling pending work, including
 truncated items. They retain this bounded cursor through further reads, never use
@@ -148,3 +149,6 @@ and run `doctor`. Writable commands apply supported schema migrations; reads do 
 mutate schemas. `restore BACKUP --db NEW_FILE` validates and restores into a new file.
 Schema v5 adds explicit question cancellation; existing records and audit history are
 preserved. See [upgrade compatibility](compatibility.md) before switching CLI versions.
+
+After safely handling urgent mail, run `sassato ack MESSAGE_ID --as ROLE --workspace WORKSPACE`
+before rearming the waiter. Reading the inbox alone leaves urgent notifications pending.

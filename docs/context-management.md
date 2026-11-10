@@ -185,8 +185,8 @@ waiter's returned cursor, never a newer context `snapshot_cursor`: an event coul
 have arrived while the previous one was being handled.
 
 On restart, `wait` without `--since` reads independent latest progress. Without a
-saved record it retains the legacy latest-at-invocation default, so the updated
-worker instructions initialize absent progress only after the reconciliation above.
+saved record it requires an explicit `--since` cursor and fails with an input error
+otherwise. Initialize absent progress only after the reconciliation above.
 Explicit `--since` overrides the saved value and permits deliberate replay without
 rewinding durable progress. Malformed or unsupported saved progress fails clearly;
 inspect its audit event and use an explicit earlier cursor for safe replay.
@@ -194,7 +194,7 @@ inspect its audit event and use an explicit earlier cursor for safe replay.
 `progress show ROLE` is shared-readable, while saves always belong to the current
 role. Bounded context exposes the current progress reference, cursor and version.
 A checkpoint's progress copy is historical evidence; do not restore it over a newer
-independent record. Urgent unread mail and STOP still return regardless of the
+independent record. Unacknowledged urgent mail and STOP still return regardless of the
 saved cursor. STOP takes precedence and prohibits restarting a waiter until resumed.
 
 ## Provider behavior and notification recovery
@@ -227,3 +227,6 @@ installed by checkpoint saving or recovery.
 
 See [provider capabilities](https://github.com/smithable/sassato/blob/main/docs/provider-capabilities.md) for the compatibility evidence
 and limits of future managed-session work. No supervisor command is implemented here.
+
+After safely handling urgent mail, run `sassato ack MESSAGE_ID --as ROLE --workspace WORKSPACE`
+before rearming the waiter. Reading the inbox alone leaves urgent notifications pending.

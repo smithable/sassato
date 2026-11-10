@@ -27,6 +27,12 @@
       "kind": "agent"
     },
     {
+      "name": "fable",
+      "kind": "agent",
+      "provider": "claude",
+      "model": "claude-fable-5-2"
+    },
+    {
       "name": "johan",
       "kind": "human"
     }

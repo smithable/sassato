@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {Store,SCHEMA_VERSION} from '../dist/storage.js';
 import {initWorkspace} from '../dist/admin.js';
-import {send,inbox,context} from '../dist/coordination.js';
+import {send,inbox,context,acknowledge} from '../dist/coordination.js';
 import {requestStop,acknowledgeStop} from '../dist/control.js';
 import {waitForUrgent} from '../dist/mail-wait.js';
 function fixture(t){const dir=mkdtempSync(join(tmpdir(),'sassato-mailwait-')),path=join(dir,'state.db'),s=new Store(path,'a',{create:true});initWorkspace(s,'team',fixtureConfig);s.use('team');t.after(()=>{if(s.db.isOpen)s.close();rmSync(dir,{recursive:true,force:true});});return {s,path,stopFile:join(dir,'legacy-stop')};}
@@ -16,12 +16,14 @@ test('urgent waiter sees later writes through a read-only connection without con
   initWorkspace(s,'other',fixtureConfig);send(s,['b'],'foreign urgent',{urgent:true});s.use('team');
   const reader=new Store(path,'b',{readonly:true});reader.use('team');t.after(()=>reader.close());
   let urgent;const timer=setTimeout(()=>{urgent=send(s,['b'],'Wake up\nreview \u001b[2Jneeded',{urgent:true});},30);t.after(()=>clearTimeout(timer));
-  const event=await waitForUrgent(reader,{timeout:2,stopFile});
+  const since=context(reader).snapshot_cursor,event=await waitForUrgent(reader,{timeout:2,stopFile,since});
   assert.equal(event.reason,'urgent');assert.equal(event.message.id,urgent.id);assert.equal(event.message.summary,'Wake up review [2Jneeded');
   assert.equal(s.get('SELECT state FROM receipts WHERE workspace_id=? AND message_id=? AND recipient=?',s.ws,Number(urgent.id.slice(1)),'b').state,'unread');
   assert.equal(context(reader).sections.inbox[0].urgent,true);
   s.actor='b';const messages=inbox(s,{limit:1});assert.equal(messages[0].id,urgent.id);assert.equal(messages[0].urgent,true);
-  assert.equal((await waitForUrgent(reader,{timeout:1,stopFile})).reason,'timeout','read urgent mail must not repeatedly wake the watcher');
+  assert.equal((await waitForUrgent(reader,{timeout:1,stopFile,since})).reason,'urgent','read but unhandled urgent mail must survive interruption');
+  acknowledge(s,urgent.id);
+  assert.equal((await waitForUrgent(reader,{timeout:1,stopFile,since})).reason,'timeout','acknowledged mail must stop waking the watcher');
 });
 test('stop wins over urgent mail and acknowledged stop does not restart a watcher loop',async t=>{
   const {s,stopFile}=fixture(t);send(s,['a'],'urgent',{urgent:true});s.actor='human';const req=requestStop(s,['a'])[0];s.actor='a';
@@ -43,6 +45,18 @@ test('v3 upgrade preserves messages and receipts and defaults urgency to false',
 
 test('legacy stop file ends the waiter without consuming mail or creating a durable request',async t=>{
   const {s,stopFile}=fixture(t);const timer=setTimeout(()=>writeFileSync(stopFile,''),20);t.after(()=>clearTimeout(timer));
-  const result=await waitForUrgent(s,{timeout:2,stopFile});assert.equal(result.reason,'stop');assert.equal(result.stop.file,stopFile);
+  const result=await waitForUrgent(s,{timeout:2,stopFile,since:context(s).snapshot_cursor});assert.equal(result.reason,'stop');assert.equal(result.stop.file,stopFile);
   assert.equal(s.get('SELECT count(*) n FROM stop_requests').n,0);
+});
+
+test('urgent wake text includes up to 2000 characters and an identity-specific inbox command when truncated',async t=>{
+  const {s,stopFile}=fixture(t),since=context(s).snapshot_cursor;
+  const short='Review detail '.repeat(30),long='X'.repeat(2100);
+  s.actor='b';const first=send(s,['a'],short,{urgent:true});s.actor='a';
+  const complete=await waitForUrgent(s,{since,stopFile,timeout:1});
+  assert.equal(complete.message.summary,short.trim());assert.equal(complete.message.truncated,false);assert.equal(complete.message.inbox_command,undefined);
+  acknowledge(s,first.id);s.actor='b';send(s,['a'],long,{urgent:true});s.actor='a';
+  const clipped=await waitForUrgent(s,{since,stopFile,timeout:1});
+  assert.equal(clipped.message.summary.length,2000);assert.equal(clipped.message.truncated,true);
+  assert.equal(clipped.message.inbox_command,'sassato inbox --peek --as a --workspace team');
 });
