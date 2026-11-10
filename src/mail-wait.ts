@@ -43,7 +43,7 @@ function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
     // submission/result. Metadata notes may advance the task version without
     // replacing that transition, so compare workflow events rather than versions.
     const superseded=s.get(`SELECT 1 FROM events WHERE workspace_id=? AND entity='task' AND entity_id=? AND id>?
-      AND (action IN ('submitted','review-approved','review-rejected') OR
+      AND (action IN ('submitted','review-approved','review-rejected','completed','dropped','reopened') OR
         (?='review' AND action='updated' AND CASE WHEN json_valid(detail) THEN json_type(detail,'$.after.reviewed_by')='null' ELSE 0 END))
       LIMIT 1`,s.ws,event.entity_id,event.id,task.status);
     if(superseded)return undefined;

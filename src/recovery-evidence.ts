@@ -11,7 +11,7 @@ export interface RecoveryEvidenceInput {
 export interface RepositoryEvidence {
   status: 'available'|'unavailable';
   observed_at: string;
-  directory: string;
+  directory: string|null;
   root: string|null;
   git_dir: string|null;
   common_dir: string|null;
@@ -38,40 +38,61 @@ function keys(value:Record<string,unknown>,allowed:string[],label:string):void {
 function array(value:unknown,label:string):unknown[] {
   check(Array.isArray(value) && value.length<=20,`${label} must be an array with at most 20 entries`);return value;
 }
-export function validateRecoveryEvidence(value:unknown):RecoveryEvidenceInput {
+export function validateRecoveryEvidence(value:unknown):RecoveryEvidenceInput { return validateEvidence(value,true); }
+function validateEvidence(value:unknown, writing:boolean):RecoveryEvidenceInput {
+  // Stored evidence predates future secret patterns. Validate its structure on read
+  // without applying a later write guard to immutable historical content.
+  const field=(value:unknown,label:string,max:number):string=>{
+    if(writing)return text(value,label,max);
+    check(typeof value==='string' && value.trim().length>0 && value.length<=max && !value.includes('\0'),`${label} is malformed`);
+    return value;
+  };
   const entry=object(value,'evidence');keys(entry,['version','validation','artifacts','jobs'],'evidence');
   check(entry.version===1,'evidence version must be 1');
   check(Buffer.byteLength(JSON.stringify(value),'utf8')<=MAX_EVIDENCE_BYTES,'evidence must be at most 32768 bytes');
   const validation=array(entry.validation,'validation').map(raw=>{
     const item=object(raw,'validation entry');keys(item,['command','result'],'validation entry');
-    return {command:text(item.command,'validation command',1_000),result:text(item.result,'validation result',2_000)};
+    return {command:field(item.command,'validation command',1_000),result:field(item.result,'validation result',2_000)};
   });
-  const artifacts=array(entry.artifacts,'artifacts').map(value=>text(value,'artifact reference',1_000));
+  const artifacts=array(entry.artifacts,'artifacts').map(value=>field(value,'artifact reference',1_000));
   const seen=new Set<string>();
   const jobs=array(entry.jobs,'jobs').map(raw=>{
     const item=object(raw,'job');keys(item,['id','description','state','disposition','reference'],'job');
-    const id=text(item.id,'job id',100);check(!seen.has(id),'job ids must be unique');seen.add(id);
-    const description=text(item.description,'job description',1_000);
+    const id=field(item.id,'job id',100);check(!seen.has(id),'job ids must be unique');seen.add(id);
+    const description=field(item.description,'job description',1_000);
     check(typeof item.state==='string' && ['running','completed','failed','stopped','unknown'].includes(item.state),'job state must be running, completed, failed, stopped or unknown');
     check(typeof item.disposition==='string' && ['finish','stop','adopt'].includes(item.disposition),'job disposition must be finish, stop or adopt');
-    const reference=item.reference===undefined?undefined:text(item.reference,'job reference',1_000);
+    const reference=item.reference===undefined?undefined:field(item.reference,'job reference',1_000);
     return {id,description,state:item.state as RecoveryEvidenceInput['jobs'][number]['state'],disposition:item.disposition as RecoveryEvidenceInput['jobs'][number]['disposition'],...(reference===undefined?{}:{reference})};
   });
   return {version:1,validation,artifacts,jobs};
 }
 
 /** Read-only bounded subprocesses run before the checkpoint's database transaction. */
-export function observeRepository(directory:string):RepositoryEvidence {
-  text(directory,'repository directory',4_096);
+export function observeRepository(directory:string|null):RepositoryEvidence {
+  if(directory!==null)text(directory,'repository directory',4_096);
   const result:RepositoryEvidence={status:'unavailable',observed_at:now(),directory,root:null,git_dir:null,common_dir:null,branch:null,head:null,dirty:null,reason:null};
-  const env={...process.env,GIT_OPTIONAL_LOCKS:'0',GIT_TERMINAL_PROMPT:'0'};
-  for(const key of ['GIT_DIR','GIT_WORK_TREE','GIT_COMMON_DIR','GIT_INDEX_FILE']) delete env[key as keyof typeof env];
-  const run=(args:string[],maxBuffer=16_384)=>spawnSync('git',['-c','core.fsmonitor=false','-c','core.untrackedCache=false','-C',directory,...args],{encoding:'utf8',timeout:2_000,maxBuffer,env,shell:false});
+  if(directory===null) {result.reason='Role has no configured working_dir; the caller directory was not inspected.';return result;}
+  const env={...Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith('GIT_'))),GIT_OPTIONAL_LOCKS:'0',GIT_TERMINAL_PROMPT:'0',GIT_ATTR_NOSYSTEM:'1'};
+  const config=['-c','core.fsmonitor=false','-c','core.untrackedCache=false','-c','core.attributesFile=/dev/null'];
+  const run=(args:string[],maxBuffer=16_384)=>spawnSync('git',[...config,'-C',directory,...args],{encoding:'utf8',timeout:2_000,maxBuffer,env,shell:false});
   const root=run(['rev-parse','--show-toplevel']);
   if(root.error || root.status!==0) {result.reason='Git worktree unavailable: not a repository, missing Git, inaccessible directory or bounded probe failure.';return result;}
   const rootPath=root.stdout.trimEnd();
   if(!rootPath || rootPath.length>4096) {result.reason='Git returned unsupported or oversized repository metadata.';return result;}
   result.root=rootPath;
+  // Attributes in the repository can name clean/process drivers. Suppressing only
+  // global attributes does not stop them: disable every configured driver first.
+  const filters=run(['config','--null','--name-only','--get-regexp','^filter\\..*\\.(clean|process|required)$']);
+  if(filters.error || ![0,1].includes(filters.status??-1)) {result.reason='Git filter configuration could not be inspected safely.';return result;}
+  const filterKeys=filters.stdout.split('\0').filter(Boolean);
+  // `git -c` splits at '='. Unsafe subsection names could otherwise turn an
+  // attempted override into another key and leave the original driver active.
+  if(filterKeys.length>128 || filterKeys.some(key=>!/^filter\.[A-Za-z0-9_.-]+\.(clean|process|required)$/.test(key))) {result.reason='Git filter configuration exceeds supported bounds or uses unsupported names.';return result;}
+  for(const key of new Set(filterKeys.map(key=>key.replace(/\.(clean|process|required)$/,'')))) config.push('-c',`${key}.clean=`,'-c',`${key}.process=`,'-c',`${key}.required=false`);
+  // Submodule status can invoke Git with different local filter configuration.
+  const index=run(['ls-files','--stage','-z'],262_144);
+  if(index.error || index.status!==0 || index.stdout.split('\0').some(line=>line.startsWith('160000 '))) {result.reason='Repository index is unavailable, oversized or contains submodules; inspect the worktree manually.';return result;}
   const gitDir=run(['rev-parse','--absolute-git-dir']),commonDir=run(['rev-parse','--path-format=absolute','--git-common-dir']);
   const branch=run(['symbolic-ref','--quiet','--short','HEAD']),head=run(['rev-parse','--verify','--quiet','HEAD']);
   const status=run(['status','--porcelain=v1','-z','--untracked-files=normal'],262_144);
@@ -106,7 +127,7 @@ export function inspectRecoveryEvidence(value:unknown, expected?:{role:string;ev
     const repository=object(observed.repository,'repository evidence');
     check(typeof repository.status==='string' && ['available','unavailable'].includes(repository.status),'repository status');
     check(timestamp(repository.observed_at),'repository observation time');
-    check(typeof repository.directory==='string' && repository.directory.length<=4096,'repository directory');
+    check(repository.directory===null && repository.status==='unavailable' || typeof repository.directory==='string' && repository.directory.length<=4096,'repository directory');
     for(const key of ['root','git_dir','common_dir','branch','head','reason']) check(repository[key]===null || typeof repository[key]==='string' && (repository[key] as string).length<=4096,'repository metadata');
     check(repository.dirty===null || typeof repository.dirty==='boolean','repository dirty status');
     if(repository.status==='available') check(typeof repository.root==='string' && typeof repository.git_dir==='string' && typeof repository.common_dir==='string' && typeof repository.dirty==='boolean','available repository metadata');
@@ -124,7 +145,7 @@ export function inspectRecoveryEvidence(value:unknown, expected?:{role:string;ev
     }
     if(tasks.truncated) missing.push('Task evidence is truncated to 100 entries; inspect current task records for the complete set.');
     if(evidence.reported===null) missing.push('Agent validation, artifacts and job evidence were not supplied; absence does not mean no jobs or tests.');
-    else validateRecoveryEvidence(evidence.reported);
+    else validateEvidence(evidence.reported,false);
     if(observed.notification_progress===null) missing.push('No durable notification progress had been saved.');
     else {
       const progress=object(observed.notification_progress,'notification progress');

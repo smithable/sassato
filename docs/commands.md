@@ -219,12 +219,32 @@ bound, and no-match is never confused with a permission failure.
 | `stop [ROLE...] --no-wait --as alice` | Request stop and return immediately |
 | `stop [ROLE...] --force --as alice` | SIGKILL verified registered provider PIDs and return immediately |
 | `stop-status [ROLE...]` | Read active stop requests and their observed state |
+| `stop-status [ROLE...] --quiet [--stop-file PATH]` | Print no normal output; exit 4 if stop intent or the optional stop file is active, otherwise 0 |
 | `stopped R123 --as ROLE` | Acknowledge this exact current request after tools stop and WIP is saved |
 | `resume-work [ROLE...] [--all] --as alice` | Clear requests, allowing new claims and launches; does not launch sessions |
 
 See [integration details](integrations.md#stop-and-resume-work) for cooperative agent
 setup, verification limits, and the separate legacy stop file. Stop and resume require
 a human role. Acknowledgment is limited to the role addressed by the request.
+
+An all-role stop (explicit `--all`, or no role arguments) also waits for the
+workspace's configured [busy checks](configuration.md#busy-checks-before-an-all-role-stop-completes).
+The same `--timeout` covers both agent acknowledgements and checks. Busy and unknown
+checks are reported by name and prevent successful completion; a timeout leaves
+stop intent active. `--no-wait` and `--force` return without executing checks, with
+`machine_quiet: null` in JSON. Force still only signals verified provider PIDs.
+
+`stop-status --quiet` reads stop intent, including acknowledged requests that have
+not been cleared, and the optional configured `stop_file`. `--stop-file` overrides
+that file for this check. It does not run busy commands. Storage or inspection
+failures return an error, never exit 0; scripts should proceed only on exit 0.
+It suppresses normal output even with `--json`; errors still go to stderr.
+
+```sh
+if sassato stop-status --quiet --workspace my-project; then
+  ./scheduled-job
+fi
+```
 
 ## Feedback improvements (0.1.1)
 
@@ -256,8 +276,10 @@ read the current task and supply that inspected version to `review --expect`. No
 review anything. Every result includes `cursor`; human output prints it too.
 Without `--since`, wait resumes from durable notification progress when present;
 otherwise it preserves the legacy behavior of starting at the latest event at
-invocation. Explicit `--since` always overrides progress. To recover without
-skipping history when progress is absent, initialize it to cursor 0 with `--expect 0`.
+invocation. Explicit `--since` always overrides progress. When progress is absent, retain the initial context `cursor`, inspect the full inbox
+and relevant records (including truncated items), and reconcile pending work before
+initializing that captured cursor with `--expect 0`. Do not use `snapshot_cursor`
+or a later context cursor; leave progress absent if handling is incomplete.
 After safely handling each result, save that result's cursor, then re-arm the waiter.
 Timeout cursors can also be saved. If handling fails or the session crashes, leave
 progress unchanged so recovery replays the event. Never substitute a newer context

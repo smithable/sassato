@@ -18,7 +18,7 @@ Read `sassato wip` to get your current WIP version. Then save a complete recover
 checkpoint (replace `3` with that version; omit `--expect` or use `0` for first WIP):
 
 ```sh
-sassato checkpoint save --expect 3 \
+sassato checkpoint save --as builder --workspace demo --expect 3 \
   --current 'T42: parser implemented in src/parser.ts; task marked done' \
   --next 'Read the billing task requirements before claiming it' \
   --notes 'Preserve the parser API. Rejected regex-only parsing. Parser tests pass. No running jobs or unresolved parser questions.'
@@ -47,7 +47,8 @@ Every new checkpoint captures `evidence.observed`:
 
 - Repository directory, worktree root, Git directory/common directory, branch, HEAD,
   dirty status and observation time, where Git is available. The directory is the
-  role's configured `working_dir`, or the caller's directory when none is configured.
+  role's configured `working_dir`. Without it, repository evidence is unavailable;
+  the caller's directory is not inspected.
 - Up to 100 active owned or targeted task IDs, versions, statuses and routing fields,
   with total count and a truncation flag. Active here includes open, doing, blocked
   and review work; closed tasks are excluded from this evidence list.
@@ -55,7 +56,10 @@ Every new checkpoint captures `evidence.observed`:
 
 Git probes are read-only, bounded and run before the database transaction. Missing
 Git, a non-repository directory or probe failure is reported as unavailable evidence;
-it does not prevent saving the recovery text. Task/progress observations are captured
+it does not prevent saving the recovery text. Configured clean/process filters are
+disabled during probes, including drivers selected by repository attributes. An
+unreadable or oversized index, or one containing submodules, makes repository
+evidence unavailable and requires manual worktree inspection. Task/progress observations are captured
 with the WIP update. Repository observations are not an atomic file snapshot: another
 process can change the worktree during or after capture. Dirty worktrees are allowed.
 Sassato never commits, stashes, resets or cleans files to prepare a checkpoint.
@@ -64,7 +68,7 @@ Add agent-written claims with `--evidence FILE`, using the
 [JSON example](../examples/recovery-evidence.example.json) as a starting point:
 
 ```sh
-sassato checkpoint save --expect 4 --evidence ./recovery-evidence.json \
+sassato checkpoint save --as builder --workspace demo --expect 4 --evidence ./recovery-evidence.json \
   --current 'Parser ready; integration validation pending' \
   --next 'Settle the test server, then run integration checks' \
   --notes 'Preserve the public parser API; see the task for accepted constraints'
@@ -99,8 +103,8 @@ its tracked durable inputs and still need these gaps reconciled before recovery.
 
 ```sh
 sassato context --brief
-sassato checkpoint show
-sassato checkpoint show reviewer
+sassato checkpoint show --as builder --workspace demo
+sassato checkpoint show reviewer --as builder --workspace demo
 ```
 
 The bounded context includes a checkpoint reference and its freshness state when
@@ -136,14 +140,34 @@ replay unhandled events. Progress writes never acknowledge mail receipts or STOP
 claim tasks, or execute work. The waiter itself remains read-only and never advances
 progress just because it returned an event.
 
+For a first waiter in an existing workspace, reconcile current work before choosing
+an initial cursor. The examples use role `builder` in workspace `demo`; substitute
+your configured identity.
+
 ```sh
-sassato progress show
-# If absent, start from zero to replay safely:
-sassato progress save --cursor 0 --expect 0
-sassato wait --timeout 60
+sassato context --json --as builder --workspace demo
+sassato progress show --as builder --workspace demo
+# If absent, retain the initial context.cursor as BOOTSTRAP_CURSOR.
+# Read the full inbox and relevant records; reconcile pending work before saving.
+sassato progress save --cursor BOOTSTRAP_CURSOR --expect 0 --as builder --workspace demo
+sassato wait --timeout 60 --as builder --workspace demo
 # After safely handling the returned event, or a normal timeout:
-sassato progress save --cursor RETURNED_CURSOR --expect PROGRESS_VERSION
+sassato progress save --cursor RETURNED_CURSOR --expect PROGRESS_VERSION --as builder --workspace demo
 ```
+
+Check STOP before initializing or starting a waiter. If progress exists, retain it;
+do not replace it with a context cursor. If absent, capture the initial context's
+returned `cursor`, never `snapshot_cursor` or a cursor from a later read. Context is
+bounded: read the full inbox, task/review state, blockers and pending questions,
+inspect omitted snapshot records, and page truncated answer/fact deltas with
+`context --since`. Keep the initial bounded cursor even after those further reads.
+Reading a summary alone does not handle mail or unresolved decisions. Safely handle
+pending items or record the unresolved work in durable task/WIP state before saving;
+ordinary mail and questions must not disappear from recovery just because they do
+not wake a waiter. On failure or incomplete reconciliation, leave progress absent.
+This avoids unnecessary replay of already reconciled history while leaving events
+after the captured bound available to the waiter. Deliberate replay from an earlier
+cursor, including zero, remains available when the history itself needs inspection.
 
 Replace the placeholders with the result's cursor and the version from `progress show`.
 The first save requires `--expect 0`; later writes require the current progress
@@ -162,7 +186,7 @@ have arrived while the previous one was being handled.
 
 On restart, `wait` without `--since` reads independent latest progress. Without a
 saved record it retains the legacy latest-at-invocation default, so the updated
-worker instructions initialize absent progress to 0 for conservative recovery.
+worker instructions initialize absent progress only after the reconciliation above.
 Explicit `--since` overrides the saved value and permits deliberate replay without
 rewinding durable progress. Malformed or unsupported saved progress fails clearly;
 inspect its audit event and use an explicit earlier cursor for safe replay.
@@ -201,7 +225,7 @@ a live provider session ended to bypass launch checks. The existing human-only
 `launch --fresh` does not replace a live session. No supervisor or extra watcher is
 installed by checkpoint saving or recovery.
 
-See [provider capabilities](provider-capabilities.md) for the compatibility evidence
+See [provider capabilities](https://github.com/smithable/sassato/blob/main/docs/provider-capabilities.md) for the compatibility evidence
 and limits of future managed-session work. No supervisor command is implemented here.
-The [managed recovery validation guide](managed-recovery-validation.md) documents
+The [managed recovery validation guide](https://github.com/smithable/sassato/blob/feat/managed-recovery-validation/docs/managed-recovery-validation.md) documents
 the opt-in actual-state probe and the remaining lifecycle release gates.

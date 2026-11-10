@@ -15,7 +15,7 @@ Keep native automatic compaction enabled. Save a complete checkpoint after
 meaningful progress, important decisions and significant test results, and before
 a handoff or planned session transition. Read `sassato wip`, then save:
 
-    sassato checkpoint save --current 'objective and progress' --next 'exact next action' --notes 'constraints, discoveries, changed files, validation, unresolved work and jobs' --expect VERSION
+    sassato checkpoint save --as "$SASSATO_ROLE" --workspace "$SASSATO_WORKSPACE" --current 'objective and progress' --next 'exact next action' --notes 'constraints, discoveries, changed files, validation, unresolved work and jobs' --expect VERSION
 
 Use the WIP version (omit --expect or use 0 on first WIP). Supply all three fields
 deliberately; review old notes before carrying them forward. This also updates WIP,
@@ -26,7 +26,7 @@ Use `--evidence FILE` when structured validation results, artifact references or
 job dispositions help recovery. Sassato distinguishes its repository/task
 observations from those claims; job adoption and test results are not verified.
 
-After startup, resume or compaction, read current context and `sassato checkpoint show`,
+After startup, resume or compaction, read current context and `sassato checkpoint show --as "$SASSATO_ROLE" --workspace "$SASSATO_WORKSPACE"`,
 inspect relevant task and decision records, check inbox, and verify working files.
 A stale checkpoint is historical evidence, not permission to overwrite current state.
 Record running tools and notification waiters; settle them and retain the last
@@ -43,7 +43,7 @@ version. Supply `sassato review T123 --approve --expect VERSION --note 'evidence
 
 Preserve the active objective, user constraints, task IDs, checkpoint reference,
 unresolved decisions and next action. After compaction or clear, read current
-Sassato context and `sassato checkpoint show`, then verify the working files.
+Sassato context and `sassato checkpoint show --as "$SASSATO_ROLE" --workspace "$SASSATO_WORKSPACE"`, then verify the working files.
 The SessionStart hook reloads context but does not save a pre-reset checkpoint.
 
 ### Permissions and stopping
@@ -61,19 +61,31 @@ acknowledges that you have stopped working; it does not close your terminal. Rem
 idle until a human runs `sassato resume-work`. Check context before each new claim
 and at safe checkpoints during long tasks so a stop request is seen promptly.
 
-At session start/resume, before work or idle, run `sassato context --json` and
-`sassato progress show`. Use saved progress.cursor as CURSOR; if absent, initialize
-with `sassato progress save --cursor 0 --expect 0` to replay safely. Never replace
-saved progress with a context snapshot cursor. If stored progress is invalid,
-inspect its audit record; do not initialize or advance it. Unless STOP is active, start exactly one
-`sassato wait --since CURSOR` using Claude Code's native background task option.
+At session start/resume, before work or idle, run
+`sassato context --json --as "$SASSATO_ROLE" --workspace "$SASSATO_WORKSPACE"` and
+`sassato progress show --as "$SASSATO_ROLE" --workspace "$SASSATO_WORKSPACE"`.
+Check STOP first. Use existing saved progress.cursor as CURSOR without replacing it.
+If absent, retain the initial context's `cursor` as BOOTSTRAP_CURSOR, never its
+`snapshot_cursor` or a cursor from a later read. Read the full inbox and relevant
+task, review, blocker, question and answer records. Inspect omitted snapshot items
+and page truncated context deltas with `context --since`; keep the initial bounded
+cursor. Safely handle pending items or record unresolved work in durable task/WIP
+state, including ordinary mail and outstanding questions. Reading context alone
+does not handle or acknowledge them. Only after this reconciliation succeeds, run
+`sassato progress save --cursor BOOTSTRAP_CURSOR --expect 0 --as "$SASSATO_ROLE" --workspace "$SASSATO_WORKSPACE"`
+and use its cursor as CURSOR. On failure or incomplete handling, leave progress
+absent; do not start a waiter from a newer cursor. If stored progress is invalid,
+inspect its audit record; do not initialize or advance it. Unless STOP is active,
+start exactly one `sassato wait --since CURSOR --as "$SASSATO_ROLE" --workspace "$SASSATO_WORKSPACE"`
+using Claude Code's native background task option. Keep an existing waiter instead
+of starting a duplicate.
 Do not block the foreground turn or detach it with shell `&`, nohup, or an outer
 shell loop: those do not provide the same tool-completion notification.
 
 The waiter ends for urgent mail, your human answers, resolved blockers, assignment
 or handoff, eligible ready work, review submissions or results, or STOP. Ordinary mail alone does not wake it.
 After completion, inspect context/inbox and the reported IDs, handle the change,
-then save the returned cursor with `sassato progress save --cursor CURSOR --expect VERSION`
+then save the returned cursor with `sassato progress save --cursor CURSOR --expect VERSION --as "$SASSATO_ROLE" --workspace "$SASSATO_WORKSPACE"`
 using the latest progress version, and re-arm one waiter with that cursor. If handling
 fails, do not advance progress; the event will replay after recovery. One readiness event can name several
 tasks; inspect them all before claiming work. Save the returned cursor on timeout

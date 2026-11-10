@@ -7,7 +7,7 @@ import { Store } from '../dist/storage.js';
 import { initWorkspace } from '../dist/admin.js';
 import { context,send,inbox } from '../dist/coordination.js';
 import { requestStop,resumeWork } from '../dist/control.js';
-import { addTask,takeTask,submitTask,reviewTask,updateTask,showTask,doneTask,dropTask,noteTask } from '../dist/tasks.js';
+import { addTask,takeTask,submitTask,reviewTask,updateTask,showTask,doneTask,dropTask,noteTask,reopenTask } from '../dist/tasks.js';
 import { waitForWork } from '../dist/mail-wait.js';
 import { fixtureConfig } from './fixtures/team.mjs';
 
@@ -28,6 +28,15 @@ function review(f,task,approve,reviewer='b') {
   return as(f.s,reviewer,()=>reviewTask(f.s,task.id,{approve,note:approve?'Reviewed current version':'Revise the edge case',expected_version:showTask(f.s,task.id).version}));
 }
 function wait(f,role,since,extra={}) {f.reader.actor=role;return waitForWork(f.reader,{since,timeout:1,stopFile:f.stopFile,...extra});}
+
+test('dropping and reopening supersedes a prior rejection held by a late waiter',async t=>{
+  const f=fixture(t),task=work(f);submit(f,task);const since=f.cursor();review(f,task,false);
+  dropTask(f.s,task.id,'Close old attempt');reopenTask(f.s,task.id,'New attempt');
+  as(f.s,'a',()=>takeTask(f.s,task.id));
+  assert.equal((await wait(f,'a',since)).reason,'timeout');
+  submit(f,task);review(f,task,false);
+  assert.equal((await wait(f,'a',since)).reason,'review-rejected','a new rejection still wakes its owner');
+});
 
 test('untargeted submission wakes independent reviewers from a retained context cursor without mutations',async t=>{
   const f=fixture(t),task=work(f),since=context(f.reader).snapshot_cursor;

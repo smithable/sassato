@@ -14,7 +14,7 @@ export function saveCheckpoint(s: Store, input: RecoveryInput): Row {
   text(input.notes,'checkpoint notes',10_000);
   const reported=input.evidence===undefined?null:validateRecoveryEvidence(input.evidence);
   const role=s.requireActor(), configuredDirectory=s.role(role).working_dir??null;
-  const repository=observeRepository(configuredDirectory??process.cwd());
+  const repository=observeRepository(configuredDirectory);
   return s.tx(()=>{
     check((s.role(role).working_dir??null)===configuredDirectory,'Role working directory changed during checkpoint capture; retry',4);
     const wip=setWip(s,input);

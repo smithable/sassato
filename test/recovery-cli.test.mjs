@@ -47,6 +47,7 @@ test('CLI rejects invalid, oversized and non-file evidence without updating WIP'
     assert.equal(f.run(['checkpoint','show']),null);
   }
   assert.equal(f.raw(['checkpoint','save',...fields,'--evidence',f.dir]).status,2);
+  assert.equal(f.raw(['checkpoint','save',...fields,'--evidence',join(f.dir,'missing.json')]).status,2);
   const saved=f.run(['checkpoint','save',...fields]);
   assert.equal(saved.evidence.reported,null);
   assert.ok(saved.missing_evidence.length>0);

@@ -5,6 +5,7 @@ const hash=createHash('sha256');
 function add(path) {hash.update(path+'\0');hash.update(readFileSync(path));hash.update('\0');}
 function walk(dir) {
   for(const entry of readdirSync(dir,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))) {
+    if(entry.name==='__pycache__'||entry.name.endsWith('.pyc'))continue;
     const path=join(dir,entry.name);if(entry.isDirectory())walk(path);else add(path);
   }
 }

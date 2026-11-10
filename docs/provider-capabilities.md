@@ -42,8 +42,10 @@ The output always distinguishes interface discovery from live validation.
 
 The probes used temporary working directories, explicit provider identities and
 existing authentication. They did not change config/auth, invoke tools, install
-SDKs or connect to existing worker sessions. Normal provider runtime logs may
-still be written. Default models/settings were left in place: Codex reported
+SDKs or connect to existing worker sessions. These earlier runs inherited tools
+and hooks; the absence of observed tool calls was not an enforced isolation boundary.
+They establish conversational behavior, not safe execution confinement. Normal
+provider runtime logs may still be written. Default models/settings were left in place: Codex reported
 `gpt-6-astra`, read-only sandbox and on-request approval; Claude reported
 `claude-opus-5-5` and default permission mode.
 
@@ -65,8 +67,9 @@ SDK library. A successful native probe does not establish an SDK product's auth
 eligibility or access to another terminal.
 
 The opt-in reproduction script requires a source checkout, POSIX process groups
-and Python 3. It invokes real models using the existing authentication and defaults;
-it is never run by the normal build, tests or package smoke checks:
+and Python 3; the Claude runner supports Linux hosts only. It spends real model quota on the currently authenticated account and
+may incur charges. It retains existing authentication and model selection; it is
+never run by CI, the normal build, tests or package smoke checks:
 
 ```sh
 python3 scripts/provider-live-probe.py --provider codex
@@ -74,10 +77,45 @@ python3 scripts/provider-live-probe.py --provider claude
 ```
 
 It creates temporary directories and new identities, allows bounded conversational
-turns, checks completion and recall, and reaps only its own children. Output is a
+turns and checks completion and recall. Cleanup checks and signals its own process
+group even when the leader already exited successfully; inability to verify group
+exit fails the probe. This is not proof of containment for a descendant that
+deliberately leaves that group. Output is a
 sanitized JSON result, without transcripts, account details, IDs or machine paths.
 It exits nonzero when a capability or completion signal cannot be verified. No
 config/auth changes, trust-prompt bypass flags or credential copying are performed.
+The hardened runner accepts only Codex 0.167.0 and Claude Code 2.1.321; other
+versions fail before model requests. Its safeguards have mocked tests, but the live
+observations above predate them. They have not been revalidated with live models.
+
+- Codex starts with read-only sandboxing, on-request approvals answered only by the
+  user, and shell, hooks, apps, plugins, agent tools, web search, browser/computer
+  tools, image generation/viewing and code mode disabled. Notification commands
+  are replaced with an empty list. Read-only MCP discovery supplies per-server disable overrides and a
+  second listing verifies no configured server remains enabled. Unreadable or
+  unexpected configuration fails closed. Effective config and each thread's
+  permissions are checked before conversation; client control requests are refused.
+- Claude starts with an empty built-in tool list, denied MCP tools, strict empty MCP
+  configuration, safe mode, disabled hooks/connectors, denied unattended permission
+  prompts and a one-turn limit per input. Known managed-policy files cause a
+  preflight failure because policy can override CLI settings. Centrally managed
+  environments are unsupported: these file checks do not establish the absence
+  of remote policy or Windows policy inherited by WSL. This is not a universal
+  isolation guarantee. The first init event
+  must confirm empty tools and MCP servers before a result is accepted. The startup
+  flags provide restrictions before that event; a prompt alone is not isolation.
+
+These settings narrow this disposable test's capabilities. They do not modify
+worker settings or establish permission preservation for a future supervisor.
+See the [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference),
+[Claude CLI reference](https://code.claude.com/docs/en/cli-reference), and
+[Claude hook settings](https://code.claude.com/docs/en/hooks-guide).
+Run only the deterministic safeguards tests without spending model quota:
+
+```sh
+python3 -m unittest discover -s scripts -p test_provider_live_probe.py
+```
+
 The extra interruption/error observations above are from a separate bounded probe;
 the reproduction script covers history, compaction, recall and fresh recovery.
 

@@ -53,7 +53,7 @@ Sessions:   session register --provider NAME [--session-id ID] [--pid PID]
             [--replace] | session heartbeat [--session-id ID] | session end
             sessions | usage TEXT [--until DATE]
 Control:    stop [ROLE...] [--all] [--timeout SECONDS | --no-wait | --force]
-            stop-status [ROLE...] | stopped R1 | resume-work [ROLE...] [--all]
+            stop-status [ROLE...] [--quiet] [--stop-file PATH] | stopped R1 | resume-work [ROLE...] [--all]
 Read:       context [--brief] [--since EVENT_CURSOR] | status
             search TEXT [--type task,message,fact,event] [--phrase|--prefix]
 Migration:  import --backlog FILE --wip FILE --actions DIR --sessions FILE
@@ -70,24 +70,25 @@ select workspace when not explicit. Writes require --as; human actions require a
 Lists default to bounded results; --limit N. Context never consumes inbox receipts.
 Exit codes: 0 success/no matches; 1 storage/runtime; 2 input; 3 identity/access; 4 conflict; 5 mail-wait timeout.
 `;
-const strings = ['db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','timeout','before-event','after','evidence','cursor'];
-const booleans = ['json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','urgent','close','repair','interactive','no-interactive'];
+const strings = ['db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','timeout','before-event','after','evidence','cursor'];
+const booleans = ['json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','urgent','close','repair','interactive','no-interactive','quiet'];
 const globalFlags = ['db','workspace','as','json','help'];
 const allowed: Record<string,string[]> = {
-  init:['config','humans','interactive','no-interactive','launch','dry-run','fresh','resume','no-prompt','terminal','distro','window','stop-file','new-window'], 'workspace attach':[], 'workspace settings':[], 'workspace set':['default-human','import-timezone','stop-file'],roles:[], 'role set':['provider','model','effort','permission-mode','sandbox','approval','dir','kind'],
+  init:['config','humans','interactive','no-interactive','launch','dry-run','fresh','resume','no-prompt','terminal','distro','window','stop-file','new-window'], 'workspace attach':[], 'workspace settings':[], 'workspace set':['default-human','import-timezone','stop-file','busy-checks','import-answer-markers'],roles:[], 'role set':['provider','model','effort','permission-mode','sandbox','approval','dir','kind'],
   add:['title','body','for','owner','priority','human-only','review-required'],tasks:['status','owner','for','available','limit','after'],show:['limit','before-event'],
   take:['hours'],renew:['hours'],note:[],update:['expect','title','body','priority','for','human-only','agent-allowed','review-required','no-review'],handoff:[],release:[],submit:[],review:['approve','reject','note','expect'],done:['ref'],drop:[],reopen:[],after:[],unafter:[],block:['kind','waits-on'],blockers:['task','chain','limit','all'],resolve:[],
-  'ask-human':['for','options','recommend','command'],'ask-johan':['options','recommend','command'],answer:['close'],humans:['for','limit'],johan:['limit'],send:['re','urgent'],wait:['urgent','timeout','stop-file','since'],inbox:['peek','state','limit'],outbox:['limit'],ack:[],
+  'ask-human':['for','options','recommend','command'],answer:['close'],humans:['for','limit'],send:['re','urgent'],wait:['urgent','timeout','stop-file','since'],inbox:['peek','state','limit'],outbox:['limit'],ack:[],
   'fact set':['source','checked-at','expect'],'fact get':[],'fact history':[],facts:['limit'],
   'wip show':[],'wip set':['current','next','notes','expect'],sessions:[], 'session register':['provider','session-id','pid','replace'],'session heartbeat':['session-id'],'session end':['session-id'],usage:['until'],
-  stop:['all','timeout','no-wait','force'],'stop-status':[],stopped:[],'resume-work':['all'],
+  stop:['all','timeout','no-wait','force'],'stop-status':['quiet','stop-file'],stopped:[],'resume-work':['all'],
   context:['brief','since','limit'],status:[],search:['type','owner','status','since','limit','phrase','prefix'],
   'checkpoint show':[], 'checkpoint save':['current','next','notes','expect','evidence'], 'progress show':[], 'progress save':['cursor','expect'],
   import:['backlog','wip','actions','sessions','dry-run','confirm','repair'],export:[],launch:['fresh','resume','dry-run','no-prompt','terminal','distro','window','stop-file','all','new-window'],'launch-unlock':[],migrate:[],doctor:[],backup:[],restore:[],machine:[]
 };
 function checkpointEvidence(path: string | undefined): unknown {
   if (path===undefined) return undefined;
-  const fd=openSync(path,constants.O_RDONLY|constants.O_NONBLOCK);
+  let fd:number;
+  try {fd=openSync(path,constants.O_RDONLY|constants.O_NONBLOCK);} catch {check(false,'Evidence file could not be opened; provide a readable regular JSON file');}
   try {
     check(fstatSync(fd).isFile(),'Evidence must be a regular JSON file');
     const buffer=Buffer.alloc(32_769);let size=0;
@@ -98,6 +99,9 @@ function checkpointEvidence(path: string | undefined): unknown {
     check(size<=32_768,'Evidence file must be at most 32768 bytes');
     try {return JSON.parse(buffer.subarray(0,size).toString('utf8'));}
     catch {check(false,'Evidence file must contain valid JSON');}
+  } catch(error) {
+    if(error instanceof AppError)throw error;
+    check(false,'Evidence file could not be read; provide a readable regular JSON file');
   } finally {closeSync(fd);}
 }
 function humanOutput(value: unknown): string {
@@ -124,6 +128,8 @@ function humanOutput(value: unknown): string {
     const report=value as Row;
     const lines=[report.force?'Force stop requested.':report.timed_out?'Timed out; stop requests remain active.':report.interrupted?'Stop wait interrupted; inspect stop-status.':report.complete?'All selected roles have stopped or are inactive.':'Stop requested; agents are still stopping.'];
     for(const row of report.statuses) lines.push(`${row.id} ${row.role}: ${row.state}`);
+    for(const item of report.busy_checks??[]) lines.push(`Busy check ${item.name}: ${item.state} (${item.reason})`);
+    if(report.machine_quiet===true)lines.push('Selected roles stopped; configured busy checks are idle.');
     for(const signal of report.signals) lines.push(`${signal.role} PID ${signal.pid??'unknown'}: ${signal.status} (${signal.reason})`);
     if(report.force) lines.push(...report.limitations);
     lines.push('A human can run sassato resume-work --as <human-role> when ready to allow new work.');
@@ -205,7 +211,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     else if(command==='restore') {const source=arg('backup');empty();check(str('db'),'Restore requires explicit --db NEW_FILE');result=await a.restoreDatabase(source,db);}
     else if(command==='machine') {empty();result=a.machine();}
     else {
-      const reads=['tasks','show','blockers','humans','johan','outbox','fact get','fact history','facts','wip show','sessions','roles','workspace settings','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
+      const reads=['tasks','show','blockers','humans','outbox','fact get','fact history','facts','wip show','sessions','roles','workspace settings','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
       const readonly=reads.includes(command)||command==='inbox'&&bool('peek')||['launch','import'].includes(command)&&bool('dry-run');
       store=new Store(db,actor,{readonly});
       const s=store;
@@ -219,6 +225,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           if(str('default-human')!==undefined)patch.default_human=str('default-human')==='none'?null:str('default-human')!;
           if(str('import-timezone')!==undefined)patch.import_timezone=str('import-timezone')!;
           if(str('stop-file')!==undefined)patch.stop_file=str('stop-file')==='none'?null:configPath(str('stop-file')!);
+          for(const [flag,key] of [['busy-checks','busy_checks'],['import-answer-markers','import_answer_markers']] as const) if(str(flag)!==undefined) {
+            try {patch[key]=JSON.parse(str(flag)!);}catch {check(false,`--${flag} must be a JSON array`);}
+          }
           result=setWorkspaceSettings(s,patch);break;
         }
         case 'roles': empty();result=c.roles(s);break;
@@ -236,9 +245,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'block': {const task=arg('task');result=t.blockTask(s,task,{body:rest('reason'),kind:need('kind'),waitingOn:need('waits-on')});break;}
         case 'blockers': empty();result=t.listBlockers(s,{task:str('task'),chain:str('chain'),open:!bool('all'),limit:num('limit')});break;
         case 'resolve': {const blocker=arg('blocker');result=t.resolveBlocker(s,blocker,rest('resolution'));break;}
-        case 'ask-human': case 'ask-johan': {const task=arg('task');result=(command==='ask-johan'?t.askJohan:t.askHuman)(s,task,{question:rest('question'),forRole:str('for'),options:str('options')?.split('|'),recommendation:str('recommend'),command:str('command')});break;}
+        case 'ask-human': {const task=arg('task');result=t.askHuman(s,task,{question:rest('question'),forRole:str('for'),options:str('options')?.split('|'),recommendation:str('recommend'),command:str('command')});break;}
         case 'answer': {const question=arg('question or task');result=t.answerQuestion(s,question,rest('answer'),{close:bool('close')});break;}
-        case 'humans': case 'johan': empty();result=t.humanQueue(s,{limit:num('limit'),forRole:str('for')});break;
+        case 'humans': empty();result=t.humanQueue(s,{limit:num('limit'),forRole:str('for')});break;
         case 'send': {const to=arg('recipient');result=c.send(s,to==='all'?'all':to.split(','),rest('message'),{task:str('re'),urgent:bool('urgent')});break;}
         case 'wait': {empty();result=await waitForWork(s,{timeout:num('timeout'),stopFile:str('stop-file'),since:num('since')});if((result as WaitResult).reason==='timeout')process.exitCode=5;break;}
         case 'inbox': empty();result=c.inbox(s,{peek:bool('peek'),state:str('state') as 'unread'|'read'|'done'|undefined,limit:num('limit')});break;
@@ -252,8 +261,22 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'sessions': empty();result=c.sessions(s);break;
         case 'session register': empty();result=c.registerSession(s,{provider:need('provider'),external_id:str('session-id'),pid:num('pid'),replace:bool('replace')});break;
         case 'session heartbeat': case 'session end': empty();result=(command==='session heartbeat'?c.heartbeat:c.endSession)(s,str('session-id'));break;
-        case 'stop': {result=await stop(s,p.splice(0),{all:bool('all'),force:bool('force'),noWait:bool('no-wait'),timeout:num('timeout'),onProgress:bool('json')?undefined:(rows)=>console.error('Waiting: '+rows.map(row=>`${row.role}: ${row.state}`).join(', '))});if((result as Row).timed_out||(result as Row).interrupted||(result as Row).signals?.some((signal: Row)=>signal.status==='refused'))process.exitCode=4;break;}
-        case 'stop-status': result=control.stopStatus(s,p.splice(0));break;
+        case 'stop': {
+          const cancellation=new AbortController(),cancel=()=>cancellation.abort();
+          process.on('SIGINT',cancel);process.on('SIGTERM',cancel);
+          try {
+            result=await stop(s,p.splice(0),{all:bool('all'),force:bool('force'),noWait:bool('no-wait'),timeout:num('timeout'),signal:cancellation.signal,onProgress:bool('json')?undefined:(rows,checks)=>{
+              const remaining=[...rows.filter(row=>row.state==='waiting').map(row=>`${row.role}: ${row.state}`),...checks.filter(item=>item.state!=='idle').map(item=>`${item.name}: ${item.state} (${item.reason})`)];
+              if(remaining.length)console.error('Waiting: '+remaining.join(', '));
+            }});
+          }finally{process.off('SIGINT',cancel);process.off('SIGTERM',cancel);}
+          if((result as Row).timed_out||(result as Row).interrupted||(result as Row).signals?.some((signal: Row)=>signal.status==='refused'))process.exitCode=4;break;
+        }
+        case 'stop-status': {
+          check(bool('quiet')||str('stop-file')===undefined,'--stop-file requires --quiet for stop-status');
+          if(bool('quiet')) {process.exitCode=control.activeStop(s,p.splice(0),str('stop-file'))?4:0;return;}
+          result=control.stopStatus(s,p.splice(0));break;
+        }
         case 'stopped': {const request=arg('stop request');empty();result=control.acknowledgeStop(s,request);break;}
         case 'resume-work': result=control.resumeWork(s,p.splice(0),{all:bool('all')});break;
         case 'usage': result=c.setUsage(s,rest('usage note'),str('until'));break;

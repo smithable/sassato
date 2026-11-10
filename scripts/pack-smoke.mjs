@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync,mkdirSync,rmSync,existsSync } from 'node:fs';
+import { mkdtempSync,mkdirSync,rmSync,existsSync,readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join,resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -13,8 +13,11 @@ try {
   const packed=JSON.parse(run('npm',['pack','--json','--ignore-scripts','--pack-destination',dir],root))[0];
   const tarball=join(dir,packed.filename);run('tar',['-xzf',tarball,'-C',dir]);
   const pkg=join(dir,'package');assert.ok(existsSync(join(pkg,'dist','cli.js')));assert.ok(!existsSync(join(pkg,'node_modules')));
-  for(const required of ['dist/build-info.json','dist/recovery-write.js','dist/recovery-evidence.js','dist/notification-progress.js','dist/checkpoints.js','docs/commands.md','docs/architecture.md','docs/permissions.md','docs/benchmark.md','docs/integrations.md','examples/claude-hook.mjs','examples/team.config.json','examples/recovery-evidence.example.json','docs/configuration.md','docs/compatibility.md','docs/context-management.md','docs/provider-capabilities.md','docs/provider-capability-evidence.json','CONTRIBUTING.md','SECURITY.md','LICENSE'])assert.ok(packed.files.some(f=>f.path===required),`Missing package resource ${required}`);
-  assert.ok(!packed.files.some(f=>/docs\/checkpoint|HANDOFF|implementation-plan|\.artifacts|smithable.config|\.db$|node_modules/.test(f.path)));
+  for(const required of ['dist/build-info.json','dist/recovery-write.js','dist/recovery-evidence.js','dist/notification-progress.js','dist/checkpoints.js','docs/commands.md','docs/architecture.md','docs/permissions.md','docs/benchmark.md','docs/integrations.md','examples/claude-hook.mjs','examples/team.config.json','examples/recovery-evidence.example.json','docs/configuration.md','docs/compatibility.md','docs/context-management.md','CONTRIBUTING.md','SECURITY.md','LICENSE'])assert.ok(packed.files.some(f=>f.path===required),`Missing package resource ${required}`);
+  const allowed=new Set([...JSON.parse(readFileSync(join(root,'package.json'),'utf8')).files,'package.json','CHANGELOG.md']);
+  assert.ok(packed.files.every(f=>[...allowed].some(path=>f.path===path||f.path.startsWith(path+'/'))),'Unexpected package resource outside the public allowlist');
+  assert.ok(!packed.files.some(f=>/\.db(?:-|$)|\.tgz$|^node_modules\//.test(f.path)));
+  assert.ok(!packed.files.some(f=>f.path.startsWith('docs/provider-capabilit')),'Maintainer probe notes must remain source-only');
   const info=JSON.parse(run(process.execPath,[join(pkg,'bin','sassato.js'),'--version','--json']));assert.match(info.build,/^[0-9a-f]{16}$/);
   const clean=join(dir,'clean'),cache=join(dir,'cache');mkdirSync(clean);
   const db=join(clean,'state.db'),env={npm_config_cache:cache,npm_config_registry:'http://127.0.0.1:9',SASSATO_DB:db,SASSATO_WORKSPACE:'packtest',SASSATO_ROLE:''};

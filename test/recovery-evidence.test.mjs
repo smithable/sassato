@@ -10,7 +10,7 @@ import { getWip, setWip, context } from '../dist/coordination.js';
 import { addTask, takeTask, noteTask } from '../dist/tasks.js';
 import { saveCheckpoint } from '../dist/recovery-write.js';
 import { getCheckpoint, checkpointFingerprint } from '../dist/checkpoints.js';
-import { observeRepository, validateRecoveryEvidence } from '../dist/recovery-evidence.js';
+import { observeRepository, validateRecoveryEvidence, inspectRecoveryEvidence } from '../dist/recovery-evidence.js';
 import { saveNotificationProgress } from '../dist/notification-progress.js';
 
 function git(directory,...args) {
@@ -27,6 +27,52 @@ function commit(repo) {
   writeFileSync(join(repo,'example.txt'),'initial\n');git(repo,'add','example.txt');git(repo,'commit','-m','Initial test fixture');
 }
 const report={version:1,validation:[{command:'npm test',result:'199 tests passed'}],artifacts:['reports/test-results.txt'],jobs:[{id:'build-service',description:'Local development service',state:'running',disposition:'adopt',reference:'service://local/build'}]};
+
+test('repository evidence disables configured clean and process filters in repository attributes',test=>{
+  const {s,repo}=setup(test);commit(repo);
+  writeFileSync(join(repo,'.gitattributes'),'example.txt filter=fixture\n');
+  git(repo,'add','.gitattributes');git(repo,'commit','-m','Attributes fixture');
+  git(repo,'config','filter.fixture.clean','touch .filter-ran; cat');
+  git(repo,'config','filter.fixture.process','touch .process-ran; false');
+  git(repo,'config','filter.fixture.required','true');
+  writeFileSync(join(repo,'example.txt'),'changed\n'); // Same byte length forces content/filter comparison.
+  const observed=observeRepository(repo);assert.equal(observed.status,'available');assert.equal(observed.dirty,true);
+  assert.throws(()=>readFileSync(join(repo,'.filter-ran')));assert.throws(()=>readFileSync(join(repo,'.process-ran')));
+  assert.equal(save(s).evidence.observed.repository.status,'available');
+  git(repo,'config','--unset','filter.fixture.process');
+  git(repo,'status','--porcelain');
+  assert.equal(readFileSync(join(repo,'.filter-ran'),'utf8'),'','the fixture would execute its clean filter without suppression');
+});
+
+test('filter names that cannot be safely overridden never reach worktree status',test=>{
+  const {repo}=setup(test);commit(repo);
+  writeFileSync(join(repo,'.gitattributes'),'example.txt filter=odd=name\n');
+  git(repo,'add','.gitattributes');git(repo,'commit','-m','Unusual filter fixture');
+  git(repo,'config','filter.odd=name.clean','touch .odd-filter-ran; cat');
+  writeFileSync(join(repo,'example.txt'),'changed\n');
+  const observed=observeRepository(repo);assert.equal(observed.status,'unavailable');
+  assert.match(observed.reason,/unsupported names/);
+  assert.throws(()=>readFileSync(join(repo,'.odd-filter-ran')));
+  git(repo,'status','--porcelain');assert.equal(readFileSync(join(repo,'.odd-filter-ran'),'utf8'),'');
+});
+
+test('a role without configured working_dir never captures the caller repository',test=>{
+  const {s,repo}=setup(test);commit(repo);
+  s.run("UPDATE roles SET working_dir=NULL WHERE workspace_id=? AND name='builder'",s.ws);
+  const saved=save(s);assert.equal(saved.evidence.observed.repository.status,'unavailable');
+  assert.equal(saved.evidence.observed.repository.directory,null);
+  assert.match(saved.evidence.observed.repository.reason,/no configured working_dir/);
+  assert.equal(saved.state,'current');
+});
+
+test('historical reported text remains readable if a later write guard would reject it',test=>{
+  const {s}=setup(test),saved=save(s),evidence=structuredClone(saved.evidence);
+  const fakeHistoricalText='ghp_'+'X'.repeat(36); // Constructed fake string for a write-guard regression.
+  evidence.reported.artifacts=[fakeHistoricalText];
+  assert.throws(()=>validateRecoveryEvidence(evidence.reported),/Possible secret/);
+  const read=inspectRecoveryEvidence(evidence);assert.equal(read.malformed,false);
+  assert.deepEqual(read.evidence.reported.artifacts,[fakeHistoricalText]);
+});
 function save(s,evidence=report) {
   return saveCheckpoint(s,{current:'Implemented parser',next:'Check parser constraints before continuing',notes:'Preserve API. A development service is still running.',expected_version:getWip(s).version,evidence});
 }

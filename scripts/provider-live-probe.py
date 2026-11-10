@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Opt-in live conversational probes. Uses existing auth and provider defaults.
+"""Opt-in live conversational probes. Uses existing auth and model selection.
 
-This invokes real models. It neither tests nor implements a production supervisor.
+This spends real model quota on the currently authenticated account and may incur
+charges. Never run it in CI. It neither tests nor implements a production supervisor.
 Only generated temporary work directories and owned subprocesses are controlled.
 Normal provider runtime logs may be written by the installed CLIs.
 """
@@ -14,10 +15,105 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import uuid
+
+SUPPORTED_VERSIONS = {'codex': {'0.167.0'}, 'claude': {'2.1.321'}}
+CODEX_RESTRICTIONS = {
+    'sandbox_mode': 'read-only', 'approval_policy': 'on-request',
+    'approvals_reviewer': 'user', 'web_search': 'disabled',
+    'agents.enabled': False, 'notify': [],
+    **{f'features.{name}': False for name in (
+        'shell_tool', 'shell_snapshot', 'hooks', 'apps', 'plugins',
+        'multi_agent', 'view_image', 'skill_mcp_dependency_install', 'goals',
+        'browser_use', 'browser_use_external', 'browser_use_full_cdp_access',
+        'computer_use', 'image_generation', 'in_app_browser', 'code_mode')},
+}
+
+
+def config_args(values):
+    return [arg for key, value in values.items() for arg in ('-c', key+'='+json.dumps(value))]
+
+
+def configured_mcp(cwd, overrides):
+    result = subprocess.run(['codex', *config_args(overrides), 'mcp', 'list', '--json'],
+                            cwd=cwd, capture_output=True, text=True, timeout=15)
+    if result.returncode or len(result.stdout) > 262144:
+        raise RuntimeError('Cannot establish MCP confinement')
+    try:
+        servers = json.loads(result.stdout)
+    except ValueError:
+        raise RuntimeError('Cannot establish MCP confinement') from None
+    if not isinstance(servers, list) or len(servers) > 100:
+        raise RuntimeError('Cannot establish MCP confinement')
+    seen = set()
+    for server in servers:
+        if (not isinstance(server, dict) or not isinstance(server.get('name'), str)
+                or not re.fullmatch(r'[A-Za-z0-9_-]{1,200}', server['name'])
+                or not isinstance(server.get('enabled'), bool) or server['name'] in seen):
+            raise RuntimeError('Cannot establish MCP confinement')
+        seen.add(server['name'])
+    return servers
+
+
+def codex_command(cwd):
+    restrictions = dict(CODEX_RESTRICTIONS)
+    for server in configured_mcp(cwd, restrictions):
+        restrictions[f'mcp_servers.{server["name"]}.enabled'] = False
+    if any(server['enabled'] for server in configured_mcp(cwd, restrictions)):
+        raise RuntimeError('Configured MCP server remains enabled')
+    return ['codex', *config_args(restrictions), 'app-server', '--stdio'], restrictions
+
+
+def validate_codex_config(config, restrictions):
+    for key, expected in restrictions.items():
+        value = config
+        for part in key.split('.'):
+            value = value.get(part) if isinstance(value, dict) else None
+        if value != expected:
+            raise RuntimeError('Effective Codex restrictions could not be verified')
+
+
+def validate_codex_thread(result):
+    sandbox = result.get('sandbox', {})
+    if (sandbox.get('type') != 'readOnly' or sandbox.get('networkAccess', False)
+            or result.get('approvalPolicy') != 'on-request'
+            or result.get('approvalsReviewer') != 'user'):
+        raise RuntimeError('Codex startup permissions do not match restrictions')
+    return result
+
+
+def claude_command(session_id):
+    if sys.platform != 'linux':
+        raise RuntimeError('Claude probe supports Linux only; other policy sources are unvalidated')
+    # Managed policy outranks CLI settings. Refuse known managed policy files:
+    # this conversational probe cannot establish their effective hook/MCP policy.
+    config_dir = Path(os.environ.get('CLAUDE_CONFIG_DIR', str(Path.home()/'.claude')))
+    policy_roots = [Path('/etc/claude-code'), config_dir]
+    for root in policy_roots:
+        for name in ('managed-settings.json', 'managed-settings.d', 'managed-mcp.json',
+                     'server-managed-settings.json'):
+            if (root/name).exists():
+                raise RuntimeError('Managed Claude policy requires separate confinement validation')
+    settings = {'disableAllHooks': True, 'disableClaudeAiConnectors': True,
+                'disableSkillShellExecution': True}
+    return ['claude', '--print', '--input-format', 'stream-json',
+            '--output-format', 'stream-json', '--verbose', '--session-id', session_id,
+            '--no-session-persistence', '--safe-mode', '--tools', '', '--disallowedTools', 'mcp__*',
+            '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+            '--settings', json.dumps(settings), '--permission-mode', 'default',
+            '--permission-prompts', 'none', '--max-turns', '1', '--no-chrome']
+
+
+def validate_claude_init(item):
+    if item.get('tools') != [] or item.get('mcp_servers') != []:
+        raise RuntimeError('Claude startup tools or MCP servers are not empty')
+    if item.get('permissionMode') != 'default':
+        raise RuntimeError('Claude startup permissions do not match restrictions')
+
 
 def version(provider):
     result=subprocess.run([provider,'--version'],capture_output=True,text=True,timeout=10)
@@ -26,7 +122,10 @@ def version(provider):
     match=re.search(r'\d+\.\d+\.\d+',result.stdout)
     if not match:
         raise RuntimeError('Provider version is unrecognized')
-    return match.group(0)
+    value = match.group(0)
+    if value not in SUPPORTED_VERSIONS[provider]:
+        raise RuntimeError('Unsupported provider version; review confinement before running models')
+    return value
 
 
 def close_owned(process):
@@ -35,26 +134,46 @@ def close_owned(process):
             process.stdin.close()
     except (BrokenPipeError, ValueError):
         pass
+    exit_code = None
     try:
-        return process.wait(timeout=8)
+        exit_code = process.wait(timeout=8)
     except subprocess.TimeoutExpired:
-        for sig in [signal.SIGTERM,signal.SIGKILL]:
+        for sig in (signal.SIGTERM, signal.SIGKILL):
             try:
-                os.killpg(process.pid,sig)
+                os.killpg(process.pid, sig)
             except ProcessLookupError:
                 pass
             try:
-                return process.wait(timeout=8)
+                exit_code = process.wait(timeout=8)
+                break
             except subprocess.TimeoutExpired:
-                continue
-        raise RuntimeError('Owned provider did not exit')
+                pass
+        if exit_code is None:
+            raise RuntimeError('Owned provider did not exit')
+    # A clean leader exit does not prove its children exited. The process was
+    # started in a new session; signal only that owned group, even after exit 0.
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(process.pid, 0)
+            os.killpg(process.pid, sig)
+        except ProcessLookupError:
+            return exit_code
+        deadline = time.monotonic()+2
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                return exit_code
+            time.sleep(0.05)
+    raise RuntimeError('Owned process group cleanup could not be verified')
 
 
 def run_codex():
     root=Path(tempfile.mkdtemp(prefix='sassato-codex-live-'))
     try:
         installed_version=version('codex')
-        proc=subprocess.Popen(['codex','app-server','--stdio'],cwd=root,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1,start_new_session=True)
+        command,restrictions=codex_command(root)
+        proc=subprocess.Popen(command,cwd=root,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1,start_new_session=True)
     except Exception:
         shutil.rmtree(root,ignore_errors=True)
         raise
@@ -67,8 +186,13 @@ def run_codex():
     def errpump():
      for line in proc.stderr:
       pass
-    threading.Thread(target=pump,daemon=True).start();threading.Thread(target=errpump,daemon=True).start()
-    report={'provider':'codex','version':installed_version,'started_at':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'working_directory_is_temporary':True,'ephemeral':True,'events':[]}
+    try:
+        threading.Thread(target=pump,daemon=True).start();threading.Thread(target=errpump,daemon=True).start()
+    except BaseException:
+        try: close_owned(proc)
+        finally: shutil.rmtree(root,ignore_errors=True)
+        raise
+    report={'provider':'codex','version':installed_version,'started_at':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'working_directory_is_temporary':True,'ephemeral':True,'events':[],'isolation':'restricted-conversational-probe'}
     seq=0
     pending=[]
     def recv(deadline):
@@ -111,7 +235,9 @@ def run_codex():
     try:
      init=call('initialize',{'clientInfo':{'name':'sassato-capability-probe','version':'0.1.2'}})
      proc.stdin.write(json.dumps({'method':'initialized','params':{}})+'\n');proc.stdin.flush()
-     result=call('thread/start',{'cwd':str(root),'ephemeral':True})
+     validate_codex_config(call('config/read',{'includeLayers':False}).get('config',{}),restrictions)
+     thread_params={'cwd':str(root),'ephemeral':True,'sandbox':'read-only','approvalPolicy':'on-request','approvalsReviewer':'user'}
+     result=validate_codex_thread(call('thread/start',thread_params))
      thread=result['thread']['id'];report['thread_id']=thread;report['model']=result.get('model');report['sandbox']=result.get('sandbox');report['approval_policy']=result.get('approvalPolicy')
      a=turn(thread,'This is an isolated Sassato context-recovery probe. Do not call tools or inspect files. Remember these exact facts: role builder; task T17; marker COBALT-731; constraint preserve trailing newlines; next action report READY-731. Explain in about 450 words how those facts guide a fictional parser review, without performing work.')
      b=turn(thread,'Keep the same facts. Without tools, write another approximately 450-word fictional review note explaining test boundaries and why the next action remains unchanged. This is only conversation-history generation.')
@@ -132,7 +258,7 @@ def run_codex():
      if not report['compact_completed']:raise RuntimeError('No confirmed compaction completion')
      recalled=turn(thread,'Without tools, return only the marker, constraint and next action retained from before compaction.')
      report['post_compact_recall_passed']=all(x in recalled for x in ['COBALT-731','trailing newline','READY-731'])
-     fresh=call('thread/start',{'cwd':str(root),'ephemeral':True})['thread']['id'];report['fresh_thread_id']=fresh
+     fresh=validate_codex_thread(call('thread/start',thread_params))['thread']['id'];report['fresh_thread_id']=fresh
      recovered=turn(fresh,'This is an isolated fresh Sassato session. Do not call tools or inspect files. Recovery checkpoint: role builder; task T17; objective parser review; completed fictional review; constraint preserve trailing newlines; marker COBALT-731; exact next action output READY-731. Complete that next action, including role and task ID in your answer.')
      report['fresh_recovery_passed']=all(x in recovered for x in ['READY-731','builder','T17'])
      report['ok']=report['post_compact_recall_passed'] and report['fresh_recovery_passed']
@@ -152,12 +278,16 @@ def run_codex():
 def run_claude():
     installed_version=version('claude')
     root=Path(tempfile.mkdtemp(prefix='sassato-claude-live-'))
-    report={'provider':'claude','version':installed_version,'started_at':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'working_directory_is_temporary':True,'session_persistence':False,'events':[]}
+    report={'provider':'claude','version':installed_version,'started_at':time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime()),'working_directory_is_temporary':True,'session_persistence':False,'events':[],'isolation':'restricted-conversational-probe'}
     class Session:
      def __init__(self):
-      self.id=str(uuid.uuid4());self.q=queue.Queue()
-      self.p=subprocess.Popen(['claude','--print','--input-format','stream-json','--output-format','stream-json','--verbose','--session-id',self.id,'--no-session-persistence'],cwd=root,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1,start_new_session=True)
-      threading.Thread(target=self.pump,daemon=True).start();threading.Thread(target=self.errpump,daemon=True).start()
+      self.id=str(uuid.uuid4());self.q=queue.Queue();self.initialized=False
+      self.p=subprocess.Popen(claude_command(self.id),cwd=root,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1,start_new_session=True)
+      try:
+       threading.Thread(target=self.pump,daemon=True).start();threading.Thread(target=self.errpump,daemon=True).start()
+      except BaseException:
+       close_owned(self.p)
+       raise
      def pump(self):
       for line in self.p.stdout:
        try:self.q.put(json.loads(line))
@@ -177,9 +307,11 @@ def run_claude():
        if item.get('session_id') and item['session_id']!=self.id:raise RuntimeError('Claude session identity changed unexpectedly')
        if item.get('type')=='control_request':raise RuntimeError('Claude requested client control action')
        if item.get('type')=='system' and item.get('subtype')=='init':
+        validate_claude_init(item);self.initialized=True
         report['events'].append({'type':'system','subtype':'init','session_id':item.get('session_id'),'model':item.get('model'),'permission_mode':item.get('permissionMode')})
        if item.get('type')=='system' and item.get('subtype')=='compact_boundary':
         boundary=True;report['events'].append({'type':'system','subtype':'compact_boundary','session_id':item.get('session_id'),'metadata':item.get('compact_metadata')})
+       if item.get('type') in ['assistant','result'] and not self.initialized:raise RuntimeError('Claude startup restrictions were not confirmed')
        if item.get('type')=='assistant' and any(x.get('type')=='tool_use' for x in item.get('message',{}).get('content',[])):raise RuntimeError('Unexpected tool use in no-tool conversational probe')
        if item.get('type')=='result':
         report['events'].append({'type':'result','subtype':item.get('subtype'),'session_id':item.get('session_id'),'is_error':item.get('is_error'), 'during':'compact' if compact else 'turn'})

@@ -5,20 +5,39 @@ Repeating init does not replace their configuration. No schema migration is requ
 configurable human roles or workspace settings.
 
 Older databases without explicit workspace settings retain their original bootstrap human
-as the default recipient, their original import time zone and external stop-file behavior.
+as the default recipient and their original import time zone. There is no implicit external
+stop-file path; an explicitly configured `stop_file` is retained.
 Inspect these with `workspace settings`; change them with human-only `workspace set`.
 New workspaces use generic roles, UTC imports and no external stop file by default.
 
-The legacy `ask-johan` command still explicitly addresses that named human. `johan`
-remains an alias for the shared human queue. These names are compatibility aliases only;
-new instructions use `ask-human` and `humans`. The old export filename is retained in
-workspaces that contain its corresponding human, alongside `humans.md`.
+The personal-name commands `ask-johan` and `johan` have been removed. Update scripts to
+use `ask-human` and `humans`, with `--for NAME` when a particular human is intended.
+Programmatic callers use `askHuman` and `humanQueue`; the old named exports are removed.
+Markdown exports now use only `humans.md` for the human queue. Existing human role names,
+questions, answers and audit records remain unchanged.
+
+For an existing Smithable workspace, inspect `workspace settings` and explicitly retain
+`default_human: "johan"` if that is the intended recipient. No role rename or named
+compatibility logic is needed. An authorized human can run:
+
+```sh
+sassato workspace set --default-human johan --workspace smithable --as johan
+sassato workspace set --import-answer-markers '["Johan answered", "Johan’s answers", "Johan:"]' --workspace smithable --as johan
+```
+
+Add any other historical answer prefixes that the source documents use; see the
+[Smithable example configuration](../examples/smithable.config.json). Repeating `init`
+does not apply settings to an existing workspace. Preview an import again after changing
+its markers, and use `import --repair` only after reviewing the proposed metadata repair.
+An answer already stored in Sassato does not need re-importing.
 
 Scripts that create a new workspace and relied on the former built-in roster should
 supply an explicit config. The new defaults are builder, reviewer and human; no existing
 workspace is renamed. Model settings are inherited rather than pinned to a previous team.
 
-Markdown import recognizes configured role names and configured humans in answer headings.
+Markdown import recognizes configured role names. Generic `Answer:`, `Answered` and
+`Decision:` labels work by default; person-specific answer headings require explicit
+`import_answer_markers` rather than being inferred from role names.
 Historical role-label and time-zone spellings remain accepted by a small compatibility
 adapter. Preview all imports; raw source and previous answers are preserved, and ambiguous
 items remain marked for reconciliation rather than silently treated as current work.
@@ -42,7 +61,8 @@ question when a decision is still needed. Nothing is answered on the human's beh
 
 New recovery checkpoints use format 3. Format-2 records retain their existing
 freshness checks and remain readable, with `missing_evidence` explaining that they
-have no structured recovery metadata. Format-1 and unknown formats retain readable
+have no structured recovery metadata. Format-1 records from pre-release builds and
+unknown formats retain readable
 historical text but report `unsupported`; review current state and save a new
 checkpoint. Ordinary WIP remains intact. Neither checkpoint evidence nor notification
 progress requires another database schema migration or rewrites historical events.
@@ -54,7 +74,10 @@ WIP text is still readable. Use the new CLI to inspect the complete record.
 
 Wait's explicit `--since` behavior is unchanged. Without it, a role with saved
 notification progress now resumes there; a role without progress still starts at
-the latest event. The updated worker instructions initialize absent progress to 0
-for conservative replay. Progress versions are separate from WIP versions, and
+the latest event. Updated worker instructions first reconcile full inbox and work
+records, including truncated context items, then initialize absent progress from
+the initial context `cursor`. They preserve existing progress and never jump to
+`snapshot_cursor` or a later context cursor. Incomplete handling leaves progress
+absent. Progress versions are separate from WIP versions, and
 progress does not consume inbox receipts. An older CLI does not use these progress
 records automatically, so supply the recorded cursor explicitly when mixing versions.

@@ -104,8 +104,8 @@ current task versions where available. Optional `--evidence FILE` adds the agent
 validation, artifact and job reports. `progress save` records notifications safely
 handled by the role, so a restarted waiter resumes without skipping intervening
 events. These are recovery foundations; provider transitions remain unimplemented.
-See the [provider capability report](docs/provider-capabilities.md) for tested scope.
-The source-only [managed recovery probe](docs/managed-recovery-validation.md)
+See the [provider capability report](https://github.com/smithable/sassato/blob/main/docs/provider-capabilities.md) for tested scope.
+The source-only [managed recovery probe](https://github.com/smithable/sassato/blob/feat/managed-recovery-validation/docs/managed-recovery-validation.md)
 tests real disposable task, checkpoint, file and notification state across provider
 replacement. It does not enable automatic transitions or control existing sessions.
 

@@ -4,10 +4,13 @@ import { Store, type Row } from './storage.js';
 import { integer } from './errors.js';
 import { processIdentity, sessionState } from './coordination.js';
 import { requestStop, stopStatus, type StopRequest } from './control.js';
+import { workspaceSettings } from './workspace-settings.js';
+import { observeBusyChecks, type BusyStatus } from './busy-checks.js';
 
 export interface StopOptions {
   all?:boolean; force?:boolean; noWait?:boolean; timeout?:number;
-  onProgress?:(statuses:StopRequest[])=>void;
+  signal?:AbortSignal;
+  onProgress?:(statuses:StopRequest[],checks:BusyStatus[])=>void;
 }
 export interface StopSignal {
   role:string; session_id:string|null; pid:number|null;
@@ -16,6 +19,7 @@ export interface StopSignal {
 export interface StopResult {
   requests:StopRequest[]; statuses:StopRequest[]; complete:boolean; timed_out:boolean;
   interrupted:boolean; force:boolean; signals:StopSignal[]; limitations:string[];
+  busy_checks:BusyStatus[]; machine_quiet:boolean|null;
 }
 const finished=new Set(['acknowledged','exited','inactive']);
 const forceLimitations=[
@@ -101,16 +105,20 @@ function forceSignals(store:Store,requested:StopRequest[]):StopSignal[] {
 export async function stop(store:Store,selected:string[],options:StopOptions={}):Promise<StopResult> {
   store.requireHuman();
   const timeout=integer(options.timeout??0,'timeout seconds',0,2_147_483);
+  const deadline=timeout?performance.now()+timeout*1000:Infinity;
+  const checks=options.all||selected.length===0?workspaceSettings(store).busy_checks:[];
   const requests=requestStop(store,selected,{all:options.all});
   const roles=requests.map(r=>r.role),ids=new Map(requests.map(r=>[r.role,r.id]));
   let statuses=stopStatus(store,roles);
-  const result:StopResult={requests,statuses,complete:false,timed_out:false,interrupted:false,force:!!options.force,signals:[],limitations:options.force?[...forceLimitations]:[]};
+  const result:StopResult={requests,statuses,complete:false,timed_out:false,interrupted:false,force:!!options.force,signals:[],limitations:options.force?[...forceLimitations]:[],busy_checks:checks.map(check=>({name:check.name,state:'unknown',reason:'Not checked'})),machine_quiet:null};
   const update=()=>{
     result.statuses=statuses;
-    result.interrupted=requests.some(request=>!statuses.some(row=>row.role===request.role&&row.id===ids.get(request.role)));
-    result.complete=!result.interrupted&&statuses.length===requests.length&&statuses.every(row=>finished.has(row.state));
+    result.interrupted=!!options.signal?.aborted||requests.some(request=>!statuses.some(row=>row.role===request.role&&row.id===ids.get(request.role)));
+    result.complete=!result.interrupted&&statuses.length===requests.length&&statuses.every(row=>finished.has(row.state))&&result.busy_checks.every(check=>check.state==='idle');
+    result.machine_quiet=options.force||options.noWait||!(options.all||selected.length===0)?null:result.complete;
   };
-  update();options.onProgress?.(statuses);
+  update();options.onProgress?.(statuses,result.busy_checks);
+  if(options.signal?.aborted){update();return result;}
   if(options.force) {
     result.signals=forceSignals(store,requests);
     // The status snapshot predates signalling. Never convert delivery into a successful stop.
@@ -119,16 +127,22 @@ export async function stop(store:Store,selected:string[],options:StopOptions={})
     if(result.signals.length||result.interrupted)result.complete=false;
     return result;
   }
-  if(options.noWait||result.complete||result.interrupted)return result;
-  const deadline=timeout?performance.now()+timeout*1000:Infinity;
-  let previous=JSON.stringify(statuses);
+  if(options.noWait||result.interrupted)return result;
+  if(checks.length){result.busy_checks=await observeBusyChecks(checks,deadline,options.signal);statuses=stopStatus(store,roles);update();options.onProgress?.(statuses,result.busy_checks);}
+  let previous=JSON.stringify([statuses,result.busy_checks]);
   while(!result.complete&&!result.interrupted) {
     const remaining=deadline-performance.now();
     if(remaining<=0) {result.timed_out=true;break;}
-    await new Promise(resolveDelay=>setTimeout(resolveDelay,Math.min(250,remaining)));
+    await new Promise<void>(resolveDelay=>{
+      const done=()=>{clearTimeout(timer);options.signal?.removeEventListener('abort',done);resolveDelay();};
+      const timer=setTimeout(done,Math.min(250,remaining));
+      options.signal?.addEventListener('abort',done,{once:true});
+      if(options.signal?.aborted)done();
+    });
     statuses=stopStatus(store,roles);update();
-    const next=JSON.stringify(statuses);
-    if(next!==previous) {options.onProgress?.(statuses);previous=next;}
+    if(!result.interrupted&&checks.length){result.busy_checks=await observeBusyChecks(checks,deadline,options.signal);statuses=stopStatus(store,roles);update();}
+    const next=JSON.stringify([statuses,result.busy_checks]);
+    if(next!==previous) {options.onProgress?.(statuses,result.busy_checks);previous=next;}
   }
   return result;
 }

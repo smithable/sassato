@@ -2,7 +2,6 @@ import { type Store, type Row, type Param } from './storage.js';
 import { check, text, safe, integer, id, now } from './errors.js';
 import { assertWorkAllowed } from './control.js';
 import { humanRole } from './humans.js';
-import { legacyHuman } from './legacy.js';
 
 export const STATUSES = ['open', 'doing', 'blocked', 'review', 'done', 'dropped'] as const;
 export type TaskStatus = typeof STATUSES[number];
@@ -203,14 +202,15 @@ export function doneTask(s: Store, task: string, options: { ref?: string } = {})
 export function dropTask(s: Store, task: string, note: string): Row {
   return s.tx(() => {
     const row = s.task(task), actor = writable(s, row); active(row); text(note, 'drop reason');
+    const normalizedTask = taskId(row);
     const at = now(), cancelled: string[] = [];
     for (const question of s.all("SELECT q.*,b.waiting_on,b.body AS blocker_body FROM questions q JOIN blockers b ON b.workspace_id=q.workspace_id AND b.id=q.blocker_id WHERE q.workspace_id=? AND q.task_id=? AND q.status='pending' ORDER BY q.id", s.ws, row.id)) {
       const questionId = `H${question.id}`, blockerId = `B${question.blocker_id}`;
       s.run("UPDATE questions SET status='cancelled',cancelled_at=?,cancelled_by=?,cancel_reason=? WHERE workspace_id=? AND id=?", at, actor, note, s.ws, question.id);
       s.run("UPDATE blockers SET status='resolved',resolved_at=? WHERE workspace_id=? AND id=? AND status='open'", at, s.ws, question.blocker_id);
-      s.index('blocker', blockerId, `${task} waits on ${question.waiting_on}`, question.blocker_body, { role: question.waiting_on, status: 'resolved', updated_at: at });
+      s.index('blocker', blockerId, `${normalizedTask} waits on ${question.waiting_on}`, question.blocker_body, { role: question.waiting_on, status: 'resolved', updated_at: at });
       s.index('question', questionId, question.question, JSON.stringify({ options: JSON.parse(question.options), recommendation: question.recommendation, command: question.command, cancel_reason: note }), { role: question.waiting_on, status: 'cancelled', updated_at: at });
-      s.event('question', questionId, 'cancelled', { task, blocker: blockerId, reason: note });
+      s.event('question', questionId, 'cancelled', { task: normalizedTask, blocker: blockerId, reason: note });
       cancelled.push(questionId);
     }
     return change(s, row, { status: 'dropped', lease_until: null, completed_at: at }, 'dropped', { note, cancelled_questions: cancelled });
@@ -311,10 +311,6 @@ export function askHuman(s: Store, task: string, options: AskOptions): Row {
     return { ...questionView(question), for_role: recipient };
   });
 }
-/** Compatibility entry point: the named command still explicitly asks Johan. */
-export function askJohan(s: Store, task: string, options: AskOptions): Row {
-  return askHuman(s, task, { ...options, forRole: legacyHuman });
-}
 export function answerQuestion(s: Store, questionOrTask: string, answer: string, options: { close?: boolean } = {}): Row {
   return s.tx(() => {
     const actor = s.requireHuman(); text(answer, 'answer');
@@ -352,5 +348,3 @@ export function humanQueue(s: Store, options: { limit?: number; forRole?: string
     return [...questions, ...tasks].sort((a, b) => b.priority - a.priority || a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)).slice(0, limit);
   });
 }
-/** The old queue remains a workspace-wide view, as before. */
-export const johanQueue = humanQueue;
