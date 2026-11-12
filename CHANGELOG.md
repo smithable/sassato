@@ -2,6 +2,14 @@
 
 ## 0.1.2 — unreleased
 
+- A checkpoint turns stale when its role has made ten changes of its own since it, or
+  the first of them is thirty minutes old; context shows `own_changes_since`.
+- Priority 90 and above (`--priority now`) is set or lowered only by a human role; context
+  task rows show priority and who asked for the task. **Changed default:** an agent that
+  set 90 or more before now gets an error.
+- `block T2 --on T1` waits on another task (a dependency), such as the human-only task
+  that holds a decision.
+- An agent role's context lists only its own stale claims.
 - Separate production coordination fixes from deferred provider recovery experiments;
   durable-state continuity is covered by ordinary Node tests.
 - Require a first waiter cursor, retain urgent wake-ups until acknowledgement, and

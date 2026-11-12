@@ -19,6 +19,16 @@ export function checkpointFingerprint(s: Store, role: string): string {
   return `v${FINGERPRINT_FORMAT}:`+createHash('sha256').update(JSON.stringify({tasks,blockers,questions,dependencies,mail,shared,wip})).digest('hex');
 }
 
+// A checkpoint behind its role's own writes is what an unplanned stop loses: flag it once
+// there are this many, or once the first is this old (T674).
+const OWN_CHANGES_MAX=10, OWN_CHANGES_MINUTES=30;
+
+/** The role's own writes after a checkpoint event: not reads, acks, lease renewals, heartbeats, progress or WIP. */
+export function ownChangesSince(s: Store, role: string, eventId: number): { count: number; first: string } {
+  const row=s.get("SELECT count(*) AS n,min(created_at) AS first FROM events WHERE workspace_id=? AND id>? AND actor=? AND entity NOT IN ('checkpoint','notification-progress','session','wip','stop') AND NOT (entity='message' AND action IN ('read','done')) AND NOT (entity='task' AND action='renewed')",s.ws,eventId,role)!;
+  return {count:Number(row.n),first:String(row.first??'')};
+}
+
 export function getCheckpoint(s: Store, target?: string): Row | null {
   const role=target ? name(target) : s.requireActor();s.role(role);
   return s.snapshot(()=>{
@@ -32,11 +42,14 @@ export function getCheckpoint(s: Store, target?: string): Row | null {
     if (!supported) reasons.push(`Checkpoint format ${detail.format??'unknown'} is unsupported; review and save a new checkpoint in format ${CHECKPOINT_FORMAT}.`);
     if (supported && detail.fingerprint!==checkpointFingerprint(s,role)) reasons.push('Saved work, mail, decisions or configuration changed since the checkpoint.');
     if (!Number.isFinite(Date.parse(event.created_at)) || Date.now()-Date.parse(event.created_at)>24*60*60_000) reasons.push('Checkpoint is older than 24 hours; review and refresh it.');
+    const since=ownChangesSince(s,role,event.id);
+    if (since.count>=OWN_CHANGES_MAX || (since.count>0 && Date.now()-Date.parse(since.first)>OWN_CHANGES_MINUTES*60_000))
+      reasons.push(`${since.count} of your own changes (sent mail, tasks, reviews, facts) since the checkpoint, the first at ${since.first}; save a new checkpoint.`);
     const wip=detail.wip && typeof detail.wip==='object' && !Array.isArray(detail.wip)?detail.wip:{};
     const version=Number.isSafeInteger(wip.version) && wip.version>0?wip.version:null;
     const recovery=(key:string):string|null=>typeof wip[key]==='string'?wip[key]:null;
     const current=recovery('current'), next=recovery('next'), notes=recovery('notes');
     if (supported && (version===null || current===null || next===null || notes===null)) reasons.push('Checkpoint recovery fields are incomplete or malformed; review and save a new checkpoint.');
-    return {id:`E${event.id}`,role,format:detail.format??null,saved_at:event.created_at,wip_version:version,current,next,notes,evidence:evidence.evidence,missing_evidence:evidence.missing,state:!supported?'unsupported':reasons.length?'stale':'current',reasons};
+    return {id:`E${event.id}`,role,format:detail.format??null,saved_at:event.created_at,wip_version:version,current,next,notes,evidence:evidence.evidence,missing_evidence:evidence.missing,own_changes_since:since.count,state:!supported?'unsupported':reasons.length?'stale':'current',reasons};
   });
 }

@@ -158,3 +158,19 @@ test('CLI preserves checkpoint recovery and rejects removed advice syntax',test=
   const brief=run(['context','--brief']);assert.equal(brief.status,0,brief.stderr);
   assert.ok(brief.stdout.length<5800);assert.match(brief.stdout,/checkpoint/);
 });
+
+test('a checkpoint behind its role\'s own writes turns stale after thirty minutes or ten changes',test=>{
+  const {s}=setup(test);save(s);
+  c.send(s,['human'],'Please read PR 4');
+  let cp=getCheckpoint(s);assert.equal(cp.own_changes_since,1);assert.equal(cp.state,'current');
+  const real=Date.now;Date.now=()=>real()+31*60_000;
+  try {
+    cp=getCheckpoint(s);assert.equal(cp.state,'stale');assert.match(cp.reasons.join(' '),/1 of your own changes/);
+    assert.equal(c.context(s).sections.checkpoint[0].own_changes_since,1);
+  } finally {Date.now=real;}
+  save(s);assert.equal(getCheckpoint(s).state,'current');assert.equal(getCheckpoint(s).own_changes_since,0);
+  for(let i=0;i<10;i++)c.send(s,['human'],`Note ${i}`);
+  assert.equal(getCheckpoint(s).state,'stale');
+  save(s);as(s,'reviewer',()=>c.send(s,['human'],'Not builder\'s'));c.setWip(s,{current:'Still mine',expected_version:c.getWip(s).version});
+  assert.equal(getCheckpoint(s).own_changes_since,0);
+});
