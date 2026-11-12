@@ -7,13 +7,13 @@ import { workspaceSettings } from './workspace-settings.js';
 import { getNotificationProgress } from './notification-progress.js';
 
 export interface WaitResult {
-  reason:'urgent'|'reply-needed'|'stop'|'timeout'|'answer'|'blocker-resolved'|'blocker-assigned'|'dependency-dropped'|'task-assigned'|'task-ready'|'review-submitted'|'review-approved'|'review-rejected';
+  reason:'urgent'|'reply-needed'|'own-work'|'stop'|'timeout'|'answer'|'blocker-resolved'|'blocker-assigned'|'dependency-dropped'|'task-assigned'|'task-ready'|'review-submitted'|'review-approved'|'review-rejected';
   role:string; cursor:number; message?:Row; stop?:Row;
   question?:string; blocker?:string; task?:string; tasks?:string[];
   /** Task version recorded by the workflow event, not a substitute for reading current work. */
   version?:number;
 }
-export interface WaitOptions { timeout?:number; stopFile?:string; since?:number }
+export interface WaitOptions { timeout?:number; stopFile?:string; since?:number; idleMinutes?:number }
 const maximum=(s:Store):number=>Number(s.get('SELECT coalesce(max(id),0) n FROM events WHERE workspace_id=?',s.ws)!.n);
 function available(s:Store,actor:string,condition:string,params:Param[],includeDoing=false):string[] {
   // These are the same gates as tasks --available, applied to event candidates only.
@@ -157,6 +157,10 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
   check(cursor<=latest,`Event cursor ${cursor} is ahead of this workspace's latest event ${latest}; use a cursor from this workspace`,4);
   if(initial.stopped)return {reason:'stop',role:actor,cursor,stop:initial.stopped};
   const deadline=timeout?performance.now()+timeout*1000:Infinity;
+  // --idle-minutes: a role that holds doing tasks and has written nothing for that long is woken
+  // with its own work (T660); any write of its own starts the period again.
+  const idle=integer(options.idleMinutes??0,'idle minutes',0,10_080)*60_000;
+  let idleSince=performance.now(),idleFrom=latest;
   for(;;) {
     if(stopFile&&existsSync(stopFile))return {reason:'stop',role:actor,cursor,stop:{file:stopFile}};
     let more=false;
@@ -171,6 +175,15 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
       return undefined;
     });
     if(result)return result;
+    if(idle&&performance.now()-idleSince>=idle) {
+      const own=s.snapshot(()=>{
+        const wrote=s.get("SELECT max(id) AS id FROM events WHERE workspace_id=? AND id>? AND actor=? AND entity NOT IN ('session','notification-progress')",s.ws,idleFrom,actor)?.id;
+        if(wrote){idleFrom=wrote;return undefined;}
+        return s.all("SELECT id FROM tasks WHERE workspace_id=? AND owner=? AND status='doing' ORDER BY priority DESC,id LIMIT 20",s.ws,actor).map(r=>`T${r.id}`);
+      });
+      if(own?.length)return {reason:'own-work',role:actor,cursor,task:own[0],tasks:own};
+      idleSince=performance.now();
+    }
     const remaining=deadline-performance.now();
     if(remaining<=0)return {reason:'timeout',role:actor,cursor};
     // A bounded snapshot permits writers and checkpoints between batches and sleeps.

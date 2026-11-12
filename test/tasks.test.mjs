@@ -228,7 +228,7 @@ test('dependencies reject cycles, show root causes, clear on completion and bloc
 });
 
 test('handoff records summary, notifies successor and prevents former owner writes', t => {
-  const { s } = fixture(t), task = tasks.addTask(s, { title: 'Handoff workflow' });
+  const { s } = fixture(t), task = as(s, 'b', () => tasks.addTask(s, { title: 'Handoff workflow' }));
   tasks.takeTask(s, task.id);
   const handed = tasks.handoffTask(s, task.id, 'c', 'Branch feature-x; tests pass; next review');
   assert.equal(handed.owner, 'c'); assert.equal(handed.status, 'open'); assert.equal(handed.lease_until, null);
@@ -436,4 +436,24 @@ test('only a human puts a task in the now band or takes it out; context says who
   assert.equal(same.priority, tasks.NOW);
   const lowered = as(s, 'human', () => tasks.updateTask(s, now.id, { version: same.version, priority: 0 }));
   assert.equal(lowered.priority, 0);
+});
+
+test('a task\'s creator and target may note a task another role holds; others may not', t => {
+  const { s } = fixture(t);
+  const task = tasks.addTask(s, { title: 'Built by b', forRole: 'b' });
+  as(s, 'b', () => tasks.takeTask(s, task.id));
+  assert.equal(tasks.noteTask(s, task.id, 'Requirement changed').owner, 'b');
+  expectCode(() => as(s, 'c', () => tasks.noteTask(s, task.id, 'Drive-by')), 3);
+  expectCode(() => tasks.updateTask(s, task.id, { version: 3, title: 'Still owner-only' }), 3);
+});
+
+test('a fact marks the human task it answers; the human queue says so and closing stays human', t => {
+  const { s } = fixture(t);
+  const decision = tasks.addTask(s, { title: 'Pick a host', humanOnly: true });
+  const work = tasks.addTask(s, { title: 'Plain work' });
+  tasks.markFactAnswer(s, decision.id, { id: 'F1', key: 'decisions.host' });
+  expectCode(() => tasks.markFactAnswer(s, work.id, { id: 'F1', key: 'decisions.host' }), 4);
+  const queued = as(s, 'human', () => tasks.humanQueue(s)).find(r => r.id === decision.id);
+  assert.match(queued.answered_in, /^F1 \(decisions\.host\)/);
+  expectCode(() => tasks.doneTask(s, decision.id), 3);
 });

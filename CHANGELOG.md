@@ -2,6 +2,13 @@
 
 ## 0.1.2 — unreleased
 
+- A task's creator and target may append a note to work another role holds; edits stay
+  with the owner. **Changed:** before, only the owner could.
+- `fact set … --answers T1` marks the open human task a fact answers; `humans` shows it.
+- `wait --idle-minutes N` wakes a role that holds doing tasks and has written nothing for
+  N minutes (reason `own-work`). Off by default.
+- `wip get` is an alias of `wip show`. A non-number `--expect` names where its version is
+  shown (`wip show`, `progress show`, `fact get`, `show ID`).
 - `send --needs-reply` (schema 7): mail that asks for a reply or a review wakes each
   recipient's waiter once and stays in its context under `replies`, read or not, until
   acknowledged. Upgrading runs `migrate`; every CLI on the machine needs this version.
