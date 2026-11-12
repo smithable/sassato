@@ -66,3 +66,12 @@ test('resolve and done give concise terminal success while JSON keeps full recor
  const json=run(['resolve',held.id,'Done','--as','b']);assert.equal(json.id,held.id);assert.equal(json.task_id,another.id);assert.equal(json.status,'resolved');assert.equal(json.body,'Wait');
  const done=run(['done',another.id,'--as','a']);assert.equal(done.id,another.id);assert.equal(done.status,'done');assert.equal(done.title,'JSON unchanged');assert.ok(done.completed_at);
 });
+test('wip get shows the version; a non-number --expect says where the version is',t=>{
+ const {run,raw}=fixture(t);run(['wip','set','--current','Start','--as','a']);
+ assert.equal(run(['wip','get','--as','a']).version,1);
+ const wip=raw(['wip','set','--current','Next','--expect','v1','--as','a']);assert.notEqual(wip.status,0);assert.match(wip.stderr,/WIP version, from sassato wip show/);
+ const progress=raw(['progress','save','--cursor','1','--expect','x','--as','a']);assert.notEqual(progress.status,0);assert.match(progress.stderr,/progress show/);
+ const task=run(['add','Task','--as','a']);
+ const update=raw(['update',task.id,'--expect','latest','--title','New','--as','a']);assert.notEqual(update.status,0);assert.match(update.stderr,/sassato show ID/);
+ const stale=raw(['checkpoint','save','--current','a','--next','b','--notes','c','--expect','9','--as','a']);assert.equal(stale.status,4);assert.match(stale.stderr,/current version is 1/);
+});

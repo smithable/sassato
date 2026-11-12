@@ -2,6 +2,8 @@
 
 ## 0.1.2 — unreleased
 
+- `wip get` is an alias of `wip show`. A non-number `--expect` names where its version is
+  shown (`wip show`, `progress show`, `fact get`, `show ID`).
 - `send --needs-reply` (schema 7): mail that asks for a reply or a review wakes each
   recipient's waiter once and stays in its context under `replies`, read or not, until
   acknowledged. Upgrading runs `migrate`; every CLI on the machine needs this version.

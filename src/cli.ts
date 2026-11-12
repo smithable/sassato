@@ -182,6 +182,13 @@ function humanOutput(value: unknown, command?: string): string {
   }
   return JSON.stringify(value,null,2);
 }
+/** Where the version a command's --expect takes is shown. */
+function expectSource(command: string): string {
+  if (command==='wip set'||command==='checkpoint save') return 'the WIP version, from sassato wip show (or version= on the wip line of context).';
+  if (command==='progress save') return 'the progress version, from sassato progress show.';
+  if (command==='fact set') return 'the fact version, from sassato fact get KEY.';
+  return 'the item version, from sassato show ID.';
+}
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   process.umask(0o077);
   const wantsJson=argv.includes('--json'); let store: Store | undefined;
@@ -193,8 +200,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     const {values,positionals}=parseArgs({args:argv,options:opts,allowPositionals:true,strict:true});
     const v=values as Record<string,string|boolean|undefined>;
     const str=(key:string):string|undefined=>typeof v[key]==='string'?v[key] as string:undefined;
-    const num=(key:string):number|undefined=>str(key)===undefined?undefined:key==='priority'&&str(key)==='now'?t.NOW:key==='priority'&&str(key)==='normal'?0:integer(str(key),key);
+    const num=(key:string):number|undefined=>str(key)===undefined?undefined:key==='expect'&&!/^-?[0-9]+$/.test(str(key)!)?(check(false,`--expect takes the current version as a number: ${expectSource(command)}`) as never):key==='priority'&&str(key)==='now'?t.NOW:key==='priority'&&str(key)==='normal'?0:integer(str(key),key);
     const bool=(key:string):boolean=>v[key]===true;
+    const expectNum=():number=>{need('expect');return num('expect')!;};
     const need=(key:string):string=>{const val=str(key);check(val!==undefined,`Missing --${key}`);return val;};
     if (bool('help') || !positionals.length && !bool('version')) {console.log(bool('json')?JSON.stringify({help:HELP}):HELP);return;}
     if (bool('version')) {const build=JSON.parse(readFileSync(new URL('./build-info.json',import.meta.url),'utf8'));console.log(bool('json')?JSON.stringify({...build,schema:SCHEMA_VERSION}):`${build.version} (build ${build.build})`);return;}
@@ -202,7 +210,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (command==='task') command=p.shift()??'tasks';
     if (['workspace','role','fact','session'].includes(command)) command+=' '+(p.shift()??'');
     if (command==='checkpoint' || command==='progress') command+=' '+(p.shift()??'show');
-    if (command==='wip') command+=' '+(p[0]==='show'||p[0]==='set'?p.shift():'show');
+    // wip get is an alias of wip show, which prints the version that wip set --expect takes.
+    if (command==='wip') command+=' '+(p[0]==='show'||p[0]==='set'?p.shift():p[0]==='get'?(p.shift(),'show'):'show');
     check(command in allowed,`Unknown command ${command}. Run sassato --help.`);
     for (const key of Object.keys(v)) check(globalFlags.includes(key)||allowed[command].includes(key),`--${key} does not apply to ${command}`);
     const arg=(label:string):string=>{const x=p.shift();check(x!==undefined,`Missing ${label}`);return x;};
@@ -257,9 +266,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'retitle': empty();result=retitleImportedTasks(s,{owner:str('owner'),apply:bool('apply')});break;
         case 'take': case 'renew': {const task=arg('task');empty();result=(command==='take'?t.takeTask:t.renewTask)(s,task,{hours:num('hours')});break;}
         case 'note': case 'release': case 'submit': case 'drop': case 'reopen': {const task=arg('task'),note=rest('note');result=({note:t.noteTask,release:t.releaseTask,submit:t.submitTask,drop:t.dropTask,reopen:t.reopenTask}[command]!)(s,task,note);break;}
-        case 'update': {const task=arg('task');empty();check(!(bool('human-only')&&bool('agent-allowed')),'Conflicting human flags');check(!(bool('review-required')&&bool('no-review')),'Conflicting review flags');result=t.updateTask(s,task,{version:integer(need('expect'),'expect',1),title:str('title'),body:str('body'),priority:num('priority'),forRole:str('for')==='none'?null:str('for'),humanOnly:bool('human-only')?true:bool('agent-allowed')?false:undefined,reviewRequired:bool('review-required')?true:bool('no-review')?false:undefined});break;}
+        case 'update': {const task=arg('task');empty();check(!(bool('human-only')&&bool('agent-allowed')),'Conflicting human flags');check(!(bool('review-required')&&bool('no-review')),'Conflicting review flags');result=t.updateTask(s,task,{version:integer(expectNum(),'expect',1),title:str('title'),body:str('body'),priority:num('priority'),forRole:str('for')==='none'?null:str('for'),humanOnly:bool('human-only')?true:bool('agent-allowed')?false:undefined,reviewRequired:bool('review-required')?true:bool('no-review')?false:undefined});break;}
         case 'handoff': {const task=arg('task'),to=arg('role');result=t.handoffTask(s,task,to,rest('summary'));break;}
-        case 'review': {const task=arg('task');empty();check(bool('approve')!==bool('reject'),'Choose --approve or --reject');result=t.reviewTask(s,task,{approve:bool('approve'),note:need('note'),expected_version:integer(need('expect'),'expected version',1)});break;}
+        case 'review': {const task=arg('task');empty();check(bool('approve')!==bool('reject'),'Choose --approve or --reject');result=t.reviewTask(s,task,{approve:bool('approve'),note:need('note'),expected_version:integer(expectNum(),'expected version',1)});break;}
         case 'done': {const task=arg('task');empty();result=t.doneTask(s,task,{ref:str('ref')});break;}
         case 'after': case 'unafter': {const task=arg('task'),dep=arg('dependency');empty();result=(command==='after'?t.addDependency:t.removeDependency)(s,task,dep);break;}
         // block --on TASK waits on another task, such as the human-only task that holds a decision:
@@ -306,7 +315,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'checkpoint show': {const role=p.shift();empty();result=getCheckpoint(s,role);break;}
         case 'checkpoint save': empty();result=saveCheckpoint(s,{current:need('current'),next:need('next'),notes:need('notes'),expected_version:num('expect'),evidence:checkpointEvidence(str('evidence'))});break;
         case 'progress show': {const role=p.shift();empty();result=getNotificationProgress(s,role);break;}
-        case 'progress save': empty();result=saveNotificationProgress(s,{cursor:integer(need('cursor'),'cursor'),expected_version:integer(need('expect'),'expect')});break;
+        case 'progress save': empty();result=saveNotificationProgress(s,{cursor:integer(need('cursor'),'cursor'),expected_version:integer(expectNum(),'expect')});break;
         case 'status': empty();result=a.status(s);break;
         case 'search': result=a.search(s,rest('query'),{type:str('type'),role:str('owner'),status:str('status'),since:str('since'),limit:num('limit'),phrase:bool('phrase'),prefix:bool('prefix')});break;
         case 'import': empty();{const input={backlog:str('backlog'),wip:str('wip'),actions:str('actions'),sessions:str('sessions'),repair:bool('repair')};check(bool('dry-run')!==!!str('confirm'),'Use --dry-run to preview or --confirm DIGEST to apply');result=bool('dry-run')?m.previewImport(s,input):m.applyImport(s,input,need('confirm'));}break;

@@ -139,8 +139,8 @@ does not grant permission or authenticate either identity.
 | `fact set KEY TEXT --source LOCATION [--checked-at ISO_DATE] [--expect VERSION]` | Create/correct shared fact; updates require expected version |
 | `fact get KEY` / `fact history KEY` | Current fact or immutable revisions |
 | `facts [--limit N]` | List facts |
-| `wip [show ROLE]` | Read any role's WIP, default current role |
-| `wip set [--current TEXT] [--next TEXT] [--notes TEXT] [--expect VERSION]` | Only current role's notes; updates require expected version |
+| `wip [show\|get ROLE]` | Read any role's WIP, default current role; its `version` is what `wip set` and `checkpoint save` take as `--expect` |
+| `wip set [--current TEXT] [--next TEXT] [--notes TEXT] [--expect VERSION]` | Only current role's notes; updates require expected version. A stale version is refused with exit 4 and the current version; a non-number names the command that shows it |
 
 Mail read/done is per recipient. Reading another role's WIP never changes it. Facts need
 a source and checked date (default now); they never confer permission. Empty quoted WIP
