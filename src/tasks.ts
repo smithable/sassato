@@ -128,8 +128,26 @@ export function renewTask(s: Store, task: string, options: { hours?: number } = 
     return change(s, row, { lease_until: lease(options.hours) }, 'renewed');
   });
 }
+// A note is appended and attributed, never an edit: the task's creator and target may add one to
+// a task another role has claimed, so a changed requirement lives on the task (T684).
 export function noteTask(s: Store, task: string, note: string): Row {
-  return s.tx(() => { const row = s.task(task); writable(s, row); text(note, 'note'); return change(s, row, {}, 'note', { note }); });
+  return s.tx(() => {
+    const row = s.task(task), actor = s.requireActor();
+    if (row.creator !== actor && row.for_role !== actor) writable(s, row);
+    text(note, 'note'); return change(s, row, {}, 'note', { note });
+  });
+}
+
+/**
+ * A decision recorded as a fact marks the human task it answers (T707): any role may do this, as
+ * the human's answer is often made in chat; closing the task stays with a human.
+ */
+export function markFactAnswer(s: Store, task: string, fact: { id: string; key: string }): Row {
+  return s.tx(() => {
+    const row = s.task(task); active(row);
+    check(Boolean(row.human_only) || [row.for_role, row.owner].some(r => r && s.role(r).kind === 'human'), '--answers takes a task for a human', 4);
+    return change(s, row, {}, 'answered-in-fact', { fact: fact.id, key: fact.key });
+  });
 }
 export interface UpdateTaskOptions { version: number; title?: string; body?: string; priority?: number; forRole?: string | null; humanOnly?: boolean; reviewRequired?: boolean }
 export function updateTask(s: Store, task: string, options: UpdateTaskOptions): Row {
@@ -370,6 +388,11 @@ export function humanQueue(s: Store, options: { limit?: number; forRole?: string
     const recipient = options.forRole === undefined ? null : humanRole(s, options.forRole);
     const questions = s.all("SELECT q.*,b.waiting_on AS for_role,t.title,t.owner,t.priority,t.human_only,t.status AS task_status FROM questions q JOIN tasks t ON t.workspace_id=q.workspace_id AND t.id=q.task_id JOIN blockers b ON b.workspace_id=q.workspace_id AND b.id=q.blocker_id WHERE q.workspace_id=? AND q.status='pending' AND t.status NOT IN ('done','dropped') AND (? IS NULL OR b.waiting_on=?) ORDER BY t.priority DESC,q.created_at,q.id LIMIT ?", s.ws, recipient, recipient, limit).map((q): Row => ({ ...questionView(q), kind: 'question' }));
     const tasks = s.all("SELECT t.* FROM tasks t WHERE t.workspace_id=? AND t.status NOT IN ('done','dropped') AND (t.human_only=1 OR EXISTS (SELECT 1 FROM roles r WHERE r.workspace_id=t.workspace_id AND r.kind='human' AND r.name IN (t.for_role,t.owner))) AND (? IS NULL OR t.for_role=? OR t.owner=?) AND NOT EXISTS (SELECT 1 FROM questions q WHERE q.workspace_id=t.workspace_id AND q.task_id=t.id AND q.status='pending') ORDER BY t.priority DESC,t.created_at,t.id LIMIT ?", s.ws, recipient, recipient, recipient, limit).map((t): Row => ({ ...taskView(t), kind: 'task' }));
+    // A task a fact answers says so, so the human closes it instead of being asked again (T707).
+    for (const row of tasks) {
+      const mark = s.get("SELECT detail FROM events WHERE workspace_id=? AND entity='task' AND entity_id=? AND action='answered-in-fact' ORDER BY id DESC LIMIT 1", s.ws, row.id);
+      if (mark) { const d = JSON.parse(mark.detail); row.answered_in = `${d.fact} (${d.key}): close the task if it settles it`; }
+    }
     return [...questions, ...tasks].sort((a, b) => b.priority - a.priority || a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)).slice(0, limit);
   });
 }

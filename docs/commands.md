@@ -51,7 +51,7 @@ inherit provider defaults unless explicitly configured.
 | `show T1 [--limit N] [--before-event NUMBER]` | Body, blockers, dependencies, questions and latest 100 audit events by default |
 | `take T1 [--hours 4]` | Atomically claim eligible open work; lease 1–168 hours |
 | `renew T1 [--hours 4]` | Renew owned lease, including stale lease |
-| `note T1 TEXT` | Append a note to owned work; can annotate closed work |
+| `note T1 TEXT` | Append a note to owned work, or as the task's creator or target to work another role holds; can annotate closed work |
 | `update T1 --expect VERSION [--title TEXT] [--body TEXT] [--priority N\|now\|normal] [--for ROLE\|none]` | Reject stale client versions; only a human moves a task into or out of 90 and above |
 | `handoff T1 ROLE SUMMARY` | Transfer ownership/target with notification; recipient explicitly claims |
 | `release T1 REASON` | Remove ownership/lease, keep routing target; clear --for separately if needed |
@@ -136,7 +136,7 @@ does not grant permission or authenticate either identity.
 | `inbox [--peek] [--state unread\|read\|done] [--limit N]` | Unread first; marks only returned unread messages read unless --peek |
 | `sent [--limit N]` (alias `outbox`) | Sent messages with unread/read/acked status per recipient; JSON retains receipt timestamps |
 | `ack M1` | Recipient marks message done, preserving read/done timestamps |
-| `fact set KEY TEXT --source LOCATION [--checked-at ISO_DATE] [--expect VERSION]` | Create/correct shared fact; updates require expected version |
+| `fact set KEY TEXT --source LOCATION [--checked-at ISO_DATE] [--expect VERSION] [--answers T1]` | Create/correct shared fact; updates require expected version. `--answers` marks the open human task the fact answers: `humans` shows it as answered in the fact, and a human closes it |
 | `fact get KEY` / `fact history KEY` | Current fact or immutable revisions |
 | `facts [--limit N]` | List facts |
 | `wip [show\|get ROLE]` | Read any role's WIP, default current role; its `version` is what `wip set` and `checkpoint save` take as `--expect` |
@@ -288,7 +288,7 @@ fi
 - `answer H123 'answer' --close --as alice` answers and completes the associated task atomically. If another blocker or review prevents closing, neither change is committed.
 - `send b 'Please review now' --urgent --as a` stores urgent mail. Urgent unread mail is prioritized within the inbox.
 - `send b 'Please read PR 4' --needs-reply --as a` asks b for a reply or review. It wakes b's waiter once (`REPLY M1 from a asks for your reply: …`; urgent mail instead wakes it until acknowledged), and b's context lists it under `replies`, read or not, until b acknowledges it with `ack`.
-- `wait --as b [--since EVENT_CURSOR] [--timeout SECONDS] [--stop-file PATH]` waits for unacknowledged urgent mail, workflow changes relevant to b, or a stop request, prints one line and exits 0. Stop takes precedence; timeout exits 5. It never consumes receipts or spawns a provider. Default timeout 0 waits indefinitely.
+- `wait --as b [--since EVENT_CURSOR] [--timeout SECONDS] [--stop-file PATH] [--idle-minutes N]` waits for unacknowledged urgent mail, workflow changes relevant to b, or a stop request, prints one line and exits 0. Stop takes precedence; timeout exits 5. It never consumes receipts or spawns a provider. Default timeout 0 waits indefinitely. With `--idle-minutes N` it also wakes b (`OWN WORK T1, … held by b …`) when b holds doing tasks and has written nothing for N minutes; any write of b's own starts the period again. Off by default.
 - `import ... --repair --dry-run` previews conservative corrections to existing imports; use the same options and `--confirm DIGEST` to apply. Agent-edited tasks and WIP are preserved; untouched imported WIP can be refreshed from a newer dated entry.
 
 Version 0.1.2 imports the newest dated WIP entry per role (ordinary or stopped), supports

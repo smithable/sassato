@@ -10,6 +10,7 @@ import {initWorkspace} from '../dist/admin.js';
 import {send,inbox,context,acknowledge} from '../dist/coordination.js';
 import {requestStop,acknowledgeStop} from '../dist/control.js';
 import {waitForUrgent} from '../dist/mail-wait.js';
+import {addTask,takeTask,noteTask} from '../dist/tasks.js';
 function fixture(t){const dir=mkdtempSync(join(tmpdir(),'sassato-mailwait-')),path=join(dir,'state.db'),s=new Store(path,'a',{create:true});initWorkspace(s,'team',fixtureConfig);s.use('team');t.after(()=>{if(s.db.isOpen)s.close();rmSync(dir,{recursive:true,force:true});});return {s,path,stopFile:join(dir,'legacy-stop')};}
 test('urgent waiter sees later writes through a read-only connection without consuming receipts',async t=>{
   const {s,path,stopFile}=fixture(t);send(s,['b'],'ordinary mail');send(s,['c'],'urgent elsewhere',{urgent:true});
@@ -82,4 +83,19 @@ test('v6 upgrade keeps messages and defaults reply to false',t=>{
   const newer=new Store(path,'b');newer.use('team');t.after(()=>newer.close());
   assert.equal(newer.get('PRAGMA user_version').user_version,SCHEMA_VERSION);
   assert.equal(inbox(newer,{peek:true})[0].reply,false);assert.equal(newer.get('SELECT reply FROM messages WHERE id=?',Number(msg.id.slice(1))).reply,0);
+});
+test('a role idle with its own doing tasks is woken with them; a write of its own or no task keeps it waiting',async t=>{
+  const {s,stopFile}=fixture(t);const real=performance.now.bind(performance);let shift=0;performance.now=()=>real()+shift;t.after(()=>{performance.now=real;});
+  const later=(ms,fn)=>{const timer=setTimeout(fn,ms);t.after(()=>clearTimeout(timer));};
+  s.actor='b';const since=context(s).snapshot_cursor;
+  later(50,()=>{shift+=61_000;});
+  assert.equal((await waitForUrgent(s,{timeout:3,stopFile,since,idleMinutes:1})).reason,'timeout','no doing task: nothing to wake for');
+  const task=takeTask(s,addTask(s,{title:'Held work'}).id);
+  later(50,()=>{shift+=61_000;});
+  const event=await waitForUrgent(s,{timeout:300,stopFile,since:context(s).snapshot_cursor,idleMinutes:1});
+  assert.equal(event.reason,'own-work');assert.deepEqual(event.tasks,[task.id]);
+  later(50,()=>{noteTask(s,task.id,'still at it');shift+=61_000;});later(1500,()=>{shift+=61_000;});
+  const began=real();
+  assert.equal((await waitForUrgent(s,{timeout:300,stopFile,since:context(s).snapshot_cursor,idleMinutes:1})).reason,'own-work','a later idle period wakes again');
+  assert.ok(real()-began>=1400,'its own write started the idle period again');
 });

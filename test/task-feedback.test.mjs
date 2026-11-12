@@ -104,7 +104,8 @@ test('unowned targets may edit and note work without claiming; ownership still e
     rejects(() => tasks.doneTask(s, task.id), 4, 'Ordinary work still needs a claim');
     assert.equal(tasks.takeTask(s, task.id).owner, 'target');
   });
-  rejects(() => tasks.noteTask(s, task.id, 'Creator no longer owns the edit'), 3);
+  const noted = tasks.noteTask(s, task.id, 'The creator may still append a note');
+  rejects(() => tasks.updateTask(s, task.id, { version: noted.version, title: 'Creator no longer owns the edit' }), 3);
 });
 
 test('unowned imported work can be reconciled by its target or creator without bypassing human or review gates', t => {
