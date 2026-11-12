@@ -382,6 +382,25 @@ export function answerQuestion(s: Store, questionOrTask: string, answer: string,
     return options.close ? { ...result, task_status: 'done' } : result;
   });
 }
+// A pending question its asker no longer needs (a reworded one asked again, a decision made
+// elsewhere): the asker, the task's creator or a human withdraws it with a reason, so the human's
+// queue stops showing it. Its blocker is resolved with the reason, as an answer would.
+export function withdrawQuestion(s: Store, questionId: string, reason: string): Row {
+  return s.tx(() => {
+    const actor = s.requireActor(); text(reason, 'withdraw reason');
+    const question = s.get('SELECT * FROM questions WHERE workspace_id=? AND id=?', s.ws, id(questionId, 'H'));
+    check(question, 'Question not found in this workspace', 3); check(question.status === 'pending', `Question is ${question.status}; only a pending question can be withdrawn`, 4);
+    const row = s.task(`T${question.task_id}`);
+    check(human(s) || question.asked_by === actor || row.creator === actor, 'Only the question\'s asker, the task\'s creator or a human may withdraw it', 3);
+    const at = now(), name = `H${question.id}`;
+    s.run("UPDATE questions SET status='cancelled',cancelled_at=?,cancelled_by=?,cancel_reason=? WHERE workspace_id=? AND id=?", at, actor, reason, s.ws, question.id);
+    const blocker = s.get('SELECT * FROM blockers WHERE workspace_id=? AND id=?', s.ws, question.blocker_id)!;
+    if (blocker.status === 'open') resolve(s, blocker, `${name} withdrawn: ${reason}`);
+    s.index('question', name, question.question, JSON.stringify({ options: JSON.parse(question.options), recommendation: question.recommendation, command: question.command, cancel_reason: reason }), { role: blocker.waiting_on, status: 'cancelled', updated_at: at });
+    s.event('question', name, 'cancelled', { task: taskId(row), blocker: `B${blocker.id}`, reason, withdrawn: true });
+    return questionView({ ...question, status: 'cancelled', cancelled_at: at, cancelled_by: actor, cancel_reason: reason });
+  });
+}
 export function humanQueue(s: Store, options: { limit?: number; forRole?: string } = {}): Row[] {
   const limit = integer(options.limit ?? 50, 'limit', 1, 1000);
   return s.snapshot(() => {

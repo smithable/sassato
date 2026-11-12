@@ -41,6 +41,7 @@ Blockers:   block T1 TEXT --kind agent|human|external|other --waits-on NAME
             blockers [--task T1 | --chain T1] | resolve B1 REASON
 Decisions:  ask-human T1 QUESTION [--for HUMAN] [--options 'one|two'] [--recommend TEXT]
             [--command TEXT] | humans [--for HUMAN] | answer H1 ANSWER (or answer T1 ANSWER) [--close] [--relayed-by ROLE]
+            withdraw H1 REASON (the asker, the task's creator or a human)
 Mail:       send ROLE[,ROLE]|all TEXT [--re T1] [--urgent]
             wait [--since EVENT_CURSOR] [--timeout SECONDS] [--urgent]
             inbox [--peek] [--state unread|read|done] | sent (or outbox) | ack M1
@@ -79,7 +80,7 @@ const allowed: Record<string,string[]> = {
   init:['config','humans','interactive','no-interactive','launch','dry-run','fresh','resume','no-prompt','terminal','distro','window','stop-file','new-window'], 'workspace attach':[], 'workspace settings':[], 'workspace set':['default-human','import-timezone','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases'],roles:[], 'role set':['provider','model','effort','permission-mode','sandbox','approval','dir','kind'],
   add:['title','body','for','owner','priority','human-only','review-required'],tasks:['status','owner','for','available','limit','after'],show:['limit','before-event'],
   take:['hours'],renew:['hours'],note:[],update:['expect','title','body','priority','for','human-only','agent-allowed','review-required','no-review'],handoff:[],release:[],submit:[],review:['approve','reject','note','expect'],done:['ref'],drop:[],reopen:[],after:[],unafter:[],block:['kind','waits-on','on'],blockers:['task','chain','limit','all'],resolve:[],
-  'ask-human':['for','options','recommend','command'],answer:['close','relayed-by'],humans:['for','limit'],send:['re','urgent','needs-reply'],wait:['urgent','timeout','stop-file','since','idle-minutes'],inbox:['peek','state','limit'],outbox:['limit'],sent:['limit'],retitle:['owner','apply'],ack:[],
+  'ask-human':['for','options','recommend','command'],answer:['close','relayed-by'],withdraw:[],humans:['for','limit'],send:['re','urgent','needs-reply'],wait:['urgent','timeout','stop-file','since','idle-minutes'],inbox:['peek','state','limit'],outbox:['limit'],sent:['limit'],retitle:['owner','apply'],ack:[],
   'fact set':['source','checked-at','expect','answers'],'fact get':[],'fact history':[],facts:['limit'],
   'wip show':[],'wip set':['current','next','notes','expect'],sessions:[], 'session register':['provider','session-id','pid','replace'],'session heartbeat':['session-id'],'session end':['session-id'],usage:['until'],
   stop:['all','timeout','no-wait','force'],'stop-status':['quiet','stop-file'],stopped:[],'resume-work':['all'],
@@ -278,6 +279,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'blockers': empty();result=t.listBlockers(s,{task:str('task'),chain:str('chain'),open:!bool('all'),limit:num('limit')});break;
         case 'resolve': {const blocker=arg('blocker');result=t.resolveBlocker(s,blocker,rest('resolution'));break;}
         case 'ask-human': {const task=arg('task');result=t.askHuman(s,task,{question:rest('question'),forRole:str('for'),options:str('options')?.split('|'),recommendation:str('recommend'),command:str('command')});break;}
+        case 'withdraw': {const question=arg('question');result=t.withdrawQuestion(s,question,rest('reason'));break;}
         case 'answer': {const question=arg('question or task');result=t.answerQuestion(s,question,rest('answer'),{close:bool('close'),relayedBy:str('relayed-by')});break;}
         case 'humans': empty();result=t.humanQueue(s,{limit:num('limit'),forRole:str('for')});break;
         case 'send': {const to=arg('recipient');result=c.send(s,to==='all'?'all':to.split(','),rest('message'),{task:str('re'),urgent:bool('urgent'),needsReply:bool('needs-reply')});break;}

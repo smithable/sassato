@@ -1,6 +1,13 @@
 # Changelog
 
-## 0.1.2 — unreleased
+## 0.1.3 — unreleased
+
+- `withdraw H1 REASON` withdraws a pending human question its asker no longer needs (a
+  reworded one asked again, a decision made elsewhere): the asker, the task's creator or a
+  human may; the question is recorded as cancelled with who and why, and its blocker is
+  resolved, so the human's queue stops showing it.
+
+## 0.1.2
 
 - A task's creator and target may append a note to work another role holds; edits stay
   with the owner. **Changed:** before, only the owner could.
