@@ -52,6 +52,9 @@ function notify(s: Store, recipients: string[], body: string, task: Row): void {
 }
 function lease(hours = 4): string { return new Date(Date.now() + integer(hours, 'lease hours', 1, 168) * 3_600_000).toISOString(); }
 function priority(value = 0): number { return integer(value, 'priority', 0, 100); }
+/** Priority NOW and above is a human's word: only a human role puts a task there or takes it out. */
+export const NOW = 90;
+const nowRule = 'Only a human sets or lowers priority ' + NOW + ' and above (now)';
 
 export interface AddTaskOptions { title: string; body?: string; owner?: string; forRole?: string; priority?: number; humanOnly?: boolean; reviewRequired?: boolean }
 export function addTask(s: Store, options: AddTaskOptions): Row {
@@ -60,6 +63,7 @@ export function addTask(s: Store, options: AddTaskOptions): Row {
     text(options.title, 'title', 500); safe(options.body ?? '');
     if (options.body !== undefined) check(typeof options.body === 'string' && options.body.length <= 100_000 && !options.body.includes('\0'), 'Body must be at most 100000 characters without NUL');
     if (options.owner) s.role(options.owner);
+    check(priority(options.priority) < NOW || human(s), nowRule, 3);
     const target = options.forRole ?? (options.humanOnly ? humanRole(s, options.owner) : null);
     if (target) s.role(target);
     check(!options.humanOnly || !options.owner || s.role(options.owner).kind === 'human', 'Human-only items can only be assigned to a human', 3);
@@ -135,7 +139,10 @@ export function updateTask(s: Store, task: string, options: UpdateTaskOptions): 
     const patch: Row = {};
     if (options.title !== undefined) patch.title = text(options.title, 'title', 500);
     if (options.body !== undefined) { check(typeof options.body === 'string' && options.body.length <= 100_000 && !options.body.includes('\0'), 'Body must be at most 100000 characters without NUL'); safe(options.body); patch.body = options.body; }
-    if (options.priority !== undefined) patch.priority = priority(options.priority);
+    if (options.priority !== undefined) {
+      patch.priority = priority(options.priority);
+      check((patch.priority < NOW && row.priority < NOW) || patch.priority === row.priority || human(s), nowRule, 3);
+    }
     if (options.forRole !== undefined) { if (options.forRole !== null) s.role(options.forRole); patch.for_role = options.forRole; }
     if (options.humanOnly !== undefined) {
       check(options.humanOnly || !row.human_only || human(s), 'Only a human may remove human-only classification', 3);

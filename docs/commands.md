@@ -46,13 +46,13 @@ inherit provider defaults unless explicitly configured.
 
 | Command | Behavior |
 | --- | --- |
-| `add TITLE [--body TEXT] [--owner ROLE] [--for ROLE] [--priority 0..100] [--human-only] [--review-required]` | Create one task; higher priority first |
+| `add TITLE [--body TEXT] [--owner ROLE] [--for ROLE] [--priority 0..100\|now\|normal] [--human-only] [--review-required]` | Create one task; higher priority first. 90 and above (`now`) is set or lowered only by a human role |
 | `tasks [--status all\|open,doing,...] [--owner ROLE] [--for ROLE] [--available] [--limit N] [--after T1]` | Default live tasks, 50 per page (maximum 1000); --after follows priority/ID order; JSON includes items/has_more/next_after |
 | `show T1 [--limit N] [--before-event NUMBER]` | Body, blockers, dependencies, questions and latest 100 audit events by default |
 | `take T1 [--hours 4]` | Atomically claim eligible open work; lease 1–168 hours |
 | `renew T1 [--hours 4]` | Renew owned lease, including stale lease |
 | `note T1 TEXT` | Append a note to owned work; can annotate closed work |
-| `update T1 --expect VERSION [--title TEXT] [--body TEXT] [--priority N] [--for ROLE\|none]` | Reject stale client versions |
+| `update T1 --expect VERSION [--title TEXT] [--body TEXT] [--priority N\|now\|normal] [--for ROLE\|none]` | Reject stale client versions; only a human moves a task into or out of 90 and above |
 | `handoff T1 ROLE SUMMARY` | Transfer ownership/target with notification; recipient explicitly claims |
 | `release T1 REASON` | Remove ownership/lease, keep routing target; clear --for separately if needed |
 | `submit T1 SUMMARY` | Doing → review; summary should include refs/tests/handoff details |
@@ -90,6 +90,7 @@ not to a Git commit: `done --ref` is recorded evidence, not verified artifact id
 sas after T2 T1                       # T2 waits until T1 is done; cycles refused
 sas unafter T2 T1
 sas block T1 'Need callback endpoint' --kind agent --waits-on b
+sas block T2 --on T1                  # same as after: e.g. T1 is the human-only task holding the decision
 sas blockers                         # explicit and derived open blockers
 sas blockers --task T1
 sas blockers --chain T1               # root causes across dependencies
@@ -151,6 +152,10 @@ fields clear that field. Fact keys may contain path-like components.
 atomically updates your WIP and saves a recovery record. All text fields are required;
 read WIP first and supply its version for updates. `checkpoint show [ROLE]` reads the
 latest record and its freshness (`null` if absent).
+A checkpoint is stale once its role has made ten changes of its own since it (mail
+sent, tasks created or changed, reviews, facts), or once the first of them is thirty minutes
+old; `own_changes_since` counts them. Reads, acknowledgements, lease renewals, WIP and
+notification progress do not count.
 
 Saving observes repository/worktree, branch, commit and dirty status with bounded
 read-only Git probes, then snapshots current owned/targeted task versions and durable
@@ -288,6 +293,10 @@ fi
 Version 0.1.2 imports the newest dated WIP entry per role (ordinary or stopped), supports
 previewed repair of untouched imported WIP, and shows source age in context.
 WIP older than 24 hours has `stale=true`; new imports retain the source timestamp.
+
+Context lists an agent role's own stale claims only; a human role sees every role's. Its task
+rows show `priority` and `asked_by`, the role that created the task, marked `(human)` for a
+human role.
 
 `wait` also reports human answers (`answer`), newly assigned blockers (`blocker-assigned`),
 resolved blockers (`blocker-resolved`), dropped prerequisites (`dependency-dropped`),

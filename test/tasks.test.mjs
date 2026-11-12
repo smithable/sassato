@@ -320,7 +320,7 @@ test('stop still permits release and handoff, and applies to the original worksp
 test('task pages expose continuation accurately with priority ties, filters and final empty pages', t => {
   const { s } = fixture(t);
   const low = tasks.addTask(s, { title: 'Low assigned', owner: 'a', priority: 1 });
-  tasks.addTask(s, { title: 'Other owner', owner: 'b', priority: 100 });
+  as(s, 'human', () => tasks.addTask(s, { title: 'Other owner', owner: 'b', priority: 100 }));
   const firstHigh = tasks.addTask(s, { title: 'First high', owner: 'a', priority: 9 });
   const secondHigh = tasks.addTask(s, { title: 'Second high', owner: 'a', priority: 9 });
   const middle = tasks.addTask(s, { title: 'Middle assigned', owner: 'a', priority: 5 });
@@ -421,4 +421,19 @@ test('answer --close rolls back answer, resolution, history, search and mail whe
     assert.equal(s.get("SELECT status FROM documents WHERE type='question' AND entity_id=?", question.id).status, 'pending');
     for (const [table, n] of Object.entries(beforeCounts)) assert.equal(count(s, table), n, `${requirement}: ${table}`);
   }
+});
+
+test('only a human puts a task in the now band or takes it out; context says who asked', t => {
+  const { s } = fixture(t);
+  expectCode(() => tasks.addTask(s, { title: 'Agent says urgent', priority: tasks.NOW }), 3);
+  const mine = tasks.addTask(s, { title: 'Agent work', priority: 50 });
+  expectCode(() => tasks.updateTask(s, mine.id, { version: mine.version, priority: 95 }), 3);
+  const lower = tasks.updateTask(s, mine.id, { version: mine.version, priority: 10 });
+  assert.equal(lower.priority, 10);
+  const now = as(s, 'human', () => tasks.addTask(s, { title: 'Human says now', priority: tasks.NOW, forRole: 'a' }));
+  expectCode(() => tasks.updateTask(s, now.id, { version: now.version, priority: 20 }), 3);
+  const same = tasks.updateTask(s, now.id, { version: now.version, title: 'Human says now, retitled', priority: tasks.NOW });
+  assert.equal(same.priority, tasks.NOW);
+  const lowered = as(s, 'human', () => tasks.updateTask(s, now.id, { version: same.version, priority: 0 }));
+  assert.equal(lowered.priority, 0);
 });

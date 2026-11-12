@@ -248,3 +248,22 @@ test('context dates WIP, flags stale source state, and retains it under truncati
   c.setWip(s,{current:'New work',expected_version:1});assert.equal(c.context(s).sections.wip[0].stale,false);
   s.run('UPDATE wip SET updated_at=? WHERE workspace_id=? AND role=?',new Date(Date.now()-23*60*60_000).toISOString(),s.ws,'a');assert.equal(c.context(s).sections.wip[0].stale,false);
 });
+
+test('an agent context lists only its own stale tasks; a human role sees them all',t=>{
+  const {s}=setup(t);
+  const mine=addTask(s,{title:'Mine'});takeTask(s,mine.id);
+  const theirs=as(s,'b',()=>{const x=addTask(s,{title:'Theirs'});takeTask(s,x.id);return x;});
+  s.run("UPDATE tasks SET lease_until='2000-01-01T00:00:00.000Z'");
+  assert.deepEqual(c.context(s,{limit:5}).sections.stale.map(r=>r.id),[mine.id]);
+  assert.deepEqual(as(s,'b',()=>c.context(s,{limit:5}).sections.stale.map(r=>r.id)),[theirs.id]);
+  assert.deepEqual(as(s,'human',()=>c.context(s,{limit:5}).sections.stale.map(r=>r.id)).sort(),[mine.id,theirs.id].sort());
+});
+
+test('context task rows show priority and who asked, marking a human role',t=>{
+  const {s}=setup(t);
+  as(s,'human',()=>addTask(s,{title:'From the human',forRole:'a',priority:90}));
+  addTask(s,{title:'From an agent',priority:5});
+  const rows=c.context(s,{limit:5}).sections.available;
+  assert.equal(rows[0].title,'From the human');assert.equal(rows[0].priority,90);assert.equal(rows[0].asked_by,'human (human)');
+  assert.equal(rows[1].asked_by,'a');assert.equal(rows[1].priority,5);
+});
