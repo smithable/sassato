@@ -157,7 +157,7 @@ test('interrupting the CLI kills and reaps its busy command before returning int
 
 test('quiet stop status has no normal output and includes acknowledgements and optional stop files',async t=>{
   const {s,dir}=fixture(t),path=join(dir,'STOP');
-  const cli=(...args)=>spawnSync(process.execPath,[resolve('bin/sassato.js'),'stop-status','--quiet','--db',s.path,'--workspace','test',...args],{encoding:'utf8'});
+  const cli=(...args)=>spawnSync(process.execPath,[resolve('bin/sassato.js'),'stop-status','--quiet','--db',s.path,'--workspace','test',...args],{encoding:'utf8',env:{...process.env,SASSATO_ROLE:'',SASSATO_WORKSPACE:'',SASSATO_DB:''}});
   let result=cli();assert.equal(result.status,0);assert.equal(result.stdout,'');
   const report=await stop(s,['builder'],{noWait:true});s.actor='builder';acknowledgeStop(s,report.requests[0].id);s.actor='human';
   result=cli('--json');assert.equal(result.status,4);assert.equal(result.stdout,'');
