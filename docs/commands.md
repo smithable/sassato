@@ -100,6 +100,7 @@ sas ask-human T1 'Approve manual operation?' --for alice --command 'exact comman
 sas humans --for alice               # omit --for for the shared human queue
 sas answer H1 2 --as alice
 sas answer T1 'Free-text decision' --as alice
+sas withdraw H1 'Asked again as H2'   # the asker, the task's creator or a human
 ```
 
 `ask-human` sends the question and notification to the human selected with `--for`.

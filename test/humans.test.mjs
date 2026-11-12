@@ -226,3 +226,22 @@ test('actionable reviews exclude approved work and permit human self-review',t=>
     assert.ok(!context(s).sections.reviews.some(row=>row.id===human.id));
   });
 });
+
+test('the asker, the task creator or a human withdraws a pending question with a reason; others may not',t=>{
+  const {s,db}=fixture(t),task=tasks.addTask(s,{title:'Pick a host'});
+  const old=tasks.askHuman(s,task.id,{question:'Which host?',options:['local','hosted']});
+  assert.equal(tasks.showTask(s,task.id).status,'blocked');
+  assert.throws(()=>as(s,'reviewer',()=>tasks.withdrawQuestion(s,old.id,'not mine')),e=>e.code===3);
+  assert.throws(()=>tasks.withdrawQuestion(s,old.id,''),/withdraw reason/);
+  const out=tasks.withdrawQuestion(s,old.id,'reworded as a new question');
+  assert.equal(out.status,'cancelled');assert.equal(out.cancelled_by,'builder');assert.equal(out.cancel_reason,'reworded as a new question');
+  assert.equal(tasks.showTask(s,task.id).status,'open');
+  as(s,'alice',()=>assert.equal(tasks.humanQueue(s).filter(r=>r.id===old.id).length,0));
+  assert.throws(()=>tasks.withdrawQuestion(s,old.id,'again'),e=>e.code===4);
+  assert.throws(()=>as(s,'alice',()=>tasks.answerQuestion(s,old.id,'1')),/cancelled/);
+  // The new question is untouched; the human may withdraw it too, through the command.
+  const next=tasks.askHuman(s,task.id,{question:'Which host, local or ours?',options:['local','hosted']});
+  const cli=run(db,['withdraw',next.id,'settled','in','chat','--as','alice']);
+  assert.equal(cli.status,'cancelled');assert.equal(cli.cancel_reason,'settled in chat');assert.equal(cli.cancelled_by,'alice');
+  assert.equal(tasks.showTask(s,task.id).status,'open');
+});
