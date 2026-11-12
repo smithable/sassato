@@ -37,7 +37,7 @@ test('mail waiter requires role identity and rejects malformed timeout',async t=
 });
 test('v3 upgrade preserves messages and receipts and defaults urgency to false',t=>{
   const {s,path}=fixture(t);const msg=send(s,['b'],'old mail');s.actor='b';inbox(s);const receipts=JSON.stringify(s.all('SELECT * FROM receipts'));s.close();
-  const db=new DatabaseSync(path);db.exec('DROP INDEX urgent_messages; ALTER TABLE messages DROP COLUMN urgent; DELETE FROM schema_migrations WHERE version>=4; PRAGMA user_version=3');db.close();
+  const db=new DatabaseSync(path);db.exec('ALTER TABLE messages DROP COLUMN reply; DROP INDEX urgent_messages; ALTER TABLE messages DROP COLUMN urgent; DELETE FROM schema_migrations WHERE version>=4; PRAGMA user_version=3');db.close();
   const newer=new Store(path,'b');newer.use('team');t.after(()=>newer.close());
   assert.equal(newer.get('PRAGMA user_version').user_version,SCHEMA_VERSION);assert.equal(inbox(newer,{peek:true})[0].urgent,false);
   assert.equal(newer.get('SELECT urgent FROM messages WHERE id=?',Number(msg.id.slice(1))).urgent,0);assert.equal(JSON.stringify(newer.all('SELECT * FROM receipts')),receipts);
@@ -59,4 +59,27 @@ test('urgent wake text includes up to 2000 characters and an identity-specific i
   const clipped=await waitForUrgent(s,{since,stopFile,timeout:1});
   assert.equal(clipped.message.summary.length,2000);assert.equal(clipped.message.truncated,true);
   assert.equal(clipped.message.inbox_command,'sassato inbox --peek --as a --workspace team');
+});
+
+test('mail that asks for a reply wakes each recipient once and stays in context until acknowledged',async t=>{
+  const {s,stopFile}=fixture(t);s.actor='b';const since=context(s).snapshot_cursor;s.actor='a';
+  send(s,['b'],'ordinary mail');const ask=send(s,['b','c'],'Please read PR 4',{task:undefined,needsReply:true});
+  assert.equal(ask.reply,true);
+  s.actor='b';const event=await waitForUrgent(s,{timeout:1,stopFile,since});
+  assert.equal(event.reason,'reply-needed');assert.equal(event.message.id,ask.id);assert.equal(event.message.sender,'a');
+  assert.equal((await waitForUrgent(s,{timeout:1,stopFile,since:event.cursor})).reason,'timeout','it wakes once, unlike urgent mail');
+  inbox(s);let view=context(s);
+  assert.deepEqual(view.sections.replies.map(r=>[r.id,r.state]),[[ask.id,'read']],'read mail that asks for a reply stays listed');
+  assert.ok(!view.sections.inbox.some(r=>r.id===ask.id));
+  assert.equal(view.sections.replies[0].urgent,false);
+  acknowledge(s,ask.id);assert.equal(context(s).sections.replies.length,0);
+  s.actor='c';acknowledge(s,ask.id);
+  assert.equal((await waitForUrgent(s,{timeout:1,stopFile,since})).reason,'timeout','an acknowledged request no longer wakes a late waiter');
+});
+test('v6 upgrade keeps messages and defaults reply to false',t=>{
+  const {s,path}=fixture(t);const msg=send(s,['b'],'old mail');s.close();
+  const db=new DatabaseSync(path);db.exec('ALTER TABLE messages DROP COLUMN reply; DELETE FROM schema_migrations WHERE version>=7; PRAGMA user_version=6');db.close();
+  const newer=new Store(path,'b');newer.use('team');t.after(()=>newer.close());
+  assert.equal(newer.get('PRAGMA user_version').user_version,SCHEMA_VERSION);
+  assert.equal(inbox(newer,{peek:true})[0].reply,false);assert.equal(newer.get('SELECT reply FROM messages WHERE id=?',Number(msg.id.slice(1))).reply,0);
 });

@@ -132,7 +132,7 @@ does not grant permission or authenticate either identity.
 
 | Command | Behavior |
 | --- | --- |
-| `send ROLE[,ROLE]\|all TEXT [--re T1] [--urgent]` | Append message, snapshot recipients, optional task link |
+| `send ROLE[,ROLE]\|all TEXT [--re T1] [--urgent] [--needs-reply]` | Append message, snapshot recipients, optional task link; `--needs-reply` asks each recipient for a reply or review |
 | `inbox [--peek] [--state unread\|read\|done] [--limit N]` | Unread first; marks only returned unread messages read unless --peek |
 | `sent [--limit N]` (alias `outbox`) | Sent messages with unread/read/acked status per recipient; JSON retains receipt timestamps |
 | `ack M1` | Recipient marks message done, preserving read/done timestamps |
@@ -287,6 +287,7 @@ fi
 - `done T123` permits the eligible owner or a human to complete an unclaimed imported item; a human may also complete an unclaimed human-only item. Blockers, dependencies and review gates still apply.
 - `answer H123 'answer' --close --as alice` answers and completes the associated task atomically. If another blocker or review prevents closing, neither change is committed.
 - `send b 'Please review now' --urgent --as a` stores urgent mail. Urgent unread mail is prioritized within the inbox.
+- `send b 'Please read PR 4' --needs-reply --as a` asks b for a reply or review. It wakes b's waiter once (`REPLY M1 from a asks for your reply: …`; urgent mail instead wakes it until acknowledged), and b's context lists it under `replies`, read or not, until b acknowledges it with `ack`.
 - `wait --as b [--since EVENT_CURSOR] [--timeout SECONDS] [--stop-file PATH]` waits for unacknowledged urgent mail, workflow changes relevant to b, or a stop request, prints one line and exits 0. Stop takes precedence; timeout exits 5. It never consumes receipts or spawns a provider. Default timeout 0 waits indefinitely.
 - `import ... --repair --dry-run` previews conservative corrections to existing imports; use the same options and `--confirm DIGEST` to apply. Agent-edited tasks and WIP are preserved; untouched imported WIP can be refreshed from a newer dated entry.
 

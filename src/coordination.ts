@@ -18,7 +18,7 @@ function date(value: string, label: string): string {
   return normalized;
 }
 function limit(value: number | undefined, fallback = 20): number { return integer(value ?? fallback, 'limit', 1, 100); }
-function publicMessage(row: Row): Row { return { ...row, urgent:Boolean(row.urgent), id: `M${row.id}`, task_id: row.task_id === null ? null : `T${row.task_id}` }; }
+function publicMessage(row: Row): Row { return { ...row, urgent:Boolean(row.urgent), reply:Boolean(row.reply), id: `M${row.id}`, task_id: row.task_id === null ? null : `T${row.task_id}` }; }
 function publicFact(row: Row): Row { return { ...row, id: `F${row.id}` }; }
 function externalId(value: string | undefined): string | null {
   if (value === undefined) return null;
@@ -157,18 +157,18 @@ export function endSession(s: Store, external?: string): Row {
   });
 }
 
-export function send(s: Store, recipients: string[] | 'all', body: string, options: { task?: string; urgent?: boolean } = {}): Row {
+export function send(s: Store, recipients: string[] | 'all', body: string, options: { task?: string; urgent?: boolean; needsReply?: boolean } = {}): Row {
   const actor = s.requireActor(), content = text(body,'message');
   return s.tx(() => {
     const targets = [...new Set(recipients === 'all' ? roles(s).map(r => r.name as string).filter(r => r !== actor) : recipients.map(name))];
     check(targets.length > 0 && targets.length <= 100,'Choose 1–100 message recipients');
     targets.forEach(role => s.role(role));
     const task = options.task ? s.task(options.task).id : null, at = now();
-    const n = s.run('INSERT INTO messages(workspace_id,sender,body,task_id,created_at,urgent) VALUES(?,?,?,?,?,?)',s.ws,actor,content,task,at,options.urgent?1:0).lastInsertRowid;
+    const n = s.run('INSERT INTO messages(workspace_id,sender,body,task_id,created_at,urgent,reply) VALUES(?,?,?,?,?,?,?)',s.ws,actor,content,task,at,options.urgent?1:0,options.needsReply?1:0).lastInsertRowid;
     for (const recipient of targets) s.run('INSERT INTO receipts(workspace_id,message_id,recipient) VALUES(?,?,?)',s.ws,n,recipient);
     s.index('message',`M${n}`,`${actor} → ${targets.join(', ')}`,content,{role:actor,updated_at:at});
-    s.event('message',`M${n}`,'sent',{ recipients: targets, task: options.task ?? null, urgent:!!options.urgent });
-    return { id:`M${n}`,sender:actor,recipients:targets,urgent:!!options.urgent,body:content,task_id:options.task ?? null,created_at:at };
+    s.event('message',`M${n}`,'sent',{ recipients: targets, task: options.task ?? null, urgent:!!options.urgent, reply:!!options.needsReply });
+    return { id:`M${n}`,sender:actor,recipients:targets,urgent:!!options.urgent,reply:!!options.needsReply,body:content,task_id:options.task ?? null,created_at:at };
   });
 }
 export interface InboxOptions { peek?: boolean; state?: 'unread' | 'read' | 'done' | 'pending' | 'all'; limit?: number }
@@ -294,7 +294,9 @@ export function context(s: Store, options: { since?: number; limit?: number } = 
     section('reviews',"SELECT id,title,status,owner,lease_until,priority,creator FROM tasks WHERE workspace_id=? AND status='review' AND reviewed_by IS NULL AND (owner IS NULL OR owner!=? OR ?='human') ORDER BY priority DESC,id",[s.ws,actor,s.role(actor).kind],taskRow);
     const inboxCounts = s.all('SELECT state,count(*) AS n FROM receipts WHERE workspace_id=? AND recipient=? GROUP BY state',s.ws,actor);
     for (const row of inboxCounts) counts[`inbox_${row.state}`] = row.n;
-    section('inbox',"SELECT m.id,m.sender,m.urgent,substr(m.body,1,180) AS body,m.task_id,r.state FROM receipts r JOIN messages m ON m.workspace_id=r.workspace_id AND m.id=r.message_id WHERE r.workspace_id=? AND r.recipient=? AND r.state!='done' ORDER BY CASE r.state WHEN 'unread' THEN 0 ELSE 1 END,m.urgent DESC,m.id",[s.ws,actor],r=>({id:`M${r.id}`,from:r.sender,urgent:!!r.urgent,state:r.state,text:clip(r.body,160),task:r.task_id ? `T${r.task_id}` : null}));
+    // Mail that asks for a reply stays here, read or not, until it is acknowledged (T715).
+    section('replies',"SELECT m.id,m.sender,m.urgent,substr(m.body,1,180) AS body,m.task_id,r.state FROM receipts r JOIN messages m ON m.workspace_id=r.workspace_id AND m.id=r.message_id WHERE r.workspace_id=? AND r.recipient=? AND r.state!='done' AND m.reply=1 ORDER BY m.urgent DESC,m.id",[s.ws,actor],r=>({id:`M${r.id}`,from:r.sender,urgent:!!r.urgent,state:r.state,text:clip(r.body,160),task:r.task_id ? `T${r.task_id}` : null,ack:`sassato ack M${r.id}`}));
+    section('inbox',"SELECT m.id,m.sender,m.urgent,substr(m.body,1,180) AS body,m.task_id,r.state FROM receipts r JOIN messages m ON m.workspace_id=r.workspace_id AND m.id=r.message_id WHERE r.workspace_id=? AND r.recipient=? AND r.state!='done' AND m.reply=0 ORDER BY CASE r.state WHEN 'unread' THEN 0 ELSE 1 END,m.urgent DESC,m.id",[s.ws,actor],r=>({id:`M${r.id}`,from:r.sender,urgent:!!r.urgent,state:r.state,text:clip(r.body,160),task:r.task_id ? `T${r.task_id}` : null}));
     section('blockers',"SELECT b.id,b.task_id,b.waiting_on,substr(b.body,1,180) AS body FROM blockers b JOIN tasks t ON t.workspace_id=b.workspace_id AND t.id=b.task_id WHERE b.workspace_id=? AND b.status='open' AND t.status NOT IN ('done','dropped') AND (t.owner=? OR b.waiting_on=?) ORDER BY b.id",[s.ws,actor,actor],r=>({id:`B${r.id}`,task:`T${r.task_id}`,waits_on:r.waiting_on,text:clip(r.body,160)}));
     section('dependencies',"SELECT t.id,d.depends_on,p.title,p.owner,p.status FROM dependencies d JOIN tasks t ON t.workspace_id=d.workspace_id AND t.id=d.task_id JOIN tasks p ON p.workspace_id=d.workspace_id AND p.id=d.depends_on WHERE d.workspace_id=? AND (t.owner=? OR p.owner=?) AND t.status NOT IN ('done','dropped') AND p.status!='done' ORDER BY t.id,p.id",[s.ws,actor,actor],r=>({task:`T${r.id}`,waits_on:`T${r.depends_on}`,owner:r.owner,status:r.status,title:clip(r.title,100)}));
     section('questions',"SELECT q.id,q.task_id,b.waiting_on AS for_role,substr(q.question,1,160) AS question FROM questions q JOIN tasks t ON t.workspace_id=q.workspace_id AND t.id=q.task_id JOIN blockers b ON b.workspace_id=q.workspace_id AND b.id=q.blocker_id WHERE q.workspace_id=? AND q.status='pending' AND t.status NOT IN ('done','dropped') AND (q.asked_by=? OR t.owner=? OR ?='human') ORDER BY t.priority DESC,q.id",[s.ws,actor,actor,s.role(actor).kind],r=>({id:`H${r.id}`,task:`T${r.task_id}`,for_role:r.for_role,question:clip(r.question,140)}));
@@ -309,7 +311,7 @@ export function context(s: Store, options: { since?: number; limit?: number } = 
     while (JSON.stringify(data).length > 5_800 || Object.values(sections).reduce((n,rows)=>n+rows.length,0) > 33) {
       // Keep delta notifications ahead of snapshots: a bounded snapshot must not prevent the
       // next cursor from making progress, nor hide a returned delta in terminal rendering.
-      const delta = (key: string) => key === 'facts' || key === 'answers';
+      const delta = (key: string) => key === 'facts' || key === 'answers' || key === 'replies';
       const candidates = Object.entries(sections).filter(([key,rows])=>key !== 'session' && key !== 'stop' && key !== 'wip' && key !== 'checkpoint' && key !== 'notification_progress' && rows.length > 0).sort((a,b)=>Number(delta(a[0]))-Number(delta(b[0])) || JSON.stringify(b[1]).length-JSON.stringify(a[1]).length);
       if (!candidates.length) break;
       const omitted = candidates[0][1].pop()!;
