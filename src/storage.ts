@@ -7,7 +7,7 @@ import { check, name, now, safe, id } from './errors.js';
 // SQLite rows deliberately stay flexible at this small adapter boundary.
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 export function databasePath(value?: string): string {
   const path = resolve(value ?? process.env.SASSATO_DB ?? `${process.env.XDG_DATA_HOME ?? `${homedir()}/.local/share`}/sassato/sassato.db`);
   let ancestor = path;
@@ -118,7 +118,8 @@ export class Store {
         this.cancelClosedQuestions();
         current = 5;
       }
-      if (current === 5) this.db.exec(MIGRATION_6);
+      if (current === 5) { this.db.exec(MIGRATION_6); current = 6; }
+      if (current === 6) this.db.exec(MIGRATION_7);
     });
   }
   private cancelClosedQuestions(): void {
@@ -243,4 +244,11 @@ DELETE FROM documents WHERE type='event' AND entity_id IN (
 );
 INSERT INTO schema_migrations VALUES(6,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 PRAGMA user_version=6;
+`;
+
+// Mail that asks its recipients for a reply or a review: listed until acknowledged (T715).
+const MIGRATION_7 = `
+ALTER TABLE messages ADD COLUMN reply INTEGER NOT NULL DEFAULT 0 CHECK(reply IN (0,1));
+INSERT INTO schema_migrations VALUES(7,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+PRAGMA user_version=7;
 `;

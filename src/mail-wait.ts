@@ -7,7 +7,7 @@ import { workspaceSettings } from './workspace-settings.js';
 import { getNotificationProgress } from './notification-progress.js';
 
 export interface WaitResult {
-  reason:'urgent'|'stop'|'timeout'|'answer'|'blocker-resolved'|'blocker-assigned'|'dependency-dropped'|'task-assigned'|'task-ready'|'review-submitted'|'review-approved'|'review-rejected';
+  reason:'urgent'|'reply-needed'|'stop'|'timeout'|'answer'|'blocker-resolved'|'blocker-assigned'|'dependency-dropped'|'task-assigned'|'task-ready'|'review-submitted'|'review-approved'|'review-rejected';
   role:string; cursor:number; message?:Row; stop?:Row;
   question?:string; blocker?:string; task?:string; tasks?:string[];
   /** Task version recorded by the workflow event, not a substitute for reading current work. */
@@ -33,6 +33,13 @@ function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
   if(event.entity==='question'&&event.action==='answered') {
     const q=s.get("SELECT q.id,q.task_id FROM questions q JOIN tasks t ON t.workspace_id=q.workspace_id AND t.id=q.task_id WHERE q.workspace_id=? AND q.id=? AND q.status='answered' AND (q.asked_by=? OR t.owner=?)",s.ws,Number(String(event.entity_id).slice(1)),actor,actor);
     if(q)return {...base,reason:'answer',question:`H${q.id}`,task:`T${q.task_id}`};
+    return undefined;
+  }
+  if(event.entity==='message'&&event.action==='sent'&&detail.reply===true) {
+    // Mail that asks for a reply wakes each recipient once (urgent mail wakes until acknowledged);
+    // context lists it until it is acknowledged.
+    const message=/^M\d+$/.test(event.entity_id)?s.get("SELECT m.id,m.sender,substr(m.body,1,2000) AS body,length(m.body)>2000 AS truncated FROM receipts r JOIN messages m ON m.workspace_id=r.workspace_id AND m.id=r.message_id WHERE r.workspace_id=? AND r.message_id=? AND r.recipient=? AND r.state!='done' AND m.reply=1",s.ws,Number(event.entity_id.slice(1)),actor):undefined;
+    if(message)return {...base,reason:'reply-needed',message:{id:`M${message.id}`,sender:message.sender,summary:String(message.body).replace(/[\x00-\x1f\x7f]/g,' ').replace(/\s+/g,' ').trim(),truncated:!!message.truncated,...(message.truncated?{inbox_command:`sassato inbox --peek --as ${actor} --workspace ${s.workspace}`}:{})}};
     return undefined;
   }
   if(event.entity!=='task'||!/^T\d+$/.test(event.entity_id))return undefined;

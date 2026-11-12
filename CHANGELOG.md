@@ -2,6 +2,9 @@
 
 ## 0.1.2 — unreleased
 
+- `send --needs-reply` (schema 7): mail that asks for a reply or a review wakes each
+  recipient's waiter once and stays in its context under `replies`, read or not, until
+  acknowledged. Upgrading runs `migrate`; every CLI on the machine needs this version.
 - A checkpoint turns stale when its role has made ten changes of its own since it, or
   the first of them is thirty minutes old; context shows `own_changes_since`.
 - Priority 90 and above (`--priority now`) is set or lowered only by a human role; context
