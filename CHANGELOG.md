@@ -2,6 +2,11 @@
 
 ## 0.1.3 — unreleased
 
+- `job run --kind KIND -- COMMAND` (schema 8): a heavy job asks before it starts, waits
+  while the machine has no room (memory first, then cores, in turn by role), runs, and
+  has its peak memory and CPU measured, so the next run of its kind asks for what it used.
+  `job list` and `job stats` show the queue and the measurements. See
+  [heavy jobs](docs/commands.md#heavy-jobs-on-a-shared-machine).
 - `withdraw H1 REASON` withdraws a pending human question its asker no longer needs (a
   reworded one asked again, a decision made elsewhere): the asker, the task's creator or a
   human may; the question is recorded as cancelled with who and why, and its blocker is

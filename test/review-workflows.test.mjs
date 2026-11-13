@@ -39,7 +39,7 @@ test('housekeeping stays in audit but not search; schema migration removes old s
   }
   const task=takeTask(s,addTask(s,{title:'Substantive work'}).id);noteTask(s,task.id,'retainquartznote');
   const before=s.all('SELECT * FROM events ORDER BY id');
-  s.db.exec('ALTER TABLE messages DROP COLUMN reply; DELETE FROM schema_migrations WHERE version>=6; PRAGMA user_version=5;');
+  s.db.exec('DROP TABLE jobs; ALTER TABLE messages DROP COLUMN reply; DELETE FROM schema_migrations WHERE version>=6; PRAGMA user_version=5;');
   s=f.reopen();
   assert.equal(s.get('PRAGMA user_version').user_version,SCHEMA_VERSION);
   assert.deepEqual(s.all('SELECT * FROM events ORDER BY id'),before);

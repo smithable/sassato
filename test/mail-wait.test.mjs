@@ -38,7 +38,7 @@ test('mail waiter requires role identity and rejects malformed timeout',async t=
 });
 test('v3 upgrade preserves messages and receipts and defaults urgency to false',t=>{
   const {s,path}=fixture(t);const msg=send(s,['b'],'old mail');s.actor='b';inbox(s);const receipts=JSON.stringify(s.all('SELECT * FROM receipts'));s.close();
-  const db=new DatabaseSync(path);db.exec('ALTER TABLE messages DROP COLUMN reply; DROP INDEX urgent_messages; ALTER TABLE messages DROP COLUMN urgent; DELETE FROM schema_migrations WHERE version>=4; PRAGMA user_version=3');db.close();
+  const db=new DatabaseSync(path);db.exec('DROP TABLE jobs; ALTER TABLE messages DROP COLUMN reply; DROP INDEX urgent_messages; ALTER TABLE messages DROP COLUMN urgent; DELETE FROM schema_migrations WHERE version>=4; PRAGMA user_version=3');db.close();
   const newer=new Store(path,'b');newer.use('team');t.after(()=>newer.close());
   assert.equal(newer.get('PRAGMA user_version').user_version,SCHEMA_VERSION);assert.equal(inbox(newer,{peek:true})[0].urgent,false);
   assert.equal(newer.get('SELECT urgent FROM messages WHERE id=?',Number(msg.id.slice(1))).urgent,0);assert.equal(JSON.stringify(newer.all('SELECT * FROM receipts')),receipts);
@@ -79,7 +79,7 @@ test('mail that asks for a reply wakes each recipient once and stays in context 
 });
 test('v6 upgrade keeps messages and defaults reply to false',t=>{
   const {s,path}=fixture(t);const msg=send(s,['b'],'old mail');s.close();
-  const db=new DatabaseSync(path);db.exec('ALTER TABLE messages DROP COLUMN reply; DELETE FROM schema_migrations WHERE version>=7; PRAGMA user_version=6');db.close();
+  const db=new DatabaseSync(path);db.exec('DROP TABLE jobs; ALTER TABLE messages DROP COLUMN reply; DELETE FROM schema_migrations WHERE version>=7; PRAGMA user_version=6');db.close();
   const newer=new Store(path,'b');newer.use('team');t.after(()=>newer.close());
   assert.equal(newer.get('PRAGMA user_version').user_version,SCHEMA_VERSION);
   assert.equal(inbox(newer,{peek:true})[0].reply,false);assert.equal(newer.get('SELECT reply FROM messages WHERE id=?',Number(msg.id.slice(1))).reply,0);
