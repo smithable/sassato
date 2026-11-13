@@ -159,7 +159,7 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
   const deadline=timeout?performance.now()+timeout*1000:Infinity;
   // --idle-minutes: a role that holds doing tasks and has written nothing for that long is woken
   // with its own work (T660); one with none doing but open tasks of its own (its owner's or for it)
-  // is woken with those, to take one (T763). Any write of its own starts the period again.
+  // that it can take now is woken with those, to take one (T763). Any write of its own starts the period again.
   const idle=integer(options.idleMinutes??0,'idle minutes',0,10_080)*60_000;
   let idleSince=performance.now(),idleFrom=latest;
   for(;;) {
@@ -182,7 +182,14 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
         if(wrote){idleFrom=wrote;return undefined;}
         const doing=s.all("SELECT id FROM tasks WHERE workspace_id=? AND owner=? AND status='doing' ORDER BY priority DESC,id LIMIT 20",s.ws,actor).map(r=>`T${r.id}`);
         if(doing.length)return {reason:'own-work' as const,tasks:doing};
-        const open=s.all("SELECT id FROM tasks WHERE workspace_id=? AND status='open' AND (owner=? OR (owner IS NULL AND for_role=?)) ORDER BY priority DESC,id LIMIT 20",s.ws,actor,actor).map(r=>`T${r.id}`);
+        // Only what can be taken now: no open blocker (a pending human question is one), no
+        // unfinished dependency, nothing human-only for an agent (the gates of tasks --available).
+        const open=s.all(`SELECT t.id FROM tasks t WHERE t.workspace_id=? AND t.status='open' AND (t.owner=? OR (t.owner IS NULL AND t.for_role=?))
+          AND (t.human_only=0 OR ?=1)
+          AND NOT EXISTS (SELECT 1 FROM blockers b WHERE b.workspace_id=t.workspace_id AND b.task_id=t.id AND b.status='open')
+          AND NOT EXISTS (SELECT 1 FROM questions q WHERE q.workspace_id=t.workspace_id AND q.task_id=t.id AND q.status='pending')
+          AND NOT EXISTS (SELECT 1 FROM dependencies d JOIN tasks p ON p.workspace_id=d.workspace_id AND p.id=d.depends_on WHERE d.workspace_id=t.workspace_id AND d.task_id=t.id AND p.status!='done')
+          ORDER BY t.priority DESC,t.id LIMIT 20`,s.ws,actor,actor,s.role(actor).kind==='human'?1:0).map(r=>`T${r.id}`);
         return open.length?{reason:'open-work' as const,tasks:open}:undefined;
       });
       if(own)return {reason:own.reason,role:actor,cursor,task:own.tasks[0],tasks:own.tasks};
