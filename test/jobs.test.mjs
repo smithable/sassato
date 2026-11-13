@@ -63,7 +63,7 @@ test('a kind asks for its highest of five measured runs of its version plus a fi
   const f = fixture(t), s = f.store('a');
   assert.deepEqual(needOf(s, 'evolution', 8), { mb: 4096, cpus: 2, margin: 0, measured: null });
   assert.deepEqual(needOf(s, 'something-new', 8), { mb: 2048, cpus: 1, margin: 0, measured: null });
-  const run = (version, peak, cpu) => { const id = enqueue(s, 'evolution', ['true'], f.m(16_000), process.pid, { version }); set(s, id, { status: 'done', peak_mb: peak, cpu_s: cpu, wall_s: 100 }); };
+  const run = (version, peak, cpu) => { const id = enqueue(s, 'evolution', ['true'], f.m(16_000), process.pid, { version }); set(s, id, { status: 'done', exit_code: 0, peak_mb: peak, cpu_s: cpu, wall_s: 100 }); };
   run('v1', 1000, 100); run('v1', 2500, 200); run('v1', 1200, 50);
   assert.deepEqual(needOf(s, 'evolution', 8, { version: 'v1' }), { mb: 3000, cpus: 2.4, margin: 1.2, measured: 2500 });
   // A new version with fewer than two runs: the latest five of any version, plus half.
@@ -159,4 +159,39 @@ test('job commands check their flags', t => {
   assert.notEqual(f.cli('a', ['job', 'run', '--kind', 'gate', '--wait', '--no-wait', '--', 'true']).status, 0);
   assert.match(f.cli('a', ['job', 'run', '--kind', 'gate']).stderr, /Give the command after --/);
   assert.match(f.cli('a', ['job', 'run', '--', 'true']).stderr, /Missing --kind/);
+});
+
+test('runs that fail or are cut off early never lower the need, but a high peak of theirs raises it', t => {
+  const f = fixture(t), s = f.store('a');
+  const row = (fields) => { const id = enqueue(s, 'gate', ['true'], f.m(16_000)); set(s, id, fields); };
+  row({ status: 'done', exit_code: 0, peak_mb: 5000, cpu_s: 10, wall_s: 10 });
+  row({ status: 'done', exit_code: 0, peak_mb: 5000, cpu_s: 10, wall_s: 10 });
+  for (let i = 0; i < 5; i++) row({ status: i % 2 ? 'released' : 'done', exit_code: i % 2 ? null : 1, peak_mb: 40 });
+  assert.equal(needOf(s, 'gate', 8).mb, 6000);
+  row({ status: 'done', exit_code: 1, peak_mb: 7000 });
+  assert.equal(needOf(s, 'gate', 8).mb, 8400);
+});
+
+test('a command keeps its own flags after --, also ones sassato knows', t => {
+  const f = fixture(t);
+  const r = f.cli('c', ['job', 'run', '--kind', 'other', '--', 'printf', '%s|', '--json', '--as', 'x', '--wait', '--mem', '5', '--kind', 'y']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, '--json|--as|x|--wait|--mem|5|--kind|y|');
+});
+
+test('a signal to job run reaches every process of the job', { timeout: 30_000 }, async t => {
+  const f = fixture(t);
+  for (const scope of ['0', '']) {
+    if (scope === '' && spawnSync('systemd-run', ['--user', '--scope', '-q', 'true']).status !== 0) continue;
+    const marker = `sassato-signal-test-${process.pid}-${scope || 'scope'}`;
+    const child = spawn(process.execPath, [bin, '--db', f.db, '--workspace', 'team', '--as', 'a', 'job', 'run', '--kind', 'other', '--', 'bash', '-c', `exec -a ${marker} sleep 30 & exec -a ${marker} sleep 30`], { env: { ...f.env, SASSATO_JOB_SCOPE: scope }, stdio: 'ignore' });
+    const alive = () => spawnSync('pgrep', ['-f', `^${marker}`]).status === 0;
+    for (let i = 0; i < 50 && !alive(); i++) await new Promise(done => setTimeout(done, 100));
+    assert.ok(alive(), 'the job started');
+    await new Promise(done => setTimeout(done, 500));
+    child.kill('SIGTERM');
+    await new Promise(done => child.on('exit', done));
+    for (let i = 0; i < 30 && alive(); i++) await new Promise(done => setTimeout(done, 100));
+    assert.equal(alive(), false, `no process of the job is left (${scope ? 'process group' : 'scope'})`);
+  }
 });

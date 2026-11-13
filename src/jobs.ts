@@ -42,20 +42,26 @@ export function machine(): Machine {
 export interface Estimate { version?: string; load?: 'more' | 'same' | 'less'; mem?: number }
 export interface Need { mb: number; cpus: number; margin: number; measured: number | null }
 /**
- * What a kind asks for. Measured runs of the same version, when there are two or more: their
- * highest peak of the last five plus a fifth. Fewer: the latest five of any version plus half,
- * until the new version has been measured twice. Nothing measured: the kind's default. A peak
- * counts as soon as it is seen, also of a run still going. The session's estimate may raise the
- * need ('more' takes the half margin, --mem a floor), never lower it; 'less' is only recorded.
+ * What a kind asks for. The last five runs that ended with exit 0, of the same version when there
+ * are two or more of those: their highest peak plus a fifth; fewer, of any version plus half, until
+ * the new version has passed twice. Any peak among the kind's latest five rows (of that version, when it is the one measured) of any end (failed,
+ * released, still going) can only raise that, so a run cut off in its first seconds never lowers
+ * the need. Nothing measured: the kind's default. The session's estimate may raise the need
+ * ('more' takes the half margin, --mem a floor), never lower it; 'less' is only recorded.
  */
 export function needOf(s: Store, kind: string, cores: number, estimate: Estimate = {}): Need {
-  const measured = "kind=? AND peak_mb IS NOT NULL AND status IN ('done','running','released')";
-  const same = s.all(`SELECT peak_mb,cpu_s,wall_s FROM jobs WHERE ${measured} AND version IS ? ORDER BY id DESC LIMIT 5`, kind, estimate.version ?? null);
-  const runs = same.length >= 2 ? same : s.all(`SELECT peak_mb,cpu_s,wall_s FROM jobs WHERE ${measured} ORDER BY id DESC LIMIT 5`, kind);
+  const passed = "kind=? AND peak_mb IS NOT NULL AND status='done' AND exit_code=0";
+  const same = s.all(`SELECT peak_mb,cpu_s,wall_s FROM jobs WHERE ${passed} AND version IS ? ORDER BY id DESC LIMIT 5`, kind, estimate.version ?? null);
+  const runs = same.length >= 2 ? same : s.all(`SELECT peak_mb,cpu_s,wall_s FROM jobs WHERE ${passed} ORDER BY id DESC LIMIT 5`, kind);
+  // The latest rows of any end, of the same version when that version is measured, as the passed runs are.
+  const recent = same.length >= 2
+    ? s.all("SELECT peak_mb FROM jobs WHERE kind=? AND peak_mb IS NOT NULL AND version IS ? ORDER BY id DESC LIMIT 5", kind, estimate.version ?? null)
+    : s.all("SELECT peak_mb FROM jobs WHERE kind=? AND peak_mb IS NOT NULL ORDER BY id DESC LIMIT 5", kind);
   const fallback = DEFAULTS[kind] ?? DEFAULTS.other;
   const cpusDefault = fallback.cpus === 'all' ? cores : fallback.cpus;
   const margin = same.length >= 2 && estimate.load !== 'more' ? 1.2 : 1.5;
-  const peak = runs.length ? Math.max(...runs.map(r => r.peak_mb)) : null;
+  const peaks = [...runs, ...recent].map(r => r.peak_mb as number);
+  const peak = peaks.length ? Math.max(...peaks) : null;
   let mb = peak === null ? fallback.mb : Math.ceil(peak * margin);
   if (peak === null && estimate.load === 'more') mb = Math.ceil(mb * 1.5 / 1.2);
   if (estimate.mem !== undefined) mb = Math.max(mb, estimate.mem);
@@ -195,7 +201,13 @@ export async function runJob(s: Store, options: RunOptions): Promise<number> {
   const id = enqueue(s, options.kind, options.command, machine(), process.pid, options.estimate);
   let said = '';
   for (;;) {
-    const decision = s.tx(() => { releaseStale(s); return admit(s, id, machine()); });
+    // The start is written in the same transaction that decided it, so no other job's decision falls between.
+    const decision = s.tx(() => {
+      releaseStale(s);
+      const d = admit(s, id, machine());
+      if (d.start) s.run("UPDATE jobs SET status='running',started_at=? WHERE id=?", now(), id);
+      return d;
+    });
     if (decision.start) break;
     if (decision.never || !options.wait) {
       s.tx(() => s.run("UPDATE jobs SET status='refused',reason=?,ended_at=? WHERE id=?", decision.reason, now(), id));
@@ -207,7 +219,6 @@ export async function runJob(s: Store, options: RunOptions): Promise<number> {
     await new Promise(done => setTimeout(done, SAMPLE_MS));
   }
   const started = Date.now();
-  s.tx(() => s.run("UPDATE jobs SET status='running',started_at=? WHERE id=?", now(), id));
   if (said) log(`J${id} starts`);
 
   const scoped = canScope();
@@ -215,19 +226,31 @@ export async function runJob(s: Store, options: RunOptions): Promise<number> {
   const child: ChildProcess = scoped
     ? spawn('systemd-run', ['--user', '--scope', '-q', `--unit=${unit}`, '--', ...options.command], { stdio: 'inherit' })
     : spawn(options.command[0], options.command.slice(1), { stdio: 'inherit', detached: true });
-  // Without a scope the job is its own process group: a signal goes to the whole group, as a terminal would send it.
-  const forward = (signal: NodeJS.Signals) => () => { try { if (scoped || !child.pid) child.kill(signal); else process.kill(-child.pid, signal); } catch { /* already gone */ } };
+  // A signal goes to every process of the job, as a terminal would send it to its group: the whole
+  // scope, or without one the job's own process group.
+  const forward = (signal: NodeJS.Signals) => () => {
+    try {
+      if (scoped && spawnSync('systemctl', ['--user', 'kill', `--signal=${signal}`, `${unit}.scope`], { stdio: 'ignore', timeout: 5000 }).status === 0) return;
+      if (!scoped && child.pid) process.kill(-child.pid, signal); else child.kill(signal);
+    } catch { /* already gone */ }
+  };
   const handlers = (['SIGINT', 'SIGTERM', 'SIGHUP'] as const).map(signal => [signal, forward(signal)] as const);
   for (const [signal, handler] of handlers) process.on(signal, handler);
 
-  let cgroup: string | null = null, peak = 0, current = 0, cpu = 0, written = 0, tree: number[] = [];
+  let cgroup: string | null = null, peak = 0, current = 0, cpu = 0, written = 0, tree: number[] = [], cgroupPeak = 0;
   const sample = () => {
     if (scoped) {
       if (!cgroup && child.pid) { const found = cgroupOf(child.pid); if (found?.endsWith(`/${unit}.scope`)) { cgroup = found; s.tx(() => s.run('UPDATE jobs SET cgroup=? WHERE id=?', cgroup, id)); } }
       if (!cgroup) return;
-      const now_ = readNumber(`${cgroup}/memory.current`), high = readNumber(`${cgroup}/memory.peak`);
-      if (now_ !== null) current = Math.ceil(now_ / MB);
-      peak = Math.max(peak, current, high === null ? 0 : Math.ceil(high / MB));
+      // Page cache is reclaimable (MemAvailable counts it free): what the job holds is the cgroup's
+      // memory less its file pages. The peak is the highest of those samples; the cgroup's own
+      // memory.peak, cache included, is kept apart for the statistics.
+      const total = readNumber(`${cgroup}/memory.current`), high = readNumber(`${cgroup}/memory.peak`);
+      const stat = (() => { try { return readFileSync(`${cgroup}/memory.stat`, 'utf8'); } catch { return ''; } })();
+      const file = (key: string) => Number(new RegExp(`^${key} (\\d+)`, 'm').exec(stat)?.[1] ?? 0);
+      if (total !== null) current = Math.ceil(Math.max(0, total - file('active_file') - file('inactive_file')) / MB);
+      peak = Math.max(peak, current);
+      if (high !== null) cgroupPeak = Math.max(cgroupPeak, Math.ceil(high / MB));
       const usage = /usage_usec (\d+)/.exec((() => { try { return readFileSync(`${cgroup}/cpu.stat`, 'utf8'); } catch { return ''; } })())?.[1];
       if (usage) cpu = Math.max(cpu, Number(usage) / 1e6);
     } else if (child.pid) {
@@ -249,8 +272,8 @@ export async function runJob(s: Store, options: RunOptions): Promise<number> {
   // What the job leaves behind is named, never killed: the owner decides.
   const orphans = scoped ? (cgroup ? leftInCgroup(cgroup) : []) : (child.pid ? treeOf(child.pid) : []).map(pid => ({ pid, command: commandOf(pid) }));
   if (orphans.length) log(`J${id} left ${orphans.length} process${orphans.length === 1 ? '' : 'es'} running: ${orphans.map(o => `${o.pid} (${o.command})`).join(', ')}`);
-  s.tx(() => s.run("UPDATE jobs SET status='done',exit_code=?,current_mb=0,peak_mb=?,cpu_s=?,wall_s=?,orphans=?,ended_at=? WHERE id=?",
-    status, peak || null, Math.round(cpu * 10) / 10, Math.round((Date.now() - started) / 100) / 10, orphans.length ? JSON.stringify(orphans) : null, now(), id));
+  s.tx(() => s.run("UPDATE jobs SET status='done',exit_code=?,current_mb=0,peak_mb=?,cgroup_peak_mb=?,cpu_s=?,wall_s=?,orphans=?,ended_at=? WHERE id=?",
+    status, peak || null, cgroupPeak || null, Math.round(cpu * 10) / 10, Math.round((Date.now() - started) / 100) / 10, orphans.length ? JSON.stringify(orphans) : null, now(), id));
   return status;
 }
 

@@ -214,12 +214,14 @@ and a server), waits while the machine has no room for it, runs it, measures it 
 the run. Its exit status is the command's; a job that is not started exits 75 with the reason.
 Jobs count across every workspace in the database, since they share one machine.
 
-- **Need.** A kind asks for the highest peak memory of its last five measured runs of the
-  same `--job-version` plus a fifth. With fewer than two runs of that version it takes the
-  latest five of any version plus half; with none, a default (gate 6 GB, evolution 4,
-  benchmark 3, container-tests 4, other kinds 2). The session's estimate can raise the need,
-  never lower it: `--load more` takes the half margin, `--mem MB` sets a floor; `--load less`
-  and `same` are only recorded. A run still going whose peak passed its need counts at once.
+- **Need.** A kind asks for the highest peak memory of its last five runs that ended with
+  exit 0, of the same `--job-version`, plus a fifth. With fewer than two such runs of that
+  version it takes the latest five of any version plus half; with none, a default (gate 6 GB,
+  evolution 4, benchmark 3, container-tests 4, other kinds 2). A peak among the latest five
+  rows of any end (failed, released, still going) can only raise the need, so runs cut off
+  early never lower it. The session's estimate can raise the need, never lower it: `--load
+  more` takes the half margin, `--mem MB` sets a floor; `--load less` and `same` are only
+  recorded.
 - **Admission.** Waiting jobs go in turn: the role with the fewest starts since the oldest
   waiting job asked goes first, then by arrival, and no later job starts ahead of one that
   waits. The first in turn starts when the memory available now, minus what running jobs may
@@ -227,10 +229,15 @@ Jobs count across every workspace in the database, since they share one machine.
   free, covers its need, and the cores of running jobs plus its own stay within the machine's.
   A need larger than the machine's memory less the reserve is refused at once. `--no-wait`
   is refused instead of waiting.
-- **Measuring.** Each job runs in its own systemd user scope, when one can be made, and its
-  peak memory and CPU time come from the scope's cgroup; otherwise its process group and
-  descendants are sampled from /proc every two seconds. Processes a job leaves running are
-  named at its end, never killed. A job whose `job run` process is gone is released.
+- **Measuring.** Each job runs in its own systemd user scope, when one can be made. Every two
+  seconds its memory is read from the scope's cgroup less its page cache (`memory.current`
+  minus the file pages in `memory.stat`, since the kernel reclaims cache and MemAvailable
+  counts it free); the peak is the highest of those, and CPU time comes from `cpu.stat`. The
+  cgroup's own `memory.peak`, cache included, is kept beside it. Without a scope the job's
+  process group and descendants are sampled from /proc. SIGINT, SIGTERM and SIGHUP to
+  `job run` go to every process of the job (the scope, or the process group). Processes a job
+  leaves running after a normal end are named, never killed. A job whose `job run` process
+  is gone is released.
 
 `job list` shows running and waiting jobs and the room left. `job stats` shows per kind and
 version the runs, failures, median and highest peak, CPU and wall time, how the peaks compared
