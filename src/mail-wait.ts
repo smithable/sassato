@@ -7,7 +7,7 @@ import { workspaceSettings } from './workspace-settings.js';
 import { getNotificationProgress } from './notification-progress.js';
 
 export interface WaitResult {
-  reason:'urgent'|'reply-needed'|'own-work'|'stop'|'timeout'|'answer'|'blocker-resolved'|'blocker-assigned'|'dependency-dropped'|'task-assigned'|'task-ready'|'review-submitted'|'review-approved'|'review-rejected';
+  reason:'urgent'|'reply-needed'|'own-work'|'open-work'|'stop'|'timeout'|'answer'|'blocker-resolved'|'blocker-assigned'|'dependency-dropped'|'task-assigned'|'task-ready'|'review-submitted'|'review-approved'|'review-rejected';
   role:string; cursor:number; message?:Row; stop?:Row;
   question?:string; blocker?:string; task?:string; tasks?:string[];
   /** Task version recorded by the workflow event, not a substitute for reading current work. */
@@ -158,7 +158,8 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
   if(initial.stopped)return {reason:'stop',role:actor,cursor,stop:initial.stopped};
   const deadline=timeout?performance.now()+timeout*1000:Infinity;
   // --idle-minutes: a role that holds doing tasks and has written nothing for that long is woken
-  // with its own work (T660); any write of its own starts the period again.
+  // with its own work (T660); one with none doing but open tasks of its own (its owner's or for it)
+  // is woken with those, to take one (T763). Any write of its own starts the period again.
   const idle=integer(options.idleMinutes??0,'idle minutes',0,10_080)*60_000;
   let idleSince=performance.now(),idleFrom=latest;
   for(;;) {
@@ -179,9 +180,12 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
       const own=s.snapshot(()=>{
         const wrote=s.get("SELECT max(id) AS id FROM events WHERE workspace_id=? AND id>? AND actor=? AND entity NOT IN ('session','notification-progress')",s.ws,idleFrom,actor)?.id;
         if(wrote){idleFrom=wrote;return undefined;}
-        return s.all("SELECT id FROM tasks WHERE workspace_id=? AND owner=? AND status='doing' ORDER BY priority DESC,id LIMIT 20",s.ws,actor).map(r=>`T${r.id}`);
+        const doing=s.all("SELECT id FROM tasks WHERE workspace_id=? AND owner=? AND status='doing' ORDER BY priority DESC,id LIMIT 20",s.ws,actor).map(r=>`T${r.id}`);
+        if(doing.length)return {reason:'own-work' as const,tasks:doing};
+        const open=s.all("SELECT id FROM tasks WHERE workspace_id=? AND status='open' AND (owner=? OR (owner IS NULL AND for_role=?)) ORDER BY priority DESC,id LIMIT 20",s.ws,actor,actor).map(r=>`T${r.id}`);
+        return open.length?{reason:'open-work' as const,tasks:open}:undefined;
       });
-      if(own?.length)return {reason:'own-work',role:actor,cursor,task:own[0],tasks:own};
+      if(own)return {reason:own.reason,role:actor,cursor,task:own.tasks[0],tasks:own.tasks};
       idleSince=performance.now();
     }
     const remaining=deadline-performance.now();

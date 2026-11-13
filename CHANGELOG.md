@@ -2,6 +2,9 @@
 
 ## 0.1.3 — unreleased
 
+- `wait --idle-minutes N` also wakes a role that holds no doing task but has open tasks of its own
+  (its owner's or for it) and has written nothing for N minutes: reason `open-work`, naming them
+  highest priority and oldest first, so it takes one. A role with no open task is still not woken.
 - `job run --kind KIND -- COMMAND` (schema 8): a heavy job asks before it starts, waits
   while the machine has no room (memory first, then cores, in turn by role), runs, and
   has its peak memory and CPU measured, so the next run of its kind asks for what it used.
