@@ -188,11 +188,15 @@ export function handoffTask(s: Store, task: string, to: string, note: string): R
 export function releaseTask(s: Store, task: string, note: string): Row {
   return s.tx(() => { const row = s.task(task); writable(s, row); active(row); text(note, 'release reason'); return change(s, row, { owner: null, lease_until: null, status: blocking(s, row).some(b => b.kind !== 'dependency') ? 'blocked' : 'open', reviewed_by: null, review_note: null }, 'released', { note }); });
 }
-export function submitTask(s: Store, task: string, note: string): Row {
+/** Submits work for review. reviewers names the roles a review is asked of (their waiters wake);
+ *  without it the task's creator is asked, or every role when the owner created it. */
+export function submitTask(s: Store, task: string, note: string, reviewers?: string[]): Row {
   return s.tx(() => {
     const row = s.task(task); writable(s, row); executable(s, row); text(note, 'submission summary');
     check(row.status === 'doing', 'Only doing work can be submitted for review', 4); unblocked(s, row);
-    return change(s, row, { status: 'review', lease_until: null, reviewed_by: null, review_note: null }, 'submitted', { note });
+    const asked = [...new Set((reviewers ?? []).map(r => r.trim()).filter(Boolean))];
+    for (const r of asked) { s.role(r); check(r !== row.owner || s.role(r).kind === 'human', `${r} owns ${task} and cannot review it`, 3); }
+    return change(s, row, { status: 'review', lease_until: null, reviewed_by: null, review_note: null }, 'submitted', { note, ...(asked.length ? { reviewers: asked } : {}) });
   });
 }
 export function reviewTask(s: Store, task: string, options: { approve: boolean; note: string; expected_version: number }): Row {

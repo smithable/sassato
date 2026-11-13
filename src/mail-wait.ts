@@ -24,6 +24,13 @@ function available(s:Store,actor:string,condition:string,params:Param[],includeD
     AND NOT EXISTS (SELECT 1 FROM dependencies d JOIN tasks p ON p.workspace_id=d.workspace_id AND p.id=d.depends_on WHERE d.workspace_id=t.workspace_id AND d.task_id=t.id AND p.status!='done')
     AND (${condition}) ORDER BY t.id`,s.ws,...(includeDoing?[actor]:[]),actor,actor,s.role(actor).kind==='human'?1:0,...params).map(t=>`T${t.id}`);
 }
+function asked(s:Store,id:number,task:Row):string[] {
+  const submitted=s.get("SELECT detail FROM events WHERE workspace_id=? AND entity='task' AND entity_id=? AND action='submitted' ORDER BY id DESC LIMIT 1",s.ws,`T${id}`);
+  let named:unknown;try{named=submitted?JSON.parse(String(submitted.detail)).reviewers:undefined;}catch{named=undefined;}
+  if(Array.isArray(named)&&named.length)return named.map(String);
+  // A creator that is a person runs no waiter, so its tasks stay open to every eligible role.
+  return task.creator&&task.creator!==task.owner&&s.role(String(task.creator)).kind!=="human"?[String(task.creator)]:[];
+}
 function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
   // A role already observed its own successful action. Consume its event cursor
   // without waking, while leaving other recipients' independent cursors intact.
@@ -48,7 +55,7 @@ function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
     !!s.get("SELECT 1 FROM tasks WHERE workspace_id=? AND id=? AND status='review'",s.ws,id);
   const reviewRestored=event.action==='blocker-resolved'&&detail.after?.status==='review';
   if(reviewUpdate||reviewRestored||['submitted','review-approved','review-rejected'].includes(event.action)) {
-    const task=s.get('SELECT owner,status,reviewed_by FROM tasks WHERE workspace_id=? AND id=?',s.ws,id);
+    const task=s.get('SELECT owner,creator,status,reviewed_by FROM tasks WHERE workspace_id=? AND id=?',s.ws,id);
     if(!task||task.status==='done'||task.status==='dropped')return undefined;
     // A late reader needs the current review transition, not every superseded
     // submission/result. Metadata notes may advance the task version without
@@ -65,7 +72,11 @@ function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
       // operators may review their own work; agents require an independent owner.
       // Updates that clear approval while keeping review open are new review requests.
       // An already settled or withdrawn submission no longer needs a reviewer.
-      if(task.status==='review'&&task.reviewed_by===null&&(task.owner!==actor||s.role(actor).kind==='human'))
+      // Who is asked (T801): the reviewers the latest submission named, else the task's creator
+      // when someone other than its owner created it, else every eligible role as before.
+      const reviewers=asked(s,id,task);
+      if(task.status==='review'&&task.reviewed_by===null&&(task.owner!==actor||s.role(actor).kind==='human')&&
+        (!reviewers.length||reviewers.includes(actor)))
         return {...base,reason:'review-submitted',task:event.entity_id,version};
       // The owner still needs its blocker/answer notification below, even though
       // an agent owner is not an eligible reviewer of the restored submission.

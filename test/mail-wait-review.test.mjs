@@ -169,3 +169,25 @@ test('restoring blocked review wakes reviewers again and supersedes the original
   assert.equal((await wait(f,'b',next.cursor)).reason,'timeout');
   const owner=await wait(f,'a',original.cursor);assert.equal(owner.reason,'blocker-resolved');assert.equal(owner.blocker,blocker.id);
 });
+
+test('a submission that names reviewers wakes only them (T801)',async t=>{
+  const f=fixture(t),task=work(f),since=f.cursor();
+  as(f.s,'a',()=>submitTask(f.s,task.id,'Ready',['b']));
+  assert.equal((await wait(f,'b',since)).reason,'review-submitted');
+  assert.equal((await wait(f,'c',since)).reason,'timeout','a role not named is not woken');
+  assert.equal((await wait(f,'lead',since)).reason,'timeout');
+});
+
+test('without named reviewers, an agent-created task wakes only its creator (T801)',async t=>{
+  const f=fixture(t);
+  const task=as(f.s,'lead',()=>addTask(f.s,{title:'Built by a for lead',owner:'a',forRole:'a',reviewRequired:true}));
+  as(f.s,'a',()=>takeTask(f.s,task.id));const since=f.cursor();submit(f,task);
+  assert.equal((await wait(f,'lead',since)).reason,'review-submitted');
+  assert.equal((await wait(f,'b',since)).reason,'timeout','another role is not woken');
+});
+
+test('a reviewer list cannot name the agent owner, and names must be roles (T801)',async t=>{
+  const f=fixture(t),task=work(f);
+  assert.throws(()=>as(f.s,'a',()=>submitTask(f.s,task.id,'Ready',['a'])),/cannot review/);
+  assert.throws(()=>as(f.s,'a',()=>submitTask(f.s,task.id,'Ready',['nobody'])));
+});
