@@ -10,7 +10,7 @@ import {initWorkspace} from '../dist/admin.js';
 import {send,inbox,context,acknowledge} from '../dist/coordination.js';
 import {requestStop,acknowledgeStop} from '../dist/control.js';
 import {waitForUrgent} from '../dist/mail-wait.js';
-import {addTask,takeTask,noteTask} from '../dist/tasks.js';
+import {addTask,takeTask,noteTask,askHuman,addDependency} from '../dist/tasks.js';
 function fixture(t){const dir=mkdtempSync(join(tmpdir(),'sassato-mailwait-')),path=join(dir,'state.db'),s=new Store(path,'a',{create:true});initWorkspace(s,'team',fixtureConfig);s.use('team');t.after(()=>{if(s.db.isOpen)s.close();rmSync(dir,{recursive:true,force:true});});return {s,path,stopFile:join(dir,'legacy-stop')};}
 test('urgent waiter sees later writes through a read-only connection without consuming receipts',async t=>{
   const {s,path,stopFile}=fixture(t);send(s,['b'],'ordinary mail');send(s,['c'],'urgent elsewhere',{urgent:true});
@@ -98,4 +98,33 @@ test('a role idle with its own doing tasks is woken with them; a write of its ow
   const began=real();
   assert.equal((await waitForUrgent(s,{timeout:300,stopFile,since:context(s).snapshot_cursor,idleMinutes:1})).reason,'own-work','a later idle period wakes again');
   assert.ok(real()-began>=1400,'its own write started the idle period again');
+});
+test('a role idle with open tasks of its own but none doing is woken with them, highest priority first',async t=>{
+  const {s,stopFile}=fixture(t);const real=performance.now.bind(performance);let shift=0;performance.now=()=>real()+shift;t.after(()=>{performance.now=real;});
+  const later=(ms,fn)=>{const timer=setTimeout(fn,ms);t.after(()=>clearTimeout(timer));};
+  s.actor='a';const low=addTask(s,{title:'Waiting for b',forRole:'b'});const high=addTask(s,{title:'Urgent for b',forRole:'b',priority:5});addTask(s,{title:'For c',forRole:'c'});
+  s.actor='b';
+  later(50,()=>{shift+=61_000;});
+  const event=await waitForUrgent(s,{timeout:300,stopFile,since:context(s).snapshot_cursor,idleMinutes:1});
+  assert.equal(event.reason,'open-work');assert.deepEqual(event.tasks,[high.id,low.id]);assert.equal(event.task,high.id);
+  takeTask(s,low.id);
+  later(50,()=>{shift+=61_000;});
+  const doing=await waitForUrgent(s,{timeout:300,stopFile,since:context(s).snapshot_cursor,idleMinutes:1});
+  assert.equal(doing.reason,'own-work','a doing task comes before open ones');assert.deepEqual(doing.tasks,[low.id]);
+  s.actor='c';takeTask(s,s.get("SELECT id FROM tasks WHERE title='For c'").id.toString().replace(/^/,'T'));s.actor='a';
+  later(50,()=>{shift+=61_000;});
+  assert.equal((await waitForUrgent(s,{timeout:3,stopFile,since:context(s).snapshot_cursor,idleMinutes:1})).reason,'timeout','a role with no open task is not woken');
+});
+test('open tasks that cannot be taken now (a pending human question, an unfinished dependency) wake nobody',async t=>{
+  const {s,stopFile}=fixture(t);const real=performance.now.bind(performance);let shift=0;performance.now=()=>real()+shift;t.after(()=>{performance.now=real;});
+  const later=(ms,fn)=>{const timer=setTimeout(fn,ms);t.after(()=>clearTimeout(timer));};
+  s.actor='b';const asked=addTask(s,{title:'Waits on a human',forRole:'b'});askHuman(s,asked.id,{question:'Which one?'});
+  s.actor='a';const first=addTask(s,{title:'First'});const after=addTask(s,{title:'After the first',forRole:'b'});addDependency(s,after.id,first.id);
+  s.actor='b';
+  later(50,()=>{shift+=61_000;});
+  assert.equal((await waitForUrgent(s,{timeout:3,stopFile,since:context(s).snapshot_cursor,idleMinutes:1})).reason,'timeout','nothing takeable: no wake');
+  s.actor='a';const free=addTask(s,{title:'Free for b',forRole:'b'});s.actor='b';
+  later(50,()=>{shift+=61_000;});
+  const event=await waitForUrgent(s,{timeout:300,stopFile,since:context(s).snapshot_cursor,idleMinutes:1});
+  assert.equal(event.reason,'open-work');assert.deepEqual(event.tasks,[free.id],'only the takeable task is named');
 });

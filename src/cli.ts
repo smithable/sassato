@@ -131,6 +131,7 @@ function humanOutput(value: unknown, command?: string): string {
     let summary:string;
     if(event.reason==='urgent') summary=`URGENT ${event.message!.id} from ${event.message!.sender}: ${event.message!.summary}`;
     else if(event.reason==='reply-needed') summary=`REPLY ${event.message!.id} from ${event.message!.sender} asks for your reply: ${event.message!.summary}`;
+    else if(event.reason==='open-work') summary=`OPEN WORK ${(event.tasks??[]).slice(0,8).join(', ')} for ${event.role}, none taken, with nothing written for a while: take one (sassato take ${(event.tasks??[])[0]}), or say why not.`;
     else if(event.reason==='own-work') summary=`OWN WORK ${(event.tasks??[]).slice(0,8).join(', ')} held by ${event.role} with nothing written for a while: carry on, or block or release what waits on others.`;
     else if(event.reason==='stop') summary=event.stop!.file?`STOP ${event.stop!.file} for ${event.role}: follow repository stop instructions.`:`STOP ${event.stop!.id} for ${event.role}: check context and stop work.`;
     else if(event.reason==='answer') summary=`ANSWER ${event.question} for ${event.task}: read the human answer.`;
