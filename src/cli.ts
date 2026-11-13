@@ -18,6 +18,7 @@ import { stop } from './stop.js';
 import { getCheckpoint } from './checkpoints.js';
 import { getNotificationProgress, saveNotificationProgress } from './notification-progress.js';
 import { saveCheckpoint } from './recovery-write.js';
+import * as jobs from './jobs.js';
 
 const HELP = `sassato (sas) — local agent coordination
 
@@ -57,6 +58,9 @@ Sessions:   session register --provider NAME [--session-id ID] [--pid PID]
             sessions | usage TEXT [--until DATE]
 Control:    stop [ROLE...] [--all] [--timeout SECONDS | --no-wait | --force]
             stop-status [ROLE...] [--quiet] [--stop-file PATH] | stopped R1 | resume-work [ROLE...] [--all]
+Jobs:       job run --kind KIND [--wait | --no-wait] [--job-version TEXT] [--load more|same|less]
+            [--mem MB] -- COMMAND [ARGS...] (heavy work: waits for room, measured)
+            job list | job stats
 Read:       context [--brief] [--since EVENT_CURSOR] | status
             search TEXT [--type task,message,fact,event] [--phrase|--prefix]
 Migration:  import --backlog FILE --wip FILE --actions DIR --sessions FILE
@@ -73,8 +77,8 @@ select workspace when not explicit. Writes require --as; human actions require a
 Lists default to bounded results; --limit N. Context never consumes inbox receipts.
 Exit codes: 0 success/no matches; 1 storage/runtime; 2 input; 3 identity/access; 4 conflict; 5 mail-wait timeout.
 `;
-const strings = ['db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes'];
-const booleans = ['json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
+const strings = ['job-version','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes'];
+const booleans = ['json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','wait','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
 const globalFlags = ['db','workspace','as','json','help'];
 const allowed: Record<string,string[]> = {
   init:['config','humans','interactive','no-interactive','launch','dry-run','fresh','resume','no-prompt','terminal','distro','window','stop-file','new-window'], 'workspace attach':[], 'workspace settings':[], 'workspace set':['default-human','import-timezone','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases'],roles:[], 'role set':['provider','model','effort','permission-mode','sandbox','approval','dir','kind'],
@@ -84,7 +88,7 @@ const allowed: Record<string,string[]> = {
   'fact set':['source','checked-at','expect','answers'],'fact get':[],'fact history':[],facts:['limit'],
   'wip show':[],'wip set':['current','next','notes','expect'],sessions:[], 'session register':['provider','session-id','pid','replace'],'session heartbeat':['session-id'],'session end':['session-id'],usage:['until'],
   stop:['all','timeout','no-wait','force'],'stop-status':['quiet','stop-file'],stopped:[],'resume-work':['all'],
-  context:['brief','since','limit'],status:[],search:['type','owner','status','since','limit','phrase','prefix'],
+  context:['brief','since','limit'],status:[],'job run':['kind','wait','no-wait','job-version','load','mem'],'job list':[],'job stats':[],search:['type','owner','status','since','limit','phrase','prefix'],
   'checkpoint show':[], 'checkpoint save':['current','next','notes','expect','evidence'], 'progress show':[], 'progress save':['cursor','expect'],
   import:['backlog','wip','actions','sessions','dry-run','confirm','repair'],export:[],launch:['fresh','resume','dry-run','no-prompt','terminal','distro','window','stop-file','all','new-window'],'launch-unlock':[],migrate:[],doctor:[],backup:[],restore:[],machine:[]
 };
@@ -210,7 +214,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (bool('version')) {const build=JSON.parse(readFileSync(new URL('./build-info.json',import.meta.url),'utf8'));console.log(bool('json')?JSON.stringify({...build,schema:SCHEMA_VERSION}):`${build.version} (build ${build.build})`);return;}
     const p=[...positionals];let command=p.shift()!;
     if (command==='task') command=p.shift()??'tasks';
-    if (['workspace','role','fact','session'].includes(command)) command+=' '+(p.shift()??'');
+    if (['workspace','role','fact','session','job'].includes(command)) command+=' '+(p.shift()??'');
     if (command==='checkpoint' || command==='progress') command+=' '+(p.shift()??'show');
     // wip get is an alias of wip show, which prints the version that wip set --expect takes.
     if (command==='wip') command+=' '+(p[0]==='show'||p[0]==='set'?p.shift():p[0]==='get'?(p.shift(),'show'):'show');
@@ -241,7 +245,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     else if(command==='restore') {const source=arg('backup');empty();check(str('db'),'Restore requires explicit --db NEW_FILE');result=await a.restoreDatabase(source,db);}
     else if(command==='machine') {empty();result=a.machine();}
     else {
-      const reads=['tasks','show','blockers','humans','outbox','sent','fact get','fact history','facts','wip show','sessions','roles','workspace settings','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
+      const reads=['job list','job stats','tasks','show','blockers','humans','outbox','sent','fact get','fact history','facts','wip show','sessions','roles','workspace settings','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
       const readonly=reads.includes(command)||command==='retitle'&&!bool('apply')||command==='inbox'&&bool('peek')||['launch','import'].includes(command)&&bool('dry-run');
       store=new Store(db,actor,{readonly});
       const s=store;
@@ -321,6 +325,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'progress show': {const role=p.shift();empty();result=getNotificationProgress(s,role);break;}
         case 'progress save': empty();result=saveNotificationProgress(s,{cursor:integer(need('cursor'),'cursor'),expected_version:integer(expectNum(),'expect')});break;
         case 'status': empty();result=a.status(s);break;
+        case 'job run': {check(!(bool('wait')&&bool('no-wait')),'Choose --wait or --no-wait');process.exitCode=await jobs.runJob(s,{kind:need('kind'),wait:!bool('no-wait'),command:p.splice(0),estimate:{version:str('job-version'),load:str('load') as jobs.Estimate['load'],mem:num('mem')}});return;}
+        case 'job list': empty();result=jobs.listJobs(s);break;
+        case 'job stats': empty();result=jobs.jobStats(s);break;
         case 'search': result=a.search(s,rest('query'),{type:str('type'),role:str('owner'),status:str('status'),since:str('since'),limit:num('limit'),phrase:bool('phrase'),prefix:bool('prefix')});break;
         case 'import': empty();{const input={backlog:str('backlog'),wip:str('wip'),actions:str('actions'),sessions:str('sessions'),repair:bool('repair')};check(bool('dry-run')!==!!str('confirm'),'Use --dry-run to preview or --confirm DIGEST to apply');result=bool('dry-run')?m.previewImport(s,input):m.applyImport(s,input,need('confirm'));}break;
         case 'export': {const path=arg('new directory');empty();result=m.exportMarkdown(s,path);break;}

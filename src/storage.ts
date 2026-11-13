@@ -7,7 +7,7 @@ import { check, name, now, safe, id } from './errors.js';
 // SQLite rows deliberately stay flexible at this small adapter boundary.
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 export function databasePath(value?: string): string {
   const path = resolve(value ?? process.env.SASSATO_DB ?? `${process.env.XDG_DATA_HOME ?? `${homedir()}/.local/share`}/sassato/sassato.db`);
   let ancestor = path;
@@ -119,7 +119,8 @@ export class Store {
         current = 5;
       }
       if (current === 5) { this.db.exec(MIGRATION_6); current = 6; }
-      if (current === 6) this.db.exec(MIGRATION_7);
+      if (current === 6) { this.db.exec(MIGRATION_7); current = 7; }
+      if (current === 7) this.db.exec(MIGRATION_8);
     });
   }
   private cancelClosedQuestions(): void {
@@ -251,4 +252,14 @@ const MIGRATION_7 = `
 ALTER TABLE messages ADD COLUMN reply INTEGER NOT NULL DEFAULT 0 CHECK(reply IN (0,1));
 INSERT INTO schema_migrations VALUES(7,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 PRAGMA user_version=7;
+`;
+
+// Heavy jobs on the machine: who asked, what they needed and what they used (T753).
+const MIGRATION_8 = `
+CREATE TABLE jobs(id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id INTEGER NOT NULL REFERENCES workspaces(id), role TEXT NOT NULL, kind TEXT NOT NULL, version TEXT, command TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('waiting','running','done','refused','released')), need_mb INTEGER NOT NULL, cpu_need REAL NOT NULL, margin REAL NOT NULL, measured_mb INTEGER, load_estimate TEXT CHECK(load_estimate IN ('more','same','less')), mem_estimate INTEGER, pid INTEGER NOT NULL, process_start TEXT, cgroup TEXT, current_mb INTEGER, peak_mb INTEGER, cgroup_peak_mb INTEGER, cpu_s REAL, wall_s REAL, exit_code INTEGER, reason TEXT, orphans TEXT, created_at TEXT NOT NULL, started_at TEXT, ended_at TEXT, FOREIGN KEY(workspace_id,role) REFERENCES roles(workspace_id,name));
+CREATE INDEX jobs_open ON jobs(status,id) WHERE status IN ('waiting','running');
+CREATE INDEX jobs_kind ON jobs(kind,id);
+CREATE INDEX jobs_turns ON jobs(workspace_id,role,started_at);
+INSERT INTO schema_migrations VALUES(8,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+PRAGMA user_version=8;
 `;

@@ -206,6 +206,43 @@ mail and blockers remain visible regardless of --since. Non-inbox counts are low
 Detailed commands show full records. JSON context is limited to roughly 5800 characters;
 terminal context to 40 lines/6000 characters.
 
+## Heavy jobs on a shared machine
+
+`job run --kind KIND [--wait | --no-wait] [--job-version TEXT] [--load more|same|less] [--mem MB] -- COMMAND [ARGS...]`
+asks before a heavy command starts (a full test run, a benchmark, anything with a browser
+and a server), waits while the machine has no room for it, runs it, measures it and records
+the run. Its exit status is the command's; a job that is not started exits 75 with the reason.
+Jobs count across every workspace in the database, since they share one machine.
+
+- **Need.** A kind asks for the highest peak memory of its last five runs that ended with
+  exit 0, of the same `--job-version`, plus a fifth. With fewer than two such runs of that
+  version it takes the latest five of any version plus half; with none, a default (gate 6 GB,
+  evolution 4, benchmark 3, container-tests 4, other kinds 2). A peak among the latest five
+  rows of any end (failed, released, still going) can only raise the need, so runs cut off
+  early never lower it. The session's estimate can raise the need, never lower it: `--load
+  more` takes the half margin, `--mem MB` sets a floor; `--load less` and `same` are only
+  recorded.
+- **Admission.** Waiting jobs go in turn: the role with the fewest starts since the oldest
+  waiting job asked goes first, then by arrival, and no later job starts ahead of one that
+  waits. The first in turn starts when the memory available now, minus what running jobs may
+  still grow to (their need, or their present use plus a fifth once past it), minus 3 GB kept
+  free, covers its need, and the cores of running jobs plus its own stay within the machine's.
+  A need larger than the machine's memory less the reserve is refused at once. `--no-wait`
+  is refused instead of waiting.
+- **Measuring.** Each job runs in its own systemd user scope, when one can be made. Every two
+  seconds its memory is read from the scope's cgroup less its page cache (`memory.current`
+  minus the file pages in `memory.stat`, since the kernel reclaims cache and MemAvailable
+  counts it free); the peak is the highest of those, and CPU time comes from `cpu.stat`. The
+  cgroup's own `memory.peak`, cache included, is kept beside it. Without a scope the job's
+  process group and descendants are sampled from /proc. SIGINT, SIGTERM and SIGHUP to
+  `job run` go to every process of the job (the scope, or the process group). Processes a job
+  leaves running after a normal end are named, never killed. A job whose `job run` process
+  is gone is released.
+
+`job list` shows running and waiting jobs and the room left. `job stats` shows per kind and
+version the runs, failures, median and highest peak, CPU and wall time, how the peaks compared
+with the needs asked for, the estimates given, and what the next run will ask for.
+
 ## Search, migration and launch
 
 `search TEXT [--type task,message,fact,blocker,question,wip,event,import] [--owner ROLE]

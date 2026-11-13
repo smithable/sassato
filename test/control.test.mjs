@@ -125,7 +125,7 @@ test('context keeps stop instructions prominent, bounded and present after ackno
 test('v2 migration creates stop registry without changing existing role settings or history',t=>{
   const {s,path}=fixture(t);s.run("UPDATE roles SET reasoning_effort='high',permission_mode='plan' WHERE name='a' AND workspace_id=?",s.ws);
   const events=JSON.stringify(s.all('SELECT * FROM events ORDER BY id'));s.close();
-  const db=new DatabaseSync(path);db.exec('ALTER TABLE messages DROP COLUMN reply; DROP INDEX urgent_messages; ALTER TABLE messages DROP COLUMN urgent; DROP TABLE stop_requests; DELETE FROM schema_migrations WHERE version>=3; PRAGMA user_version=2');db.close();
+  const db=new DatabaseSync(path);db.exec('DROP TABLE jobs; ALTER TABLE messages DROP COLUMN reply; DROP INDEX urgent_messages; ALTER TABLE messages DROP COLUMN urgent; DROP TABLE stop_requests; DELETE FROM schema_migrations WHERE version>=3; PRAGMA user_version=2');db.close();
   assert.throws(()=>new Store(path,undefined,{readonly:true}),/writable migration/);
   const migrated=new Store(path,'human');migrated.use('team');
   assert.equal(migrated.get('PRAGMA user_version').user_version,SCHEMA_VERSION);
