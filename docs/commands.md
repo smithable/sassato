@@ -55,7 +55,7 @@ inherit provider defaults unless explicitly configured.
 | `update T1 --expect VERSION [--title TEXT] [--body TEXT] [--priority N\|now\|normal] [--for ROLE\|none]` | Reject stale client versions; only a human moves a task into or out of 90 and above |
 | `handoff T1 ROLE SUMMARY` | Transfer ownership/target with notification; recipient explicitly claims |
 | `release T1 REASON` | Remove ownership/lease, keep routing target; clear --for separately if needed |
-| `submit T1 SUMMARY` | Doing → review; summary should include refs/tests/handoff details |
+| `submit T1 SUMMARY [--reviewer ROLE[,ROLE]]` | Doing → review; summary should include refs/tests/handoff details. The waiters of the named reviewers wake; without `--reviewer`, the task's creator's waiter wakes when an agent other than the owner created it, else every eligible role's |
 | `review T1 --approve\|--reject --expect VERSION --note TEXT` | Review the inspected task version; stale approvals/rejections fail; rejection returns to doing and notifies owner |
 | `done T1 [--ref TEXT]` | Complete owned doing/review task, with blockers/dependencies and required review checked |
 | `drop T1 REASON` | Close without successful completion; cancel pending questions and resolve their linked blockers |

@@ -35,7 +35,7 @@ Tasks:      add TITLE [--body TEXT] [--for ROLE] [--owner ROLE] [--human-only]
             update T1 --expect VERSION [--title TEXT] [--body TEXT]
             retitle [--owner ROLE] [--apply] (preview imported titles by default)
             handoff T1 ROLE SUMMARY | release T1 REASON
-            submit T1 SUMMARY | review T1 --approve|--reject --expect VERSION --note TEXT
+            submit T1 SUMMARY [--reviewer ROLE[,ROLE]] | review T1 --approve|--reject --expect VERSION --note TEXT
             done T1 [--ref COMMIT] | drop T1 REASON | reopen T1 REASON
             after T1 T2 | unafter T1 T2
 Blockers:   block T1 TEXT --kind agent|human|external|other --waits-on NAME
@@ -83,7 +83,7 @@ const globalFlags = ['db','workspace','as','json','help'];
 const allowed: Record<string,string[]> = {
   init:['config','humans','interactive','no-interactive','launch','dry-run','fresh','resume','no-prompt','terminal','distro','window','stop-file','new-window'], 'workspace attach':[], 'workspace settings':[], 'workspace set':['default-human','import-timezone','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases'],roles:[], 'role set':['provider','model','effort','permission-mode','sandbox','approval','dir','kind'],
   add:['title','body','for','owner','priority','human-only','review-required'],tasks:['status','owner','for','available','limit','after'],show:['limit','before-event'],
-  take:['hours'],renew:['hours'],note:[],update:['expect','title','body','priority','for','human-only','agent-allowed','review-required','no-review'],handoff:[],release:[],submit:[],review:['approve','reject','note','expect'],done:['ref'],drop:[],reopen:[],after:[],unafter:[],block:['kind','waits-on','on'],blockers:['task','chain','limit','all'],resolve:[],
+  take:['hours'],renew:['hours'],note:[],update:['expect','title','body','priority','for','human-only','agent-allowed','review-required','no-review'],handoff:[],release:[],submit:['reviewer'],review:['approve','reject','note','expect'],done:['ref'],drop:[],reopen:[],after:[],unafter:[],block:['kind','waits-on','on'],blockers:['task','chain','limit','all'],resolve:[],
   'ask-human':['for','options','recommend','command'],answer:['close','relayed-by'],withdraw:[],humans:['for','limit'],send:['re','urgent','needs-reply'],wait:['urgent','timeout','stop-file','since','idle-minutes'],inbox:['peek','state','limit'],outbox:['limit'],sent:['limit'],retitle:['owner','apply'],ack:[],
   'fact set':['source','checked-at','expect','answers'],'fact get':[],'fact history':[],facts:['limit'],
   'wip show':[],'wip set':['current','next','notes','expect'],sessions:[], 'session register':['provider','session-id','pid','replace'],'session heartbeat':['session-id'],'session end':['session-id'],usage:['until'],
@@ -272,7 +272,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'show': {const task=arg('task');empty();result=task.startsWith('T')?t.showTask(s,task,{historyLimit:num('limit'),beforeEvent:num('before-event')}):a.showRecord(s,task);break;}
         case 'retitle': empty();result=retitleImportedTasks(s,{owner:str('owner'),apply:bool('apply')});break;
         case 'take': case 'renew': {const task=arg('task');empty();result=(command==='take'?t.takeTask:t.renewTask)(s,task,{hours:num('hours')});break;}
-        case 'note': case 'release': case 'submit': case 'drop': case 'reopen': {const task=arg('task'),note=rest('note');result=({note:t.noteTask,release:t.releaseTask,submit:t.submitTask,drop:t.dropTask,reopen:t.reopenTask}[command]!)(s,task,note);break;}
+        case 'submit': {const task=arg('task'),note=rest('note');result=t.submitTask(s,task,note,str('reviewer')?.split(','));break;}
+        case 'note': case 'release': case 'drop': case 'reopen': {const task=arg('task'),note=rest('note');result=({note:t.noteTask,release:t.releaseTask,drop:t.dropTask,reopen:t.reopenTask}[command]!)(s,task,note);break;}
         case 'update': {const task=arg('task');empty();check(!(bool('human-only')&&bool('agent-allowed')),'Conflicting human flags');check(!(bool('review-required')&&bool('no-review')),'Conflicting review flags');result=t.updateTask(s,task,{version:integer(expectNum(),'expect',1),title:str('title'),body:str('body'),priority:num('priority'),forRole:str('for')==='none'?null:str('for'),humanOnly:bool('human-only')?true:bool('agent-allowed')?false:undefined,reviewRequired:bool('review-required')?true:bool('no-review')?false:undefined});break;}
         case 'handoff': {const task=arg('task'),to=arg('role');result=t.handoffTask(s,task,to,rest('summary'));break;}
         case 'review': {const task=arg('task');empty();check(bool('approve')!==bool('reject'),'Choose --approve or --reject');result=t.reviewTask(s,task,{approve:bool('approve'),note:need('note'),expected_version:integer(expectNum(),'expected version',1)});break;}
