@@ -10,6 +10,7 @@ import {send,inbox,acknowledge} from '../dist/coordination.js';
 import {requestStop,resumeWork,acknowledgeStop} from '../dist/control.js';
 import {addTask,askHuman,answerQuestion,blockTask,resolveBlocker,addDependency,removeDependency,takeTask,doneTask,dropTask,reopenTask,releaseTask,handoffTask,updateTask} from '../dist/tasks.js';
 import {waitForWork} from '../dist/mail-wait.js';
+import {workspaceSettings,setWorkspaceSettings} from '../dist/workspace-settings.js';
 function fixture(t){
   const dir=mkdtempSync(join(tmpdir(),'sassato-workwait-')),path=join(dir,'state.db'),s=new Store(path,'human',{create:true});
   initWorkspace(s,'team',fixtureConfig);s.use('team');const reader=new Store(path,'a',{readonly:true});reader.use('team');
@@ -193,4 +194,18 @@ test('dropped dependencies notify blocked or review owners but ignore unrelated 
   const result=await wait(f,since);assert.equal(result.reason,'dependency-dropped');assert.deepEqual(result.tasks,[owned.id]);
   assert.equal(f.s.task(owned.id).status,'blocked');
   reopenTask(f.s,dependency.id,'Restored');assert.equal((await wait(f,since)).reason,'timeout','a reopened prerequisite supersedes its old drop notification');
+});
+
+test('open_work_roles: an unowned, unrouted task wakes only the listed roles; owned and routed work still wakes',async t=>{
+  const f=fixture(t);
+  setWorkspaceSettings(f.s,{open_work_roles:['b']});
+  assert.deepEqual(workspaceSettings(f.s).open_work_roles,['b']);
+  let since=f.cursor();const loose=addTask(f.s,{title:'Anyone may take this'});
+  assert.equal((await wait(f,since)).reason,'timeout','a is not listed, so unowned work does not wake it');
+  f.reader.actor='b';assert.equal((await wait(f,since)).task,loose.id);f.reader.actor='a';
+  since=f.cursor();const routed=addTask(f.s,{title:'For a',forRole:'a'});
+  const result=await wait(f,since);assert.equal(result.reason,'task-assigned');assert.equal(result.task,routed.id);
+  setWorkspaceSettings(f.s,{open_work_roles:null});since=f.cursor();const again=addTask(f.s,{title:'Unset again'});
+  assert.equal((await wait(f,since)).task,again.id);
+  assert.throws(()=>setWorkspaceSettings(f.s,{open_work_roles:['nobody']}));
 });

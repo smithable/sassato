@@ -38,6 +38,9 @@ prompts. Configuration is validated before creating a database.
 `--import-answer-markers JSON`, `--import-role-aliases JSON` and
 `--import-timezone-aliases JSON` configure historical document labels; see
 [configuration](configuration.md) for validation and examples.
+`--open-work-roles a,b,c` names the roles woken when a task with no owner and no
+`--for` role becomes ready (`all`, the default, wakes every eligible role); a role left out still
+sees such tasks in `tasks --available` and is woken for work owned by or routed to it.
 Use `none` to clear the default human or stop file. `role set NAME --kind human` adds a
 human; only an existing human can create/promote roles. Agent model/permission settings
 inherit provider defaults unless explicitly configured.
