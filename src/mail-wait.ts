@@ -16,13 +16,15 @@ export interface WaitResult {
 export interface WaitOptions { timeout?:number; stopFile?:string; since?:number; idleMinutes?:number }
 const maximum=(s:Store):number=>Number(s.get('SELECT coalesce(max(id),0) n FROM events WHERE workspace_id=?',s.ws)!.n);
 function available(s:Store,actor:string,condition:string,params:Param[],includeDoing=false):string[] {
-  // These are the same gates as tasks --available, applied to event candidates only.
+  // These are the same gates as tasks --available, applied to event candidates only, except that a
+  // task neither owned nor routed wakes only the roles in open_work_roles (every role when unset).
+  const roles=workspaceSettings(s).open_work_roles,takesOpen=roles===null||roles.includes(actor)?1:0;
   return s.all(`SELECT t.id FROM tasks t WHERE t.workspace_id=? AND (t.status='open'${includeDoing?" OR (t.status='doing' AND t.owner=?)":''})
     AND (t.owner IS NULL OR t.owner=?) AND (t.for_role IS NULL OR t.for_role=?)
-    AND (t.human_only=0 OR ?=1)
+    AND (t.human_only=0 OR ?=1) AND (t.owner IS NOT NULL OR t.for_role IS NOT NULL OR ?=1)
     AND NOT EXISTS (SELECT 1 FROM blockers b WHERE b.workspace_id=t.workspace_id AND b.task_id=t.id AND b.status='open')
     AND NOT EXISTS (SELECT 1 FROM dependencies d JOIN tasks p ON p.workspace_id=d.workspace_id AND p.id=d.depends_on WHERE d.workspace_id=t.workspace_id AND d.task_id=t.id AND p.status!='done')
-    AND (${condition}) ORDER BY t.id`,s.ws,...(includeDoing?[actor]:[]),actor,actor,s.role(actor).kind==='human'?1:0,...params).map(t=>`T${t.id}`);
+    AND (${condition}) ORDER BY t.id`,s.ws,...(includeDoing?[actor]:[]),actor,actor,s.role(actor).kind==='human'?1:0,takesOpen,...params).map(t=>`T${t.id}`);
 }
 function asked(s:Store,id:number,task:Row):string[] {
   const submitted=s.get("SELECT detail FROM events WHERE workspace_id=? AND entity='task' AND entity_id=? AND action='submitted' ORDER BY id DESC LIMIT 1",s.ws,`T${id}`);
