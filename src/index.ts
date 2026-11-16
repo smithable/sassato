@@ -6,7 +6,6 @@ import { isCodePath, safeName } from './index-policy.js';
 import { digest, treeFiles, readBlobs, resolveCommit, moduleOf, worktreePaths, worktreeFile } from './index-git.js';
 import { advanceLatest, cachedAnalysis, indexCacheRoot, publish, readSnapshot, snapshotPath } from './index-cache.js';
 import { namedReferences, parserVersion } from './index-extract.js';
-import { createHash } from 'node:crypto';
 
 export interface IndexOptions {repo?:string;cache?:string;limit?:number;registry?:{repository_id:string;checkout_id?:string};}
 const empty=():FileAnalysis=>({symbols:[],imports:[],exports:[],uses:[]});
@@ -46,7 +45,7 @@ export function buildIndex(options:IndexOptions={},diff?:string) {
   const path=snapshotPath(cache,repository,commit),published=publish(path,built.snapshot);
   if(!published)check(readSnapshot(cache,repository,commit),'Existing immutable snapshot is invalid; inspect its cache file before rebuilding',4);
   const latest_advanced=advanceLatest(cache,built.snapshot,identity);
-  return {schema:INDEX_SCHEMA,parser:parserVersion,repository,checkout:checkoutFingerprint(identity),commit,...(options.registry??{}),files:built.snapshot.files.length,analyzed:built.analyzed,reused:built.reused,published,latest_advanced,path,...(from?{base:from}:{})};
+  return {schema:INDEX_SCHEMA,parser:parserVersion,repository,checkout:checkoutFingerprint(identity),commit,...(options.registry??{}),files:built.snapshot.files.length,analyzed:built.analyzed,reused:built.reused,published,latest_advanced,...(!latest_advanced?{latest_notice:'Mainline pointer unchanged (non-mainline, non-forward, invalid pointer or occupied publish.lock); exact-commit snapshot is available. For an abandoned lock, inspect publish.lock/owner.json and verify its process is gone before removing it.'}:{}),path,...(from?{base:from}:{})};
 }
 interface View {identity:RepositoryIdentity;snapshot:IndexSnapshot;state:IndexResult['state'];fallback:boolean;reason?:string;view:string;}
 function currentView(options:IndexOptions,query:string):View {
@@ -58,14 +57,14 @@ function currentView(options:IndexOptions,query:string):View {
   let bytes=0,dirty=false;const until=Date.now()+60_000;
   for(const path of worktreePaths(identity)) {
     check(Date.now()<until,'Index worktree read exceeded its time limit',4);
-    const data=worktreeFile(identity,path);if(!data)continue;
-    bytes+=data.length;check(bytes<=128*1024*1024,'Worktree exceeds index source-byte limit',4);
-    const hash=createHash(identity.object_format).update(`blob ${data.length}\0`).update(data).digest('hex'),old=committed.get(path);seen.add(path);
-    const named=isCodePath(path)?namedReferences(path,data.toString('utf8'),query):[];
+    const entry=worktreeFile(identity,path);if(!entry)continue;
+    const {data,hash}=entry;bytes+=data?.length??0;check(bytes<=128*1024*1024,'Worktree exceeds index source-byte limit',4);
+    const old=committed.get(path);seen.add(path);
+    const named=data&&isCodePath(path)?namedReferences(path,data.toString('utf8'),query):[];
     if(old?.hash===hash)files.push(named.length?{...old,uses:[...old.uses,...named]}:old);
     else {
       dirty=true;
-      const analysis=isCodePath(path)?cachedAnalysis(cache,{path,blob:hash},data):empty();
+      const analysis=data&&isCodePath(path)?cachedAnalysis(cache,{path,blob:hash},data):{...empty(),...(entry.reason?{reason:entry.reason}:{})};
       files.push({path,hash,module:moduleOf(path),...analysis,uses:[...analysis.uses,...named]});
     }
   }
@@ -110,7 +109,7 @@ function queryIndex(query:string,options:IndexOptions,show:boolean):IndexResult 
   const matchedFiles=files.filter(file=>show?file.path===normalized||file.path.startsWith(normalized+'/'):file.path.toLowerCase().includes(needle));
   const definitions=files.flatMap(file=>file.symbols.filter(symbol=>show?symbol.name===query:symbol.name.toLowerCase().includes(needle)).map(symbol=>({file,symbol})));
   for(const file of matchedFiles) {
-    items.push(hit(file,file.module,1,'file',undefined,'module'));
+    items.push(hit(file,file.module,1,'file',undefined,file.reason??'module'));
     for(const symbol of file.symbols)items.push(hit(file,symbol.name,symbol.line,symbol.kind,symbol.signature,symbol.exported?'export':'definition'));
     for(const part of file.exports)if(!file.symbols.some(symbol=>symbol.name===part.name))items.push(hit(file,part.name,1,'export',undefined,part.from?`from ${part.from}`:'local export'));
     for(const imported of file.imports)items.push(hit(file,imported.specifier,imported.line,'import',undefined,resolveIndexImport(file.path,imported.specifier,paths)??'external or unresolved'));

@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, renameSync, symlinkSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, renameSync, symlinkSync, existsSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { buildIndex, findIndex, showIndex } from '../dist/index.js';
-import { indexCacheRoot, readSnapshot, snapshotPath, advanceLatest } from '../dist/index-cache.js';
+import { indexCacheRoot, readSnapshot, snapshotPath, advanceLatest, publish } from '../dist/index-cache.js';
 import { probeRepositoryIdentity, repositoryFingerprint } from '../dist/repository-identity.js';
 
 function git(repo,...args) {
@@ -122,4 +122,44 @@ test('skip-worktree and unmerged indexes fail explicitly instead of presenting p
   const blob=git(repo,'rev-parse','HEAD:src/timer.ts');
   const update=spawnSync('git',['-C',repo,'update-index','--index-info'],{input:`0 ${'0'.repeat(40)}\tsrc/timer.ts\n100644 ${blob} 1\tsrc/timer.ts\n100644 ${blob} 2\tsrc/timer.ts\n`,encoding:'utf8'});
   assert.equal(update.status,0,update.stderr);assert.throws(()=>findIndex('Timer',options),/Unmerged/);
+});
+
+test('mainline pointer ignores a feature descending from latest, and occupied locks are visible',t=>{
+  const {root,repo,options,head}=setup(t),initial=buildIndex(options);
+  const branch=join(root,'feature');git(repo,'worktree','add','-b','feature',branch,head);
+  write(branch,'feature.ts','export function featureOnly() {}');commit(branch);
+  assert.equal(buildIndex({...options,repo:branch}).latest_advanced,false);
+  write(repo,'main.ts','export function mainOnly() {}');const next=commit(repo);
+  assert.equal(buildIndex(options).latest_advanced,true);
+  const dir=dirname(dirname(initial.path)),lock=join(dir,'publish.lock');mkdirSync(lock);
+  const locked=buildIndex(options);assert.equal(locked.published,false);assert.equal(locked.latest_advanced,false);assert.match(locked.latest_notice,/owner.json/);
+  rmSync(lock,{recursive:true});assert.equal(buildIndex(options).latest_advanced,true);
+  writeFileSync(join(dir,'latest.json'),JSON.stringify({commit:'a'.repeat(40)}));
+  assert.equal(buildIndex(options).commit,next,'invalid optional pointer cannot fail canonical publication');
+});
+test('oversized sources and assets remain queryable as explicitly path-only entries',t=>{
+  const {repo,options}=setup(t);
+  write(repo,'large.js',' '.repeat(3*1024*1024));write(repo,'large.bin',Buffer.alloc(20*1024*1024));commit(repo);buildIndex(options);
+  const source=showIndex('large.js',options);assert.ok(source.items.some(item=>item.kind==='file'&&item.relation.includes('analysis size limit')));
+  const asset=showIndex('large.bin',options);assert.ok(asset.items.some(item=>item.kind==='file'&&item.relation.includes('not verified')));
+  assert.ok(showIndex('setTimer',options).items.some(item=>item.kind==='function'));
+});
+test('configured symlink roots work, writable roots and poisoned cache subdirectories fail closed',t=>{
+  const {root,options}=setup(t),actual=join(root,'actual-cache'),alias=join(root,'cache-alias');mkdirSync(actual,{mode:0o700});symlinkSync(actual,alias);
+  assert.equal(buildIndex({...options,cache:alias}).published,true);
+  chmodSync(actual,0o777);assert.throws(()=>buildIndex({...options,cache:alias}),/owned|writable/);chmodSync(actual,0o700);
+  const built=buildIndex(options),analysis=join(options.cache,'analysis');rmSync(analysis,{recursive:true});symlinkSync(actual,analysis);
+  assert.throws(()=>{write(options.repo,'src/new.ts','export function newOne() {}');findIndex('newOne',options);},/symlink/);
+  assert.ok(built.commit);
+});
+test('conditional operation dispatch arguments are discovered without persisting literals',t=>{
+  const {repo,options}=setup(t);write(repo,'src/conditional.ts',`run(existing ? "setTimer" : "addTimer", {});`);commit(repo);const built=buildIndex(options);
+  assert.ok(showIndex('setTimer',options).items.some(item=>item.path==='src/conditional.ts'&&item.relation.includes('named-reference')));
+  assert.equal(JSON.parse(readFileSync(built.path)).files.find(file=>file.path==='src/conditional.ts').uses.some(use=>use.name==='setTimer'),false);
+});
+
+test('metadata exceeding the read limit is rejected before immutable publication',t=>{
+  const {cache}=setup(t);indexCacheRoot(cache);const path=join(cache,'too-large.json');
+  assert.throws(()=>publish(path,{payload:'x'.repeat(64*1024*1024)}),/size limit/);
+  assert.equal(existsSync(path),false);
 });

@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, realpathSync } from 'node:fs';
+import { lstatSync, openSync, closeSync, readSync, readFileSync, realpathSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { AppError, check } from './errors.js';
 import { insideCheckout, type RepositoryIdentity } from './repository-identity.js';
@@ -56,20 +56,26 @@ export function readBlobs(identity:RepositoryIdentity,files:TreeFile[]):Map<stri
   return out;
 }
 /** Read only regular files below the real checkout root; a symlink in any component is excluded. */
-export function worktreeFile(identity:RepositoryIdentity,path:string):Buffer|undefined {
+export function worktreeFile(identity:RepositoryIdentity,path:string):{data?:Buffer;hash:string;reason?:string}|undefined {
   if(!indexablePath(path))return undefined;
   try {
     let location=identity.checkout_root;
     for(const part of path.split('/')) {location=join(location,part);if(lstatSync(location).isSymbolicLink())return undefined;}
     const stat=lstatSync(location);
     if(!stat.isFile()||!insideCheckout(identity.checkout_root,realpathSync(location)))return undefined;
-    check(stat.size<=(isCodePath(path)?MAX_SOURCE_BYTES:16*1024*1024),`Worktree file exceeds index byte limit: ${path}`,4);
-    return readFileSync(location);
+    if(stat.size>16*1024*1024)return {hash:'unverified:'+digest(`${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`),reason:'Path only: file exceeds hashing limit; worktree content not verified'};
+    const hash=createHash(identity.object_format).update(`blob ${stat.size}\0`);
+    if(isCodePath(path)&&stat.size<=MAX_SOURCE_BYTES) {
+      const data=readFileSync(location);return {data,hash:hash.update(data).digest('hex')};
+    }
+    const fd=openSync(location,'r'),chunk=Buffer.alloc(64*1024);
+    try {let count;while((count=readSync(fd,chunk,0,chunk.length,null))>0)hash.update(chunk.subarray(0,count));}finally{closeSync(fd);}
+    return {hash:hash.digest('hex'),...(isCodePath(path)?{reason:'Source exceeds analysis size limit'}:{})};
   }catch(error){if(error instanceof AppError)throw error;if(['ENOENT','ENOTDIR'].includes((error as NodeJS.ErrnoException).code??''))return undefined;throw new AppError(`Worktree file could not be read safely: ${path}`,4);}
 }
 export function worktreePaths(identity:RepositoryIdentity):string[] {
   const stages=indexGit(identity,['ls-files','--stage','-z']).toString().split('\0').filter(Boolean);
-  check(stages.every(row=>/^100(?:644|755) [a-f0-9]+ 0\t/.test(row)||row.startsWith('120000 ')),'Unmerged or submodule indexes are not supported by the repository index',4);
+  check(stages.every(row=>/^100(?:644|755) [a-f0-9]+ 0\t/.test(row)||/^120000 [a-f0-9]+ 0\t/.test(row)),'Unmerged or submodule indexes are not supported by the repository index',4);
   const flags=indexGit(identity,['ls-files','-v','-z']).toString().split('\0');
   check(!flags.some(row=>/^[sS] /.test(row)),'Sparse/skip-worktree indexes are not supported by the repository index',4);
   const paths=indexGit(identity,['ls-files','-z','--cached','--others','--exclude-standard']).toString().split('\0').filter(indexablePath);

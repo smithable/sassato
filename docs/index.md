@@ -57,14 +57,29 @@ heuristic, not a secret vault. Paths with control characters are excluded.
 
 The cache defaults to `$XDG_CACHE_HOME/sassato/index` or `~/.cache/sassato/index`;
 override it with `--cache PATH` or `SASSATO_INDEX_CACHE`. It contains metadata only.
-Cache directories cannot be symlinks. Immutable objects publish with an exclusive
+The configured cache root resolves platform or user symlinks once and must be
+owned by the current user without group/world write permission. Directories below
+that root cannot be symlinks and have the same ownership/write checks. Immutable objects publish with an exclusive
 temporary file and atomic hard link. The latest pointer is updated under an
-exclusive directory lock only when it advances ancestry; old or divergent builds
-cannot roll it back. A busy or abandoned `publish.lock` skips latest publication;
-exact-commit queries still work. Inspect ownership before removing an abandoned lock.
+exclusive directory lock only when it advances ancestry on `main`, `master`, or
+`origin/HEAD` (in that order). Feature branches cannot capture it; old or divergent
+builds cannot roll it back. A busy or abandoned `publish.lock` skips latest publication
+and the build returns an explicit `latest_notice`; exact-commit queries still work.
+The lock contains `owner.json` with its host, PID and start time. Recovery is manual:
+verify that host/process is gone, then remove that lock directory and rebuild.
+The tool never steals a lock based on age or PID alone. The pointer is optional;
+an invalid or unavailable ancestry hint cannot invalidate a published snapshot.
 
 Resource bounds are explicit: 100,000 paths; 2 MiB per analyzed source file; 96 MiB
-of committed source per build; 128 MiB of current worktree bytes per query; 16 MiB
-per non-code worktree file; bounded Git reads and a 60-second overlay scan. Exceeding
-a worktree bound fails rather than silently presenting an incomplete current view.
-Oversized committed sources remain path-only with an analysis reason.
+of committed source per build; 128 MiB of analyzed current source per query; 16 MiB
+per worktree file hash; bounded Git reads and a 60-second overlay scan. Exceeding
+the total source or time budget fails explicitly. Oversized sources remain path-only
+with an analysis reason. Non-code and oversized source files are hashed in chunks;
+files beyond the hashing limit remain visible with a stat-based view token and an
+explicit unverified-content reason, causing an overlay state. Metadata objects are
+limited to 64 MiB before publication, matching the read limit.
+
+Cache compatibility includes the schema and parser version. Changes to extraction,
+exclusion or secret heuristics must bump the index schema. Raw worktree hashes
+intentionally avoid Git clean filters; repositories using line-ending conversion
+can report an overlay for bytes that Git considers clean.

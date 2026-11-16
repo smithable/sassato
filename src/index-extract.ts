@@ -84,7 +84,15 @@ export function namedReferences(path:string,source:string,name:string):FileAnaly
   if(!/^[A-Za-z_$][\w$]{0,127}$/.test(name)||!source.includes(name)||!safeSource(source))return [];
   const file=ts.createSourceFile(path,source,ts.ScriptTarget.Latest,true),uses:FileAnalysis['uses']=[];
   const visit=(node:TS.Node):void=>{
-    if(ts.isCallExpression(node))for(const arg of node.arguments)if(ts.isStringLiteral(arg)&&arg.text===name)uses.push({name,line:file.getLineAndCharacterOfPosition(arg.getStart(file)).line+1,kind:'named-reference'});
+    if(ts.isCallExpression(node))for(const arg of node.arguments) {
+      // Dispatch names may be selected by a conditional argument. Do not search arbitrary bodies.
+      const argument=(part:TS.Expression):void=>{
+        if(ts.isStringLiteral(part)&&part.text===name)uses.push({name,line:file.getLineAndCharacterOfPosition(part.getStart(file)).line+1,kind:'named-reference'});
+        else if(ts.isConditionalExpression(part)){argument(part.whenTrue);argument(part.whenFalse);}
+        else if(ts.isParenthesizedExpression(part))argument(part.expression);
+      };
+      argument(arg);
+    }
     ts.forEachChild(node,visit);
   };
   visit(file);return uses;
