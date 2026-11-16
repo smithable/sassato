@@ -108,3 +108,11 @@ seals its no-new-child inventory, lets main exit, verifies that child, grandchil
 and detached descendant remain in the original scope, and signals only those
 positively owned processes through pidfds. It requires the same positive empty
 proof before cleanup.
+
+Pin the main process's exit pidfd while its live identity is still verified,
+before requesting main-only exit. Opening a pidfd after reaping can fail even
+while the numeric process-group/session identity remains allocated: the matching
+[pidfd_prepare](https://github.com/microsoft/WSL2-Linux-Kernel/blob/linux-msft-wsl-6.6.87.2/kernel/fork.c)
+requires an associated thread-group task. A native run observed `EINVAL` in that
+window and preserved evidence without signaling or cleanup. That errno is never
+exit proof; the lab instead requires `POLLIN` from the continuously held pidfd.

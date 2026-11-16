@@ -16,6 +16,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import native_containment as native
 import native_containment_events as events
+import native_containment_lab as lab
 
 
 class InventoryTests(unittest.TestCase):
@@ -199,6 +200,29 @@ def event_bytes(watch, mask, name="owned.service"):
     raw = name.encode() + b"\0"
     raw += b"\0" * (-len(raw) % 4)
     return struct.pack("iIII", watch, mask, 0, len(raw)) + raw
+
+
+class LabExitTests(unittest.TestCase):
+    def test_main_pidfd_is_pinned_before_exit_and_never_reopened_after_reaping(self):
+        with tempfile.TemporaryDirectory(prefix="sassato-lab-offline-") as name:
+            directory = Path(name)
+            (directory / "ready.json").touch()
+            main = {"pid": 123, "role": "main", "start": "owned"}
+            descendants = [{"pid": pid, "role": role, "start": "owned"} for pid, role in [(124, "child"), (125, "grandchild"), (126, "detached")]]
+            sent = []
+            def claim(pid):
+                self.assertFalse((directory / "EXIT-MAIN").exists())
+                return main
+            scope = SimpleNamespace(directory=directory, state={"bootstrap": main, "deadline": time.monotonic() + 10}, release=lambda: None, _guard=lambda: None, _claim=claim, seal_idle_inventory=lambda: {"claims": [main] + descendants}, snapshot=lambda: {"claims": descendants}, signal_owned=sent.append)
+            poll = SimpleNamespace(register=lambda fd, mask: None, poll=lambda timeout: [(777, lab.select.POLLIN)])
+            # A second open would reproduce the native post-reap EINVAL failure.
+            with patch.object(lab.os, "pidfd_open", side_effect=[777, OSError(errno.EINVAL, "reaped")]) as opened, patch.object(lab.os, "close") as closed, patch.object(lab.select, "poll", return_value=poll), patch.object(lab, "positively_exited", return_value=False):
+                report = {}
+                lab.full_tree(scope, report)
+                opened.assert_called_once_with(123)
+                closed.assert_called_once_with(777)
+            self.assertTrue(report["main_exit"]["retained_pidfd_pollin"])
+            self.assertEqual(sent, descendants)
 
 
 class RemovalLedgerTests(unittest.TestCase):

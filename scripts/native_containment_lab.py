@@ -1,6 +1,8 @@
 """Explicit bounded real-kernel lab. Fixed fake helper only; no providers."""
 import argparse
+import os
 from pathlib import Path
+import select
 import time
 from native_containment import FixtureScope, UnknownScope, atomic_json, positively_exited
 
@@ -16,12 +18,28 @@ def full_tree(scope, report):
     report["sealed_inventory"] = scope.seal_idle_inventory()
     # The fixed helper has no fork path after ready.json. Let only main exit,
     # retaining the original controller and cgroup handles throughout.
-    (scope.directory / "EXIT-MAIN").touch(mode=0o600)
-    while not positively_exited(scope.state["bootstrap"]):
+    claim = scope.state["bootstrap"]
+    main_fd = os.pidfd_open(claim["pid"])
+    try:
+        if scope._claim(claim["pid"]) != claim:
+            raise UnknownScope("Main identity changed before pinning its exit handle")
+        poll = select.poll()
+        poll.register(main_fd, select.POLLIN)
         scope._guard()
-        if time.monotonic() >= scope.state["deadline"]:
-            raise UnknownScope("Main exit deadline elapsed")
-        time.sleep(0.02)
+        (scope.directory / "EXIT-MAIN").touch(mode=0o600)
+        while True:
+            events = poll.poll(0)
+            if events:
+                if len(events) != 1 or events[0][0] != main_fd or not events[0][1] & select.POLLIN or events[0][1] & (select.POLLERR | select.POLLNVAL):
+                    raise UnknownScope("Main pidfd exit observation is invalid")
+                report["main_exit"] = {"pid": claim["pid"], "start": claim["start"], "retained_pidfd_pollin": True}
+                break
+            scope._guard()
+            if time.monotonic() >= scope.state["deadline"]:
+                raise UnknownScope("Main exit deadline elapsed")
+            time.sleep(0.02)
+    finally:
+        os.close(main_fd)
     current = scope.snapshot()
     if sorted(claim["role"] for claim in current["claims"]) != ["child", "detached", "grandchild"]:
         raise UnknownScope("Detached descendants did not remain in the owned scope after main exit")
