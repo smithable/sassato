@@ -111,7 +111,7 @@ function queryIndex(query:string,options:IndexOptions,show:boolean):IndexResult 
   for(const file of matchedFiles) {
     items.push(hit(file,file.module,1,'file',undefined,file.reason??'module'));
     for(const symbol of file.symbols)items.push(hit(file,symbol.name,symbol.line,symbol.kind,symbol.signature,symbol.exported?'export':'definition'));
-    for(const part of file.exports)if(!file.symbols.some(symbol=>symbol.name===part.name))items.push(hit(file,part.name,1,'export',undefined,part.from?`from ${part.from}`:'local export'));
+    for(const part of file.exports)if(!file.symbols.some(symbol=>symbol.name===part.name))items.push(hit(file,part.name,part.line,'export',undefined,part.from?`from ${part.from}`:'local export'));
     for(const imported of file.imports)items.push(hit(file,imported.specifier,imported.line,'import',undefined,resolveIndexImport(file.path,imported.specifier,paths)??'external or unresolved'));
   }
   for(const {file,symbol} of definitions) {

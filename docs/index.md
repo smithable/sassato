@@ -67,6 +67,8 @@ builds cannot roll it back. A busy or abandoned `publish.lock` skips latest publ
 and the build returns an explicit `latest_notice`; exact-commit queries still work.
 The lock contains `owner.json` with its host, PID and start time. Recovery is manual:
 verify that host/process is gone, then remove that lock directory and rebuild.
+If `owner.json` is absent (a crash before its write), first verify no index builder
+is running against this cache; an unknown owner is never evidence of a dead one.
 The tool never steals a lock based on age or PID alone. The pointer is optional;
 an invalid or unavailable ancestry hint cannot invalidate a published snapshot.
 
@@ -83,3 +85,23 @@ Cache compatibility includes the schema and parser version. Changes to extractio
 exclusion or secret heuristics must bump the index schema. Raw worktree hashes
 intentionally avoid Git clean filters; repositories using line-ending conversion
 can report an overlay for bytes that Git considers clean.
+
+## Example engine measurement
+
+On engine commit `709d3f02f4f0b91bba648bba0d621625448b603a`, Node 24.21.0,
+a cold local cache with implementation `80fe3f56fc6252b8cb99948b042768770ada8327`
+indexed 3,230 paths and analyzed 1,041 source files in 5.76 seconds. The canonical
+snapshot was 29,685,227 bytes; snapshot plus reusable analysis occupied 58,076,533
+bytes. Peak process RSS was about 447 MiB. These are one-run observations, not a
+performance guarantee; concurrent machine load affects query times.
+
+The three checked queries used the requesting checkout's exact commit with no
+fallback: `show packages/core/src/sections/timers.ts` located `cronProblem` at line
+108 and `readTimer` at line 132 (2.31 seconds); `show setTimer` found its definition
+at line 619, registration at line 714, Studio dispatch in
+`apps/studio/src/builder/TimerForm.tsx:108`, and test references (1.42 seconds);
+`show packages/index/src/index.ts` listed barrel exports including `buildIndex`,
+`buildContext`, `answerQuestion`, `findTests` and `noSignIn` (1.86 seconds). Runtime
+string dispatch is a potential reference, requiring source inspection. The timer
+file query exceeded the output budget and said so; JSON or a narrower query is
+needed for its remaining locations.

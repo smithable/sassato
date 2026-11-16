@@ -19,7 +19,7 @@ function setup(t) {
   git(repo,'init','-b','main');git(repo,'config','user.name','Fixture');git(repo,'config','user.email','fixture@example.invalid');
   write(repo,'src/timer.ts','export function setTimer(value: number): number { return value + 1; }\nexport const unused = 5;\n');
   write(repo,'src/use.ts',"import { setTimer as schedule } from './timer.js';\nexport function start() { return schedule(3); }\nrun('setTimer');\n");
-  write(repo,'src/index.ts',"export { setTimer } from './timer.js';\n");
+  write(repo,'src/index.ts',"\nexport { setTimer } from './timer.js';\n");
   write(repo,'src/timer.test.ts',"import { setTimer } from './timer.js';\nsetTimer(1);\n");
   const head=commit(repo,'Initial fixture');
   t.after(()=>rmSync(root,{recursive:true,force:true}));return {root,repo,cache,head,options:{repo,cache,limit:100}};
@@ -34,7 +34,7 @@ test('full index provides definitions, aliases, imports, module exports and quer
   assert.ok(found.items.some(item=>item.path==='src/use.ts'&&item.kind==='use'&&item.line===2));
   assert.ok(found.items.some(item=>item.path==='src/use.ts'&&item.relation.includes('named-reference')));
   const file=showIndex('src/index.ts',options);assert.ok(file.items.some(item=>item.kind==='import'&&item.relation==='src/timer.ts'));
-  assert.ok(file.items.some(item=>item.kind==='export'&&item.name==='setTimer'));
+  assert.ok(file.items.some(item=>item.kind==='export'&&item.name==='setTimer'&&item.line===2));
   assert.ok(showIndex('src',options).items.some(item=>item.name==='start'));
   assert.equal(buildIndex(options).analyzed,0,'same committed snapshot reuses every file');
   assert.equal(readSnapshot(cache,built.repository,head).files.find(file=>file.path==='src/use.ts').uses.some(use=>use.kind==='named-reference'),false);
@@ -136,10 +136,12 @@ test('mainline pointer ignores a feature descending from latest, and occupied lo
   rmSync(lock,{recursive:true});assert.equal(buildIndex(options).latest_advanced,true);
   writeFileSync(join(dir,'latest.json'),JSON.stringify({commit:'a'.repeat(40)}));
   assert.equal(buildIndex(options).commit,next,'invalid optional pointer cannot fail canonical publication');
+  for(const value of ['broken JSON',JSON.stringify({commit:'invalid'})]) {writeFileSync(join(dir,'latest.json'),value);assert.equal(buildIndex(options).commit,next);}
 });
 test('oversized sources and assets remain queryable as explicitly path-only entries',t=>{
   const {repo,options}=setup(t);
   write(repo,'large.js',' '.repeat(3*1024*1024));write(repo,'large.bin',Buffer.alloc(20*1024*1024));commit(repo);buildIndex(options);
+  assert.equal(buildIndex(options).published,false,'path-only reasons remain valid on snapshot reread');
   const source=showIndex('large.js',options);assert.ok(source.items.some(item=>item.kind==='file'&&item.relation.includes('analysis size limit')));
   const asset=showIndex('large.bin',options);assert.ok(asset.items.some(item=>item.kind==='file'&&item.relation.includes('not verified')));
   assert.ok(showIndex('setTimer',options).items.some(item=>item.kind==='function'));

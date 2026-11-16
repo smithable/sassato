@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstatSync, openSync, closeSync, readSync, readFileSync, realpathSync } from 'node:fs';
+import { constants, fstatSync, lstatSync, openSync, closeSync, readSync, realpathSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { AppError, check } from './errors.js';
 import { insideCheckout, type RepositoryIdentity } from './repository-identity.js';
@@ -64,13 +64,19 @@ export function worktreeFile(identity:RepositoryIdentity,path:string):{data?:Buf
     const stat=lstatSync(location);
     if(!stat.isFile()||!insideCheckout(identity.checkout_root,realpathSync(location)))return undefined;
     if(stat.size>16*1024*1024)return {hash:'unverified:'+digest(`${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`),reason:'Path only: file exceeds hashing limit; worktree content not verified'};
-    const hash=createHash(identity.object_format).update(`blob ${stat.size}\0`);
-    if(isCodePath(path)&&stat.size<=MAX_SOURCE_BYTES) {
-      const data=readFileSync(location);return {data,hash:hash.update(data).digest('hex')};
-    }
-    const fd=openSync(location,'r'),chunk=Buffer.alloc(64*1024);
-    try {let count;while((count=readSync(fd,chunk,0,chunk.length,null))>0)hash.update(chunk.subarray(0,count));}finally{closeSync(fd);}
-    return {hash:hash.digest('hex'),...(isCodePath(path)?{reason:'Source exceeds analysis size limit'}:{})};
+    const hash=createHash(identity.object_format).update(`blob ${stat.size}\0`),code=isCodePath(path)&&stat.size<=MAX_SOURCE_BYTES;
+    const fd=openSync(location,constants.O_RDONLY|constants.O_NOFOLLOW),chunk=Buffer.alloc(64*1024),parts:Buffer[]=[];
+    let count=0;
+    try {
+      let size;
+      while((size=readSync(fd,chunk,0,chunk.length,null))>0) {
+        count+=size;check(count<=stat.size,'Worktree file changed during index read; retry',4);
+        hash.update(chunk.subarray(0,size));if(code)parts.push(Buffer.from(chunk.subarray(0,size)));
+      }
+      const after=fstatSync(fd);
+      check(after.isFile()&&count===stat.size&&after.ino===stat.ino&&after.dev===stat.dev&&after.mtimeMs===stat.mtimeMs&&after.ctimeMs===stat.ctimeMs,'Worktree file changed during index read; retry',4);
+    }finally{closeSync(fd);}
+    return {hash:hash.digest('hex'),...(code?{data:Buffer.concat(parts)}:isCodePath(path)?{reason:'Source exceeds analysis size limit'}:{})};
   }catch(error){if(error instanceof AppError)throw error;if(['ENOENT','ENOTDIR'].includes((error as NodeJS.ErrnoException).code??''))return undefined;throw new AppError(`Worktree file could not be read safely: ${path}`,4);}
 }
 export function worktreePaths(identity:RepositoryIdentity):string[] {

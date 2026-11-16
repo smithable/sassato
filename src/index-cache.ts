@@ -17,7 +17,8 @@ export function indexCacheRoot(path?:string):string {
   function canonical(path:string):string {
     if(existsSync(path))return realpathSync(path);
     const result=join(canonical(dirname(path)),path.slice(dirname(path).length+1));
-    mkdirSync(result,{mode:0o700});return result;
+    try {mkdirSync(result,{mode:0o700});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;}
+    privateDirectory(result);return result;
   }
   const root=canonical(requested);privateDirectory(root);cacheRoots.add(root);return root;
 }
@@ -31,7 +32,7 @@ function directory(path:string):void {
     check(dirname(path)!==path,'Index cache path is outside its configured root',4);
     directory(dirname(path));
   }
-  if(!existsSync(path))mkdirSync(path,{mode:0o700});
+  if(!existsSync(path))try {mkdirSync(path,{mode:0o700});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;}
   privateDirectory(path);
 }
 export function validAnalysis(value:FileAnalysis):boolean {
@@ -39,7 +40,7 @@ export function validAnalysis(value:FileAnalysis):boolean {
   const line=(v:unknown)=>Number.isSafeInteger(v)&&Number(v)>0;
   return Boolean(value&&Array.isArray(value.symbols)&&value.symbols.every(v=>v&&name(v.name)&&name(v.kind)&&line(v.line)&&name(v.signature)&&typeof v.exported==='boolean')
     &&Array.isArray(value.imports)&&value.imports.every(v=>v&&name(v.specifier)&&line(v.line)&&typeof v.reexport==='boolean'&&Array.isArray(v.bindings)&&v.bindings.every(b=>b&&name(b.local)&&name(b.imported)))
-    &&Array.isArray(value.exports)&&value.exports.every(v=>v&&name(v.name)&&(v.local===undefined||name(v.local))&&(v.from===undefined||name(v.from)))
+    &&Array.isArray(value.exports)&&value.exports.every(v=>v&&name(v.name)&&line(v.line)&&(v.local===undefined||name(v.local))&&(v.from===undefined||name(v.from)))
     &&Array.isArray(value.uses)&&value.uses.every(v=>v&&name(v.name)&&line(v.line)&&['call','reference'].includes(v.kind))
     &&(value.reason===undefined||name(value.reason)));
 }
@@ -50,8 +51,9 @@ export function publish(path:string,value:unknown):boolean {
   directory(dirname(path));
   const temp=path+'.'+randomUUID()+'.tmp';
   const fd=openSync(temp,constants.O_CREAT|constants.O_EXCL|constants.O_WRONLY,0o600);
-  try {writeFileSync(fd,serialized);}finally{closeSync(fd);}
-  try {linkSync(temp,path);return true;}catch(error) {if((error as NodeJS.ErrnoException).code==='EEXIST')return false;throw error;}
+  try {
+    try {writeFileSync(fd,serialized);}finally{closeSync(fd);}
+    linkSync(temp,path);return true;}catch(error) {if((error as NodeJS.ErrnoException).code==='EEXIST')return false;throw error;}
   finally {unlinkSync(temp);}
 }
 export function readCache(path:string,maxBytes=MAX_CACHE_BYTES):unknown {
@@ -79,6 +81,9 @@ export function cachedAnalysis(root:string,file:TreeFile,source:Buffer):FileAnal
   const value=analyzeSource(file.path,source.toString('utf8'));publish(path,value);return value;
 }
 export function advanceLatest(root:string,snapshot:IndexSnapshot,identity:RepositoryIdentity):boolean {
+  try {return advanceLatestHint(root,snapshot,identity);}catch {return false;}
+}
+function advanceLatestHint(root:string,snapshot:IndexSnapshot,identity:RepositoryIdentity):boolean {
   const dir=dirname(dirname(snapshotPath(root,snapshot.repository,snapshot.commit))),lock=join(dir,'publish.lock'),latest=join(dir,'latest.json');
   // latest is a mainline hint only; feature snapshots always remain addressable by commit.
   let main:string|undefined;
@@ -97,5 +102,8 @@ export function advanceLatest(root:string,snapshot:IndexSnapshot,identity:Reposi
     }
     const temp=latest+'.'+randomUUID()+'.tmp';
     writeFileSync(temp,JSON.stringify({schema:INDEX_SCHEMA,commit:snapshot.commit})+'\n',{flag:'wx',mode:0o600});renameSync(temp,latest);return true;
-  }finally {unlinkSync(join(lock,'owner.json'));rmdirSync(lock);}
+  }finally {
+    try {unlinkSync(join(lock,'owner.json'));}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+    finally {rmdirSync(lock);}
+  }
 }

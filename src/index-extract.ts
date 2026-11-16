@@ -30,7 +30,7 @@ export function analyzeSource(path:string,source:string):FileAnalysis {
     if(!name || !safeName(name))return;
     const item:IndexSymbol={name,kind,line:line(node),signature:signature.slice(0,512),exported:isExport};
     result.symbols.push(item);
-    if(isExport)result.exports.push({name:defaultExport(node)?'default':name,local:name});
+    if(isExport)result.exports.push({name:defaultExport(node)?'default':name,line:line(node),local:name});
   };
   const visit=(node:TS.Node):void=>{
     if(ts.isFunctionDeclaration(node)) {
@@ -62,8 +62,8 @@ export function analyzeSource(path:string,source:string):FileAnalysis {
       const from=node.moduleSpecifier&&ts.isStringLiteral(node.moduleSpecifier)?node.moduleSpecifier.text:undefined;
       if(from&&!safeName(from))return;
       if(from)result.imports.push({specifier:from,line:line(node),bindings:[],reexport:true});
-      if(node.exportClause&&ts.isNamedExports(node.exportClause))for(const part of node.exportClause.elements)result.exports.push({name:part.name.text,local:part.propertyName?.text??part.name.text,...(from?{from}:{})});
-      else if(from)result.exports.push({name:'*',from});
+      if(node.exportClause&&ts.isNamedExports(node.exportClause))for(const part of node.exportClause.elements)result.exports.push({name:part.name.text,line:line(node),local:part.propertyName?.text??part.name.text,...(from?{from}:{})});
+      else if(from)result.exports.push({name:'*',line:line(node),from});
     }
     if(ts.isCallExpression(node)) {
       const name=ts.isIdentifier(node.expression)?node.expression.text:ts.isPropertyAccessExpression(node.expression)?node.expression.name.text:undefined;

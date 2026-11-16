@@ -1,5 +1,5 @@
 /** Names and locations only. Source text and declaration initializers never enter the cache. */
-export const INDEX_SCHEMA=1;
+export const INDEX_SCHEMA=2;
 export const MAX_SOURCE_BYTES=2*1024*1024;
 export interface IndexSymbol {name:string;kind:string;line:number;signature:string;exported:boolean;}
 export interface IndexImport {specifier:string;line:number;bindings:{local:string;imported:string}[];reexport:boolean;}
@@ -7,7 +7,7 @@ export interface IndexUse {name:string;line:number;kind:'call'|'reference'|'name
 export interface FileAnalysis {
   symbols:IndexSymbol[];
   imports:IndexImport[];
-  exports:{name:string;local?:string;from?:string}[];
+  exports:{name:string;line:number;local?:string;from?:string}[];
   uses:IndexUse[];
   reason?:string;
 }
