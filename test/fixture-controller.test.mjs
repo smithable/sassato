@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { Store } from '../dist/storage.js';
 import { initWorkspace } from '../dist/admin.js';
 import { addTask,takeTask,noteTask } from '../dist/tasks.js';
-import { registerCheckout } from '../dist/checkouts.js';
+import { registerCheckout,bindCheckout } from '../dist/checkouts.js';
 import { saveNotificationProgress,getNotificationProgress } from '../dist/notification-progress.js';
 import { setWorkspaceSettings } from '../dist/workspace-settings.js';
 import { setSupervisorPolicy } from '../dist/supervisor-policy.js';
@@ -17,14 +17,14 @@ import { captureFixtureConfiguration,supervisorDigest } from '../dist/supervisor
 import { acquireSupervisorLock } from '../dist/supervisor-locks.js';
 import { FixtureController } from '../dist/fixture-controller.js';
 import { requestStop } from '../dist/control.js';
-import { processIdentity } from '../dist/coordination.js';
+import { processIdentity,setRole,registerSession } from '../dist/coordination.js';
 
 async function until(predicate,label='condition'){
   const deadline=Date.now()+5000;
   while(Date.now()<deadline){const result=predicate();if(result)return result;await new Promise(r=>setTimeout(r,20));}
   throw new Error('Timed out: '+label);
 }
-function fixture(t){
+function fixture(t,extraWorker=false){
   const dir=mkdtempSync(join(tmpdir(),'sassato-controller-')),root=join(dir,'checkout'),db=join(dir,'state.db');mkdirSync(root);
   const git=(...args)=>execFileSync('git',['-C',root,...args],{stdio:'pipe'});
   git('init','-b','main');writeFileSync(join(root,'file.txt'),'initial');git('add','.');git('-c','user.name=Fixture','-c','user.email=fixture@example.test','commit','-m','Initial');
@@ -35,8 +35,12 @@ function fixture(t){
   const checkout=registerCheckout(s,root),cursor=s.get('SELECT max(id) n FROM events').n;
   const progress=saveNotificationProgress(s,{cursor,expected_version:0}),configuration=captureFixtureConfiguration(s,'builder',program);
   s.actor='human';setWorkspaceSettings(s,{busy_checks:[{name:'fixture-protected-jobs',type:'command',argv:[process.execPath,'-e','process.exit(1)'],cwd:dir,timeout_ms:1000}]});
+  let extraTask;
+  if(extraWorker){
+    setRole(s,'other-worker',{kind:'agent',provider:'claude'});s.actor='other-worker';extraTask=addTask(s,{title:'Independent competing work'});takeTask(s,extraTask.id);saveNotificationProgress(s,{cursor:s.get('SELECT max(id) n FROM events').n,expected_version:0});s.actor='human';
+  }
   const controllerPath=join(dir,'controller.lock'),maintenancePath=join(dir,'maintenance.lock');
-  setSupervisorPolicy(s,{version:1,controller_id:randomUUID(),controller_role:'reviewer',worker_roles:['builder'],repository_ids:[checkout.repository_id],controller_lock:controllerPath,maintenance_lock:maintenancePath,maximum_workers:1});s.actor='reviewer';
+  setSupervisorPolicy(s,{version:1,controller_id:randomUUID(),controller_role:'reviewer',worker_roles:extraWorker?['builder','other-worker']:['builder'],repository_ids:[checkout.repository_id],controller_lock:controllerPath,maintenance_lock:maintenancePath,maximum_workers:extraWorker?2:1});s.actor='reviewer';
   const lock=acquireSupervisorLock(controllerPath,'exclusive'),maintenance=acquireSupervisorLock(maintenancePath,'exclusive'),controller=new FixtureController(s,lock),children=[];
   t.after(async()=>{for(const child of children)if(child.exitCode===null&&child.signalCode===null){const exited=once(child,'exit');child.kill();await exited;}maintenance.close();lock.close();s.close();rmSync(dir,{recursive:true,force:true});});
   const launch=()=>controller.beginLaunch({role:'builder',task:task.id,checkout:checkout.checkout_id,directory:root,configuration,idempotency_key:'initial'},maintenance);
@@ -47,7 +51,7 @@ function fixture(t){
     child.request=async message=>{const id=++request;child.send({...message,request:id});return until(()=>child.messages.find(row=>row.request===id),'fixture reply');};
     return child;
   }
-  return {dir,root,db,s,task,progress,configuration,controller,maintenance,launch,start,lock,controllerPath,maintenancePath};
+  return {dir,root,db,s,task,progress,configuration,controller,maintenance,launch,start,lock,controllerPath,maintenancePath,checkout,program,extraTask};
 }
 test('durable launch intent gates real fixture child; atomic readiness freezes the old worker',async t=>{
   const f=fixture(t),secret=await f.launch();
@@ -227,4 +231,23 @@ test('job maintenance contention preserves wait and no-wait admission behavior',
   await until(()=>output.includes('maintenance lock is busy'));assert.equal(child.exitCode,null);
   const exit=once(child,'exit');f.maintenance.close();await exit;assert.equal(child.exitCode,0,output);
   assert.equal(f.s.get('SELECT status FROM jobs').status,'done');
+});
+test('launch intent reserves its physical checkout before spawn and retains it through uncertain cancellation',async t=>{
+  const f=fixture(t,true),secret=await f.launch(),configuration=captureFixtureConfiguration(f.s,'other-worker',f.program);
+  assert.equal(f.s.get('SELECT checkout_id FROM managed_workers WHERE id=?',secret.worker_id).checkout_id,f.checkout.checkout_id);
+  assert.equal(f.s.get('SELECT count(*) n FROM checkout_bindings').n,0);
+  const competing=()=>f.controller.beginLaunch({role:'other-worker',task:f.extraTask.id,checkout:f.checkout.checkout_id,directory:f.root,configuration,idempotency_key:'other-initial'},f.maintenance);
+  await assert.rejects(competing,/already reserved by a durable managed launch/);
+  const ordinaryDir=join(f.dir,'ordinary');mkdirSync(ordinaryDir);const script=join(ordinaryDir,'claude.mjs');writeFileSync(script,"process.send('ready');process.on('message',()=>process.exit(0));");
+  const ordinary=spawn(process.execPath,[script],{stdio:['ignore','ignore','ignore','ipc']});await once(ordinary,'message');
+  t.after(async()=>{if(ordinary.exitCode===null&&ordinary.signalCode===null){const exit=once(ordinary,'exit');ordinary.kill();await exit;}});
+  f.s.actor='other-worker';registerSession(f.s,{provider:'claude',external_id:'ordinary-fixture',pid:ordinary.pid});
+  const bind=()=>bindCheckout(f.s,{checkout:f.checkout.checkout_id,directory:f.root,task:f.extraTask.id,provider:'claude',session:'ordinary-fixture'});
+  assert.throws(bind,/reserved by a durable managed launch/);f.s.actor='reviewer';
+  f.controller.cancelUnreleasedIntent(secret.transition_id,'Unregistered spawn remains uncertain',f.maintenance);
+  const lease=acquireSupervisorLock(f.maintenancePath,'exclusive');t.after(()=>lease.close());
+  await assert.rejects(()=>f.controller.beginLaunch({role:'other-worker',task:f.extraTask.id,checkout:f.checkout.checkout_id,directory:f.root,configuration,idempotency_key:'other-after-cancel'},lease),/already reserved by a durable managed launch/);
+  f.s.actor='other-worker';assert.throws(bind,/reserved by a durable managed launch/);f.s.actor='reviewer';
+  assert.equal(f.s.get('SELECT count(*) n FROM managed_workers').n,1);
+  const exit=once(ordinary,'exit');ordinary.send('exit');await exit;
 });

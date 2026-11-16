@@ -22,6 +22,9 @@ resumption and controller recovery. No lifecycle signaling path is implemented.
 The deterministic child fixture voluntarily exits when requested by its test.
 Fixture descendant observations are explicitly synthetic and are never recorded
 as real-provider containment proof. No existing terminal is enrolled or adopted.
+Initial launch intent atomically reserves its physical checkout before spawning.
+That reservation blocks competing managed launches and ordinary checkout binds,
+including while launch identity is uncertain or its unreleased intent is cancelled.
 Replaying an existing launch intent returns its durable identity with
 `new_intent: false` and no credentials; it never authorizes a second spawn. An
 uncertain, unregistered spawn remains blocked for a human. Cancellation revokes

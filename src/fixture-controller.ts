@@ -135,11 +135,12 @@ export class FixtureController {
         return this.existingIntent(prior);
       }
       check(!this.s.get('SELECT id FROM checkout_bindings WHERE released_at IS NULL AND (role=? OR checkout_id=?)',input.role,input.checkout),'Existing checkout/worker reservation blocks launch',4);
+      check(!this.s.get('SELECT id FROM managed_workers WHERE checkout_id=?',input.checkout),'Checkout is already reserved by a durable managed launch',4);
       const sessions=this.s.all('SELECT * FROM sessions WHERE role=?',input.role);
       check(sessions.every(row=>row.pid && row.process_start && ['ended','stale'].includes(sessionState(row))),'Existing live or unknown terminals are observe-only',4);
       check(Number(this.s.get("SELECT count(*) n FROM managed_workers WHERE controller_id=? AND state NOT IN ('exited','stopped')",this.policy.controller_id)!.n)<this.policy.maximum_workers,'Human worker limit reached',4);
       const secret={worker_id:randomUUID(),transition_id:randomUUID(),generation:1,new_intent:true,worker_token:randomBytes(32).toString('hex'),launch_token:randomBytes(32).toString('hex')},at=now();
-      this.s.run('INSERT INTO managed_workers(id,workspace_id,role,controller_id,binding_id,generation,token_hash,state,provider,configuration_digest,updated_at,context) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',secret.worker_id,this.s.ws,input.role,this.policy.controller_id,null,1,workerTokenHash(secret.worker_token),'starting',input.configuration.provider,context.configuration_digest,at,JSON.stringify(context));
+      this.s.run('INSERT INTO managed_workers(id,workspace_id,role,controller_id,binding_id,generation,token_hash,state,provider,configuration_digest,updated_at,context,checkout_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',secret.worker_id,this.s.ws,input.role,this.policy.controller_id,null,1,workerTokenHash(secret.worker_token),'starting',input.configuration.provider,context.configuration_digest,at,JSON.stringify(context),input.checkout);
       this.s.run('INSERT INTO managed_transitions(id,worker_id,generation,idempotency_key,state,expected_task_versions,launch_token_hash,retry_count,created_at,updated_at,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?)',secret.transition_id,secret.worker_id,1,input.idempotency_key,'starting',JSON.stringify(context.task_versions),workerTokenHash(secret.launch_token),0,at,at,JSON.stringify({operation:'launch',context,bootstrap_deadline:new Date(Date.now()+120000).toISOString(),initial_launch:true}));
       this.s.event('managed-transition',secret.transition_id,'launch-intent',{worker_id:secret.worker_id,generation:1,evidence_kind:'fixture-only'});return secret;
     });
