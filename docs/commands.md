@@ -27,6 +27,8 @@ termination or replacement.
 
 `supervise ping ROLE` records a generation-bound nonce, at most once per 60 seconds
 for that role and generation, with a 120-second acknowledgment deadline. The
+outstanding nonce remains active until answered; later cadence requests cannot
+replace it and mask an overdue response. The
 role's `wait` returns `supervisor-ping`, including its nonce and generation. After
 reading current state, the worker uses
 `supervise ack NONCE --generation N --as ROLE`. Acknowledgment does not consume mail

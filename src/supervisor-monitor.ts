@@ -17,7 +17,9 @@ export function requestSupervisorPing(s:Store,target:string,clock=Date.now()):Ro
     const worker=s.get('SELECT generation,state,ping_epoch FROM managed_workers WHERE workspace_id=? AND role=?',s.ws,role),gen=worker?.generation??0,epoch=worker?.ping_epoch??0;
     const prior=s.get('SELECT * FROM supervisor_pings WHERE workspace_id=? AND role=? AND generation=? AND ping_epoch=? ORDER BY rowid DESC LIMIT 1',s.ws,role,gen,epoch);
     if(!acting(worker))return {role,generation:gen,state:'suspended',lifecycle_state:worker!.state,prior_ping:prior??null};
-    if(prior && clock-Date.parse(prior.requested_at)<PING_INTERVAL_MS)return prior;
+    // A fresh cadence must never hide an older unanswered deadline. Keep the
+    // epoch's outstanding obligation until answered, even when already overdue.
+    if(prior && (!prior.acknowledged_at || clock-Date.parse(prior.requested_at)<PING_INTERVAL_MS))return prior;
     const ping={id:randomUUID(),workspace_id:s.ws,role,generation:gen,ping_epoch:epoch,nonce:randomUUID(),requested_at:new Date(clock).toISOString(),deadline:new Date(clock+PING_DEADLINE_MS).toISOString(),acknowledged_at:null};
     s.run('INSERT INTO supervisor_pings(id,workspace_id,role,generation,nonce,requested_at,deadline,acknowledged_at,ping_epoch) VALUES(?,?,?,?,?,?,?,?,?)',ping.id,s.ws,role,gen,ping.nonce,ping.requested_at,ping.deadline,null,epoch);
     s.event('supervisor-ping',role,'requested',{nonce:ping.nonce,generation:gen,deadline:ping.deadline});return ping;

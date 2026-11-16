@@ -46,6 +46,16 @@ test('overdue and late responses are observations and never enable management',t
   assert.equal(status.workers.find(w=>w.role==='builder').responsiveness.state,'late');assert.equal(status.management_enabled,false);
   assert.equal(controller.get('SELECT count(*) n FROM managed_transitions').n,0);
 });
+test('regular ping cadence cannot mask an older unanswered deadline',t=>{
+  const {controller,worker}=fixture(t,true),clock=Date.now(),first=requestSupervisorPing(controller,'builder',clock);
+  for(const elapsed of [60000,120000,180000,240000])assert.equal(requestSupervisorPing(controller,'builder',clock+elapsed).nonce,first.nonce);
+  assert.equal(controller.get('SELECT count(*) n FROM supervisor_pings').n,1);
+  assert.equal(supervisorStatus(controller,clock+240001).workers.find(row=>row.role==='builder').responsiveness.state,'overdue');
+  acknowledgeSupervisorPing(worker,first.nonce,1,clock+240002);
+  assert.equal(supervisorStatus(controller,clock+240002).workers.find(row=>row.role==='builder').responsiveness.state,'late');
+  const next=requestSupervisorPing(controller,'builder',clock+240003);assert.notEqual(next.nonce,first.nonce);assert.equal(Date.parse(next.deadline),clock+360003);
+  assert.equal(supervisorStatus(controller,clock+240004).workers.find(row=>row.role==='builder').responsiveness.state,'pending');
+});
 test('frozen lifecycle suspends ping obligations; thaw creates a fresh epoch and deadline',async t=>{
   const {controller,worker}=fixture(t,true),clock=Date.now(),before=controller.get('SELECT max(id) n FROM events').n,old=requestSupervisorPing(controller,'builder',clock);
   controller.run("UPDATE managed_workers SET state='ready' WHERE id='worker'");
