@@ -154,10 +154,12 @@ checks cleanup remains rejected without the original retained handles. Exact
 unit metadata and evidence are preserved in both cases; no unit-stop or guessed
 signal occurs. Historical experiments are never adopted or cleaned up.
 
-The fresh reconciler also installs guards allowing only metadata reads for its
-exact new unit and rejecting any new retained-handle constructor. A regression
-under test therefore cannot actually launch a duplicate, reset binding history
-or stop a unit before the harness reports failure.
+The fresh reconciler guards the current core's `subprocess.run` manager calls,
+allowing only metadata reads for its exact new unit, and rejects its retained
+handle constructor. These guards block mutations through those specific APIs.
+They are not a general sandbox: direct file writes or a future alternative API
+are outside the guards. Durable state and barrier assertions independently detect
+unexpected writes; the core's ordinary fail-closed checks remain required.
 
 There are exactly two newly created units and four disposable controller
 processes per invocation. Helpers have their existing 20-second self-exit bound
@@ -171,6 +173,10 @@ processes or existing sessions. Unknown ownership blocks signaling and records a
 unreaped-controller diagnostic; it cannot produce a passing case. Failure waits
 out only this invocation's known helper deadlines. Errors while preserving those
 observations are attached to the original failure and do not suppress its summary.
+Launch requires at least one second of startup work plus the full reap reservation
+to remain on the case deadline. An early exit before identity verification is
+recorded with `verified_ownership=false`; reaping an owned child and observing its
+pidfd exit does not turn that failed handshake into a passing case.
 Offline tests exercise a fixed inert Python stub and temporary locks/files,
 without invoking a user manager, native unit, provider or external model.
 

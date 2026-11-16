@@ -116,12 +116,13 @@ os._exit(81)
             path = Path(name)
             process = SimpleNamespace(pid=123, returncode=None, poll=lambda: None)
             real_close = os.close
-            with patch.object(lab.subprocess, "Popen", return_value=process), patch.object(lab.os, "pidfd_open", return_value=777), patch.object(native, "fingerprint", return_value="owned"), patch.object(lab, "verify_process", side_effect=native.UnknownScope("identity mismatch")), patch.object(lab.signal, "pidfd_send_signal") as send, patch.object(lab.os, "close", side_effect=lambda fd: None if fd == 777 else real_close(fd)):
+            with patch.object(lab.subprocess, "Popen", return_value=process), patch.object(lab.os, "pidfd_open", return_value=777), patch.object(lab, "pidfd_exited", return_value=False), patch.object(native, "fingerprint", return_value="owned"), patch.object(lab, "verify_process", side_effect=native.UnknownScope("identity mismatch")), patch.object(lab.signal, "pidfd_send_signal") as send, patch.object(lab.os, "close", side_effect=lambda fd: None if fd == 777 else real_close(fd)):
                 with self.assertRaisesRegex(native.UnknownScope, "identity mismatch"):
                     lab.run_controller(path, "inject", time.monotonic() + 10)
                 send.assert_not_called()
             report = native.read_json(path / "inject-exit.json")
             self.assertTrue(report["unreaped_controller"])
+            self.assertFalse(report["verified_ownership"])
             self.assertIn("ownership unknown", report["reap_error"])
 
     def test_summary_preserves_primary_error_even_when_settling_also_fails(self):
@@ -185,6 +186,24 @@ while True:
             path.chmod(0o755)
             with self.assertRaises(native.UnknownScope):
                 lab.checked_scenario(path)
+
+    def test_exit_during_identity_recheck_reaps_original_pidfd_without_signaling(self):
+        process = SimpleNamespace(pid=123, returncode=None, poll=lambda: None)
+        def wait(**kwargs):
+            process.returncode = 0
+        process.wait = wait
+        report = {"verified_ownership": True, "start": "owned"}
+        with patch.object(lab, "pidfd_exited", side_effect=[False, True, True]), patch.object(lab, "verify_process", side_effect=native.UnknownScope("Controller executable changed")), patch.object(lab.signal, "pidfd_send_signal") as send:
+            lab.reap_controller(process, 777, ["fixed"], report, time.monotonic() + 1)
+            send.assert_not_called()
+        self.assertTrue(report["wait_reaped"] and report["owned_pidfd_pollin"])
+        self.assertEqual(report["exit_code"], 0)
+
+    def test_nearly_expired_case_budget_cannot_spawn_a_controller(self):
+        with patch.object(lab.subprocess, "Popen") as spawn:
+            with self.assertRaises(native.UnknownScope):
+                lab.run_controller(Path("/no-scenario-needed"), "reconcile", time.monotonic() + lab.REAP_SECONDS + 0.1)
+            spawn.assert_not_called()
 
 
 if __name__ == "__main__":

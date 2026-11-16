@@ -22,6 +22,7 @@ PYTHON = str(Path(sys.executable).resolve())
 CASES = {"binding-intent": 81, "sealed": 82}
 CONTROLLER_SECONDS = 35
 REAP_SECONDS = 2
+MIN_STARTUP_SECONDS = 1
 
 
 def wait_for(predicate, deadline, message):
@@ -163,8 +164,7 @@ def reconcile_owned(directory, state, before, recorded, report, path):
 
 def child(path, mode):
     path, state = checked_scenario(path)
-    # Only this new disposable process arms its own finite watchdog.
-    signal.alarm(30)
+    # The new disposable process armed its watchdog before custom imports.
     claim = controller_claim()
     native.atomic_json(path / (mode + "-controller.json"), claim)
     def released():
@@ -187,31 +187,47 @@ def verify_process(process, argv, start):
     native.require(next(int(line.split()[1]) for line in status if line.startswith("PPid:")) == os.getpid(), "Controller actual parent changed")
 
 
+def pidfd_exited(fd):
+    poll = select.poll()
+    poll.register(fd, select.POLLIN)
+    observed = poll.poll(0)
+    return bool(observed and observed[0][1] & select.POLLIN and not observed[0][1] & (select.POLLNVAL | select.POLLERR))
+
+
 def reap_controller(process, fd, argv, report, deadline):
     """Bound error cleanup to this new, retained and reverified controller only."""
     if process.poll() is None:
-        native.require(fd is not None and report.get("verified_ownership"), "Controller ownership unknown; preserve without signaling")
-        verify_process(process, argv, report["start"])
-        signal.pidfd_send_signal(fd, signal.SIGKILL)
-        report["owned_controller_timeout_or_error_kill"] = True
+        if fd is None or not pidfd_exited(fd):
+            native.require(fd is not None and report.get("verified_ownership"), "Controller ownership unknown; preserve without signaling")
+            try:
+                verify_process(process, argv, report["start"])
+            except (OSError, native.UnknownScope):
+                # A zombie can lose cmdline between poll() and verification.
+                # Positive exit of the original pidfd permits reaping, never a
+                # guessed signal or treating a mere read failure as exit.
+                if not pidfd_exited(fd):
+                    raise
+            else:
+                try:
+                    signal.pidfd_send_signal(fd, signal.SIGKILL)
+                    report["owned_controller_timeout_or_error_kill"] = True
+                except ProcessLookupError:
+                    pass  # Still require wait/reap and original pidfd POLLIN.
         process.wait(timeout=max(0, deadline - time.monotonic()))
     report["wait_reaped"] = True
     report["exit_code"] = process.returncode
     if fd is not None:
-        poll = select.poll()
-        poll.register(fd, select.POLLIN)
-        observed = poll.poll(0)
-        native.require(observed and observed[0][1] & select.POLLIN and not observed[0][1] & (select.POLLNVAL | select.POLLERR), "Controller pidfd exit is unknown")
+        native.require(pidfd_exited(fd), "Controller pidfd exit is unknown")
         report["owned_pidfd_pollin"] = True
 
 
 def run_controller(path, mode, deadline):
-    native.require(not Path.home().joinpath("repos/stop").exists() and time.monotonic() < deadline, "STOP or deadline blocks a new disposable controller")
+    native.require(not Path.home().joinpath("repos/stop").exists() and time.monotonic() + REAP_SECONDS + MIN_STARTUP_SECONDS < deadline, "STOP or insufficient startup/reap budget blocks a new disposable controller")
     argv = [PYTHON, "-B", str(SCRIPT), "--controller", mode, "--scenario", str(path)]
-    report = {"argv": argv, "mode": mode}
+    report = {"argv": argv, "mode": mode, "verified_ownership": False}
     native.atomic_json(path / (mode + "-launch-intent.json"), report)
     with (path / (mode + "-controller.log")).open("xb") as log:
-        native.require(not Path.home().joinpath("repos/stop").exists(), "Host STOP blocks a new disposable controller")
+        native.require(not Path.home().joinpath("repos/stop").exists() and time.monotonic() + REAP_SECONDS + MIN_STARTUP_SECONDS < deadline, "Host STOP or exhausted startup/reap budget blocks a new disposable controller")
         process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         hard_deadline = min(deadline, time.monotonic() + CONTROLLER_SECONDS)
         work_deadline = hard_deadline - REAP_SECONDS
