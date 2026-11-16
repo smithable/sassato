@@ -72,6 +72,9 @@ existing canonical descendants of the registered root. Repository-relative path
 resolution rejects symlinks escaping that root. `checkout release` requires verified
 exit of the matching registered provider session and no active owned jobs; expired
 task leases or session end markers alone do not release a reservation.
+The reviewer binds its **own separately assigned review task**, not the coding
+task whose owner submitted the change. Record that subject task and PR in the
+review assignment; automatic subject/snapshot linkage is a later workflow phase.
 Binding requires the current registered provider session with a verified PID/start
 identity. It records that exact session row and the working subfolder's device/inode;
 replacing the subfolder blocks further use. Release also refuses another live or

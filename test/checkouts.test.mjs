@@ -35,7 +35,7 @@ test('two workers resolve source and state to their own checkout and exact cwd',
   assert.equal(first.repository_id,second.repository_id);assert.notEqual(first.checkout_id,second.checkout_id);
   const a=task('builder');bindCheckout(s,{checkout:first.checkout_id,directory:root,task:a,provider:'claude',session:'first'});
   assert.equal(resolveWorkerPath(s,'file.txt').path,join(root,'file.txt'));
-  const b=task('reviewer');bindCheckout(s,{checkout:second.checkout_id,directory:join(linked,'subdir'),task:b,provider:'codex',session:'second'});
+  const b=task('reviewer');assert.equal(bindCheckout(s,{checkout:second.checkout_id,directory:join(linked,'subdir'),task:b,provider:'codex',session:'second',mode:'review'}).mode,'review');
   assert.equal(resolveWorkerPath(s,'file.txt').path,join(linked,'file.txt'));
   assert.equal(resolveWorkerPath(s,'file.txt').working_dir,join(linked,'subdir'));
   assert.throws(()=>resolveWorkerPath(s,'../original/file.txt'),/escapes/);
