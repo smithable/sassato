@@ -1,5 +1,6 @@
 """Offline fault-injection tests. Never creates a unit or launches a provider."""
 import json
+import errno
 import os
 from pathlib import Path
 import signal
@@ -8,10 +9,13 @@ import sys
 import tempfile
 import time
 import unittest
+import struct
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import native_containment as native
+import native_containment_events as events
 
 
 class InventoryTests(unittest.TestCase):
@@ -76,6 +80,7 @@ class ProtocolTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def held(self):
+        self.scope.retained = SimpleNamespace(assert_continuous=lambda: None, close=lambda: None)
         self.scope._save(state="held", bootstrap={"pid": 123, "role": "main"})
         self.scope.snapshot = lambda: {"claims": [self.scope.state["bootstrap"]]}
 
@@ -139,7 +144,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertFalse((self.directory / "release.json").exists())
 
     def test_pid_reuse_rejection_never_sends_signal(self):
-        self.scope._save(state="released")
+        self.scope._save(state="released", inventory={"claims": [{"pid": os.getpid(), "start": "wrong"}]})
         native.atomic_json(self.directory / "ready.json", {"generation": 1, "token_hash": self.scope.state["token_hash"], "no_new_children": True})
         self.scope._claim = lambda pid: (_ for _ in ()).throw(native.UnknownScope("PID was reused"))
         with patch.object(native.signal, "pidfd_send_signal") as send:
@@ -152,14 +157,151 @@ class ProtocolTests(unittest.TestCase):
         group.mkdir()
         (group / "cgroup.procs").write_text("123\n")
         (group / "cgroup.events").write_text("populated 1\n")
-        proof = {"identity": native.identity(group)}
+        proof = {"identity": native.identity(group), "group": self.scope.state["parent_group"] + "/" + self.scope.state["unit"], "invocation": "fixture"}
         self.scope.state["scope"] = proof
         self.scope._unit = lambda: ({}, group, proof)
-        with self.assertRaisesRegex(native.UnknownScope, "not positively empty"):
+        self.scope._unit_metadata = lambda: {"ControlGroup": proof["group"]}
+        claim = {"pid": 123, "role": "main", "start": "fixture"}
+        native.atomic_json(self.directory / "claim-123.json", claim)
+        self.scope.state["bootstrap"] = claim
+        self.scope.state["inventory"] = {"phase": "held", "claims": [claim], "generation": 1, "token_hash": self.scope.state["token_hash"]}
+        self.scope.state["state"] = "held"
+        self.scope.retained = SimpleNamespace(assert_continuous=lambda: None, close=lambda: None, drain=lambda: False, event_file_observation=lambda: {"populated": "1"})
+        with patch.object(native, "positively_exited", return_value=True):
+            with self.assertRaisesRegex(native.UnknownScope, "not positively empty"):
+                self.scope.cleanup()
+            self.scope.state["scope"] = {**proof, "identity": {**proof["identity"], "inode": 0}}
+            with self.assertRaisesRegex(native.UnknownScope, "identity changed"):
+                self.scope.cleanup()
+
+    def test_surviving_recorded_process_blocks_even_with_an_empty_path_inventory(self):
+        self.scope.state["scope"] = {"group": self.scope.state["parent_group"] + "/" + self.scope.state["unit"], "identity": {"device": 0, "inode": 0}, "invocation": "a" * 32}
+        self.scope._unit_metadata = lambda: {"ControlGroup": ""}
+        claim = {"pid": os.getpid(), "role": "main", "start": native.fingerprint(os.getpid())}
+        native.atomic_json(self.directory / f"claim-{claim['pid']}.json", claim)
+        self.scope.state.update({"state": "held", "bootstrap": claim, "inventory": {"phase": "held", "claims": [claim], "generation": 1, "token_hash": self.scope.state["token_hash"]}})
+        self.scope.retained = SimpleNamespace(assert_continuous=lambda: None, close=lambda: None)
+        with self.assertRaisesRegex(native.UnknownScope, "not conclusively exited"):
             self.scope.cleanup()
-        self.scope.state["scope"] = {"identity": {**proof["identity"], "inode": 0}}
-        with self.assertRaisesRegex(native.UnknownScope, "identity changed"):
+
+    def test_changed_unit_invocation_and_lost_handle_block_cleanup(self):
+        self.scope.state["scope"] = {"invocation": "a" * 32}
+        values = {**native.FixtureScope.REQUIRED, **{key: "" for key in native.FixtureScope.EMPTY}, "Id": self.scope.state["unit"], "Description": self.scope.state["description"], "LoadState": "loaded", "InvocationID": "b" * 32}
+        with patch.object(native, "properties", return_value=values):
+            with self.assertRaisesRegex(native.UnknownScope, "invocation changed"):
+                self.scope.cleanup()
+        self.scope._unit_metadata = lambda: {}
+        with self.assertRaisesRegex(native.UnknownScope, "retained scope proof was lost"):
             self.scope.cleanup()
+
+
+def event_bytes(watch, mask, name="owned.service"):
+    raw = name.encode() + b"\0"
+    raw += b"\0" * (-len(raw) % 4)
+    return struct.pack("iIII", watch, mask, 0, len(raw)) + raw
+
+
+class RemovalLedgerTests(unittest.TestCase):
+    def test_only_positive_exact_directory_delete_is_evidence(self):
+        ledger = events.NamespaceLedger(7, "owned.service")
+        ledger.feed(event_bytes(7, events.DELETE | events.ISDIR, "unrelated.service"))
+        self.assertFalse(ledger.deleted)
+        ledger.feed(event_bytes(7, events.DELETE | events.ISDIR))
+        self.assertTrue(ledger.deleted)
+
+    def test_replacement_move_overflow_watch_loss_and_truncation_poison_history(self):
+        for data in [event_bytes(7, events.CREATE | events.ISDIR), event_bytes(7, events.MOVE | events.ISDIR), event_bytes(-1, 0x4000), event_bytes(7, 0x8000, ""), event_bytes(8, events.DELETE | events.ISDIR), b"short"]:
+            with self.subTest(data=data):
+                ledger = events.NamespaceLedger(7, "owned.service")
+                with self.assertRaises(events.UnprovenRemoval):
+                    ledger.feed(data)
+                with self.assertRaises(events.UnprovenRemoval):
+                    ledger.feed(event_bytes(7, events.DELETE | events.ISDIR))
+
+    def test_delete_then_recreated_name_is_not_accepted(self):
+        ledger = events.NamespaceLedger(7, "owned.service")
+        ledger.feed(event_bytes(7, events.DELETE | events.ISDIR))
+        with self.assertRaises(events.UnprovenRemoval):
+            ledger.feed(event_bytes(7, events.CREATE | events.ISDIR))
+
+
+class RetainedHandleTests(unittest.TestCase):
+    """Real temporary filesystem watches, mocked cgroup type; never native units."""
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="sassato-retained-fs-")
+        self.parent = Path(self.temporary.name)
+        self.root = self.parent / "owned.service"
+        self.root.mkdir()
+        (self.root / "cgroup.events").write_text("populated 1\nfrozen 0\n")
+        (self.root / "cgroup.type").write_text("domain\n")
+        self.magic = patch.object(events, "filesystem_magic", return_value=events.CGROUP2_MAGIC)
+        self.kernel = patch.object(events, "SUPPORTED_KERNEL", os.uname().release)
+        self.magic.start()
+        self.kernel.start()
+        self.retained = events.RetainedScope(self.root, native.identity(self.root), self.parent, native.identity(self.parent))
+
+    def tearDown(self):
+        self.retained.close()
+        self.kernel.stop()
+        self.magic.stop()
+        self.temporary.cleanup()
+
+    def remove(self):
+        (self.root / "cgroup.events").unlink()
+        (self.root / "cgroup.type").unlink()
+        self.root.rmdir()
+
+    def test_positive_event_ties_removed_name_to_continuously_retained_identity(self):
+        before = self.retained.root_meta
+        self.remove()
+        proof = self.retained.deletion_evidence()
+        self.assertEqual(proof["before"]["root_fd"], before)
+        self.assertEqual(proof["after"]["root_fd"], before)
+        self.assertTrue(proof["events"][0]["mask"] & events.DELETE)
+
+    def test_absence_without_event_lost_handle_and_replacement_fail(self):
+        with self.assertRaises(events.UnprovenRemoval):
+            self.retained.deletion_evidence()
+        self.remove()
+        self.root.mkdir()
+        with self.assertRaises(events.UnprovenRemoval):
+            self.retained.deletion_evidence()
+        self.retained.close()
+        with self.assertRaises(events.UnprovenRemoval):
+            self.retained.deletion_evidence()
+
+    def test_permission_read_failure_and_changed_mount_are_not_deletion_proof(self):
+        with patch.object(events.os, "pread", side_effect=PermissionError("denied")):
+            with self.assertRaises(PermissionError):
+                self.retained.event_file_observation()
+        with self.assertRaises(events.UnprovenRemoval):
+            self.retained.deletion_evidence()
+        # A fresh object is required after a permission/identity failure.
+        self.retained.close()
+        self.retained = events.RetainedScope(self.root, native.identity(self.root), self.parent, native.identity(self.parent))
+        with patch.object(events, "filesystem_magic", return_value=0):
+            with self.assertRaises(events.UnprovenRemoval):
+                self.retained.assert_continuous()
+
+    def test_lost_or_reused_descriptor_does_not_become_proof_or_close_a_foreign_file(self):
+        fd = self.retained.events_fd
+        os.close(fd)
+        other = os.open(self.parent / "foreign", os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            with self.assertRaises((events.UnprovenRemoval, OSError)):
+                self.retained.deletion_evidence()
+            self.retained.close()
+            os.fstat(other)
+        finally:
+            os.close(other)
+
+    def test_transient_read_error_poisoned_even_if_a_later_delete_arrives(self):
+        with patch.object(events.os, "read", side_effect=OSError(errno.EIO, "transient")):
+            with self.assertRaises(OSError):
+                self.retained.drain()
+        self.remove()
+        with self.assertRaises(events.UnprovenRemoval):
+            self.retained.deletion_evidence()
 
 
 if __name__ == "__main__":

@@ -55,3 +55,47 @@ Unknown ownership or exit preserves evidence and blocks; there is no fallback
 group kill, wildcard unit cleanup or adoption of an existing process. STOP is
 checked before launch, release, recovery and signaling. Default CI uses temporary
 fixture data; the real-kernel lab is an explicit separate invocation.
+
+## Retained removal evidence
+
+The first held-only native probe exited safely, but systemd pruned its empty
+cgroup and cleared `ControlGroup` before a path-based empty check. That probe did
+not retain kernel handles. Its unit metadata and evidence remain untouched;
+neither a new handle nor missing-path metadata can retrospectively prove it.
+
+The alternate predicate is restricted to
+`6.6.87.2-microsoft-standard-WSL2`. While the bootstrap is live and held, pin the
+parent directory, owned cgroup directory and `cgroup.events` descriptors. Verify
+the cgroup-v2 filesystem, mount ID, device/inode, domain type and parent identity.
+Start an inotify watch on the pinned parent before verifying the live binding
+again. Continuously retain the original watch instance and descriptors.
+
+Positive deletion requires `IN_DELETE | IN_ISDIR` for the exact owned basename
+with an uninterrupted namespace history. Reject matching creation or movement,
+replacement, queue overflow, unmount, watch loss, descriptor identity changes,
+changed parent/mount or a subsequently existing path. An absent path, cleared
+unit field, link count, deleted suffix, EOF or read error is never this predicate.
+The retained event-file result, including an actual `ENODEV`, is audit data only.
+Permission and transient read failures invalidate the evidence. Every recorded
+process must independently have a positive exit result, and its complete sealed
+inventory and no-new-fork barrier must remain unchanged. Unit InvocationID and
+effective safe lifecycle properties are verified again before cleanup.
+
+The matching kernel's
+[cgroup_destroy_locked](https://github.com/microsoft/WSL2-Linux-Kernel/blob/linux-msft-wsl-6.6.87.2/kernel/cgroup/cgroup.c)
+rejects populated groups and online children before removal. The successful
+directory-removal path in
+[vfs_rmdir](https://github.com/microsoft/WSL2-Linux-Kernel/blob/linux-msft-wsl-6.6.87.2/fs/namei.c)
+calls
+[d_delete_notify](https://github.com/microsoft/WSL2-Linux-Kernel/blob/linux-msft-wsl-6.6.87.2/include/linux/fsnotify.h),
+which reports the original directory entry's deletion to the parent watch.
+This supports empty-at-removal only; the separate process exits exclude an
+escaped surviving fixture. Directory link counts are unsuitable because
+[kernfs_refresh_inode](https://github.com/microsoft/WSL2-Linux-Kernel/blob/linux-msft-wsl-6.6.87.2/fs/kernfs/inode.c)
+refreshes them from the subdirectory count.
+
+Native validation of this candidate predicate is still required. Each lab report
+records pre/post descriptor metadata, actual events and event-file errno/results.
+Losing the original descriptors before proof, including controller crash, leaves
+exit unknown. Temporary-filesystem watch tests verify the implementation only;
+they do not establish cgroup behavior. The next native invocation stays held-only.

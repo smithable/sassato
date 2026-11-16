@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import uuid
+from native_containment_events import RetainedScope
 
 CGROUP_ROOT = Path("/sys/fs/cgroup")
 
@@ -130,6 +131,7 @@ class FixtureScope:
         info = self.directory.stat()
         require(info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700, "Fixture evidence directory must be private and owned")
         self.directory_identity = identity(self.directory)
+        self.retained = None
         self.lock = os.open(self.directory / "controller.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
             fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -172,6 +174,9 @@ class FixtureScope:
         return cls(directory, token)
 
     def close(self):
+        if self.retained is not None:
+            self.retained.close()
+            self.retained = None
         if self.lock is not None:
             os.close(self.lock)
             self.lock = None
@@ -218,12 +223,18 @@ class FixtureScope:
         require(result.returncode == 0, "Transient launch failed or is uncertain; retain intent, do not retry")
         return self.recover()
 
-    def _unit(self):
+    def _unit_metadata(self):
         self._guard(allow_stop=True)
         values = properties(self.state["unit"])
         require(values.get("Id") == self.state["unit"] and values.get("Description") == self.state["description"] and values.get("LoadState") == "loaded", "Unit ownership is not established")
         require(all(values.get(key) == value for key, value in self.REQUIRED.items()) and all(values.get(key, "") == "" for key in self.EMPTY), "Unsafe transient unit lifecycle properties")
         require(re.fullmatch(r"[0-9a-f]{32}", values.get("InvocationID", "")), "Unit invocation identity is missing")
+        if "scope" in self.state:
+            require(values["InvocationID"] == self.state["scope"]["invocation"], "Unit invocation changed")
+        return values
+
+    def _unit(self):
+        values = self._unit_metadata()
         group = values.get("ControlGroup", "")
         require(group == self.state["parent_group"] + "/" + self.state["unit"], "Unit is not in its exclusive expected subtree")
         root = CGROUP_ROOT / group.lstrip("/")
@@ -267,6 +278,15 @@ class FixtureScope:
                 if "bootstrap" in self.state:
                     require(claim == self.state["bootstrap"], "Bootstrap registration changed")
                 self._save(bootstrap=claim, state=self.state["state"] if self.state["state"] == "released" else "held")
+                if self.state["state"] == "held":
+                    require(not (self.directory / "release.json").exists(), "Held fixture has an unexpected release gate")
+                    current = self.snapshot()
+                    require(current["claims"] == [claim], "Held bootstrap is not the only scope member")
+                    if self.retained is None:
+                        parent = CGROUP_ROOT / self.state["parent_group"].lstrip("/")
+                        self.retained = RetainedScope(root, proof["identity"], parent, self.state["parent_identity"])
+                    require(self._claim(pid) == claim, "Bootstrap exited or changed during retained binding")
+                    self._save(inventory={"phase": "held", "claims": current["claims"], "generation": self.state["generation"], "token_hash": self.state["token_hash"]}, retained_binding=self.retained.initial)
                 return claim
             if not pid and "bootstrap" in self.state and self.state["state"] == "released":
                 require(positively_exited(self.state["bootstrap"]), "Original main process exit is unknown")
@@ -284,6 +304,8 @@ class FixtureScope:
 
     def release(self):
         self._guard()
+        require(self.retained is not None, "Continuously retained scope proof is missing")
+        self.retained.assert_continuous()
         require(self.state["state"] in ["held", "released"] and time.monotonic() < self.state["deadline"], "Bootstrap is not held or deadline elapsed")
         release = {"generation": self.state["generation"], "token_hash": self.state["token_hash"]}
         if (self.directory / "release.json").exists():
@@ -293,19 +315,34 @@ class FixtureScope:
         current = self.snapshot()
         require(len(current["claims"]) == 1 and current["claims"][0] == self.state["bootstrap"], "Bootstrap scope contains unknown or additional work")
         self._guard()
-        self._save(state="released")
+        self._save(state="released", inventory=None)
         self._guard()
         atomic_json(self.directory / "release.json", release)
+
+    def seal_idle_inventory(self):
+        self._guard()
+        require(self.retained is not None and self.state["state"] == "released", "No retained released scope")
+        self.retained.assert_continuous()
+        ready = read_json(self.directory / "ready.json")
+        require(ready == {"generation": self.state["generation"], "token_hash": self.state["token_hash"], "no_new_children": True}, "Fixture fork barrier is incomplete")
+        current = self.snapshot()
+        require(sorted(claim["role"] for claim in current["claims"]) == ["child", "detached", "grandchild", "main"], "Complete idle fixture inventory is not established")
+        self._save(inventory={"phase": "ready", "claims": current["claims"], "generation": self.state["generation"], "token_hash": self.state["token_hash"]})
+        return current
 
     def signal_owned(self, claim, sig=signal.SIGTERM):
         self._guard()
         require(sig in [0, signal.SIGTERM], "Only a bounded owned-fixture TERM is supported")
         ready = read_json(self.directory / "ready.json")
         require(self.state["state"] == "released" and ready == {"generation": self.state["generation"], "token_hash": self.state["token_hash"], "no_new_children": True}, "Fixture fork phase has not settled")
+        if self.state.get("inventory") is None:
+            self.seal_idle_inventory()
+        require(claim in self.state["inventory"]["claims"], "Signal target was not recorded in the sealed inventory")
         fd = os.pidfd_open(claim["pid"])
         try:
             require(self._claim(claim["pid"]) == claim, "Recorded PID identity changed")
             snapshot = self.snapshot()
+            require(all(row in self.state["inventory"]["claims"] for row in snapshot["claims"]), "A new or changed member appeared after the fork barrier")
             require(claim in snapshot["claims"], "Process is not a positively owned member")
             self._guard()
             signal.pidfd_send_signal(fd, sig)
@@ -313,22 +350,43 @@ class FixtureScope:
             os.close(fd)
 
     def empty(self):
-        _, root, _ = self._unit()
-        current = recursive_members(root, self.state["scope"]["identity"])
-        events = dict(line.split() for line in (root / "cgroup.events").read_text().splitlines())
-        require(not current["pids"] and events.get("populated") == "0", "Whole scope is not positively empty")
-        claims = list(self.directory.glob("claim-*.json"))
-        require(len(claims) <= 12 and self.state.get("bootstrap"), "Bounded bootstrap/process evidence is missing")
-        for path in claims:
-            claim = read_json(path)
-            require(claim.get("token_hash") == self.state["token_hash"] and claim.get("unit") == self.state["unit"] and positively_exited(claim), "A recorded fixture process has not conclusively exited")
-        require(current == recursive_members(root, self.state["scope"]["identity"]), "Scope changed during empty proof")
-        return current
+        values = self._unit_metadata()
+        require(self.retained is not None, "Original retained scope proof was lost; missing path is unknown")
+        self.retained.assert_continuous()
+        require(values.get("ControlGroup") in [self.state["scope"]["group"], ""], "Unit moved to an unexpected scope")
+        inventory = self.state.get("inventory")
+        require(inventory and inventory["generation"] == self.state["generation"] and inventory["token_hash"] == self.state["token_hash"], "A sealed no-new-fork inventory is required")
+        if inventory["phase"] == "held":
+            require(self.state["state"] in ["held", "exited"] and not (self.directory / "release.json").exists(), "Held inventory no longer proves the fork barrier")
+        else:
+            require(inventory["phase"] == "ready" and read_json(self.directory / "ready.json") == {"generation": self.state["generation"], "token_hash": self.state["token_hash"], "no_new_children": True}, "Ready inventory barrier changed")
+        files = list(self.directory.glob("claim-*.json"))
+        require(len(files) == len(inventory["claims"]) <= 12 and self.state.get("bootstrap") in inventory["claims"], "Complete recorded process inventory changed")
+        exits = []
+        for claim in inventory["claims"]:
+            require(read_json(self.directory / f"claim-{claim['pid']}.json") == claim and positively_exited(claim), "A recorded fixture process has not conclusively exited")
+            exits.append({"pid": claim["pid"], "start": claim["start"], "positive_exit": True})
+        root = CGROUP_ROOT / self.state["scope"]["group"].lstrip("/")
+        try:
+            root.lstat()
+        except FileNotFoundError:
+            mechanism = self.retained.deletion_evidence()
+        else:
+            require(not self.retained.drain(), "Path exists after deletion; replacement is unknown")
+            current = recursive_members(root, self.state["scope"]["identity"])
+            events = self.retained.event_file_observation()
+            require(not current["pids"] and events.get("populated") == "0", "Whole scope is not positively empty")
+            require(current == recursive_members(root, self.state["scope"]["identity"]), "Scope changed during empty proof")
+            mechanism = {"predicate": "retained-live-populated-zero-and-recursive-empty", "inventory": current, "events": events}
+        proof = {"version": 1, "unit": self.state["unit"], "invocation": self.state["scope"]["invocation"], "scope": self.state["scope"], "mechanism": mechanism, "process_exits": exits, "generation": self.state["generation"]}
+        if "exit_proof" not in self.state:
+            self._save(exit_proof=proof, state="exited")
+        return proof
 
     def cleanup(self):
         self._guard(allow_stop=True)
         self.empty()
-        self._unit()
+        self._unit_metadata()
         self.empty()
         result = subprocess.run(["systemctl", "--user", "stop", "--", self.state["unit"]], capture_output=True, text=True, timeout=5)
         require(result.returncode == 0, "Could not retire exact empty fixture unit; preserve evidence")

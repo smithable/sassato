@@ -39,6 +39,8 @@ def main():
             time.sleep(0.05)
         raise
     finally:
+        if scope.retained is not None:
+            report["retained_observations"] = scope.retained.diagnostics()
         atomic_json(scope.directory / "lab-result.json", report)
         scope.close()
 
