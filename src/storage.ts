@@ -51,6 +51,11 @@ export class Store {
     } catch (error) { this.db.close(); throw error; }
   }
   close(): void { this.db.close(); }
+  writableFork():Store {
+    check(this.path!==':memory:','Runtime observation needs a file-backed coordination database',4);
+    const fork=new Store(this.path,this.actor??undefined,{managedCredentials:this.credentials,managedWriteMode:this.managedWriteMode});
+    fork.use(this.workspace);return fork;
+  }
   get(sql: string, ...params: Param[]): Row | undefined { return this.db.prepare(sql).get(...params); }
   all(sql: string, ...params: Param[]): Row[] { return this.db.prepare(sql).all(...params); }
   run(sql: string, ...params: Param[]): { changes: number; lastInsertRowid: number } {

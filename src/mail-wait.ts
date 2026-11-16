@@ -7,11 +7,12 @@ import { workspaceSettings } from './workspace-settings.js';
 import { getNotificationProgress } from './notification-progress.js';
 
 export interface WaitResult {
-  reason:'urgent'|'reply-needed'|'own-work'|'open-work'|'stop'|'timeout'|'answer'|'blocker-resolved'|'blocker-assigned'|'dependency-dropped'|'task-assigned'|'task-ready'|'review-submitted'|'review-approved'|'review-rejected';
+  reason:'urgent'|'reply-needed'|'own-work'|'open-work'|'stop'|'timeout'|'answer'|'blocker-resolved'|'blocker-assigned'|'dependency-dropped'|'task-assigned'|'task-ready'|'review-submitted'|'review-approved'|'review-rejected'|'supervisor-ping';
   role:string; cursor:number; message?:Row; stop?:Row;
   question?:string; blocker?:string; task?:string; tasks?:string[];
   /** Task version recorded by the workflow event, not a substitute for reading current work. */
   version?:number;
+  nonce?:string;generation?:number;ping_deadline?:string;
 }
 export interface WaitOptions { timeout?:number; stopFile?:string; since?:number; idleMinutes?:number }
 const maximum=(s:Store):number=>Number(s.get('SELECT coalesce(max(id),0) n FROM events WHERE workspace_id=?',s.ws)!.n);
@@ -34,6 +35,13 @@ function asked(s:Store,id:number,task:Row):string[] {
   return task.creator&&task.creator!==task.owner&&s.role(String(task.creator)).kind!=="human"?[String(task.creator)]:[];
 }
 function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
+  if(event.entity==='supervisor-ping' && event.entity_id===actor && event.action==='requested') {
+    let detail:Row;try{detail=JSON.parse(event.detail);}catch{return undefined;}
+    const ping=s.get('SELECT * FROM supervisor_pings WHERE workspace_id=? AND role=? AND nonce=? AND acknowledged_at IS NULL',s.ws,actor,String(detail.nonce??''));
+    const current=s.get('SELECT generation FROM managed_workers WHERE workspace_id=? AND role=?',s.ws,actor)?.generation??0;
+    if(ping && ping.generation===current)return {role:actor,cursor:event.id,reason:'supervisor-ping',nonce:ping.nonce,generation:ping.generation,ping_deadline:ping.deadline};
+    return undefined;
+  }
   // A role already observed its own successful action. Consume its event cursor
   // without waking, while leaving other recipients' independent cursors intact.
   if(event.actor===actor)return undefined;
