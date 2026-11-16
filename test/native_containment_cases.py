@@ -322,6 +322,19 @@ class RetainedHandleTests(unittest.TestCase):
         with self.assertRaises(events.UnprovenRemoval):
             self.retained.deletion_evidence()
 
+    def test_consumed_over_budget_replacement_cannot_be_forgotten_on_retry(self):
+        watch = self.retained.ledger.watch
+        unrelated = event_bytes(watch, events.DELETE | events.ISDIR, "x" * 15) * 256
+        replacement = event_bytes(watch, events.CREATE | events.ISDIR)
+        with patch.object(events.os, "read", side_effect=[unrelated] * 8 + [replacement]):
+            with self.assertRaisesRegex(events.UnprovenRemoval, "exceeds bound"):
+                self.retained.drain()
+        self.assertTrue(self.retained.tainted)
+        with patch.object(events.os, "read", return_value=event_bytes(watch, events.DELETE | events.ISDIR)) as read:
+            with self.assertRaisesRegex(events.UnprovenRemoval, "already unknown"):
+                self.retained.drain()
+            read.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
