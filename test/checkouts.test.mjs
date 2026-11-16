@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync,spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { registerSession,endSession } from '../dist/coordination.js';
+import { registerSession,endSession,sessionState } from '../dist/coordination.js';
 import { Store } from '../dist/storage.js';
 import { initWorkspace } from '../dist/admin.js';
 import { addTask,takeTask } from '../dist/tasks.js';
@@ -18,9 +18,10 @@ async function fixture(t) {
   git('-C',root,'-c','user.name=Fixture','-c','user.email=fixture@example.test','commit','-m','Initial');git('-C',root,'worktree','add','-b','worker2',linked);
   mkdirSync(join(linked,'subdir'));writeFileSync(join(linked,'file.txt'),'second checkout');
   const s=new Store(join(dir,'state.db'),'builder',{create:true});initWorkspace(s,'demo');
-  const children={};
+  const children={},historic=new Date().toISOString();
+  s.run('INSERT INTO sessions(workspace_id,role,provider,external_id,started_at,last_seen_at,ended_at) VALUES(?,?,?,?,?,?,?)',s.ws,'builder','claude','earlier-pidless',historic,historic,historic);
   for(const [role,provider,external] of [['builder','claude','first'],['reviewer','codex','second']]) {
-    const script=join(dir,provider+'.mjs');writeFileSync(script,"process.send('ready');setInterval(()=>{},1000);\n");
+    const script=join(dir,provider+'.mjs');writeFileSync(script,"process.send('ready');process.on('message',m=>{if(m==='hide'){process.title='fixture-hidden';process.send('hidden');}});setInterval(()=>{},1000);\n");
     const child=spawn(process.execPath,[script],{cwd:root,stdio:['ignore','ignore','ignore','ipc']});await once(child,'message');
     s.actor=role;registerSession(s,{provider,external_id:external,pid:child.pid});children[role]=child;
   }
@@ -49,7 +50,7 @@ test('duplicate role and checkout reservations conflict across projects, never e
   assert.throws(()=>bindCheckout(s,{...input,checkout:b.checkout_id,directory:linked}),/Role already/);
   const two=task('reviewer');assert.throws(()=>bindCheckout(s,{...input,task:two,provider:'codex',session:'second'}),/Checkout already/);
   initWorkspace(s,'other');s.actor='human';
-  const at=new Date().toISOString();s.run('INSERT INTO sessions(workspace_id,role,provider,external_id,pid,process_start,started_at,last_seen_at) SELECT ?,role,provider,external_id,pid,process_start,?,? FROM sessions WHERE workspace_id=(SELECT id FROM workspaces WHERE name=?)',s.ws,at,at,'demo');s.actor='reviewer';const other=registerCheckout(s,root);assert.equal(other.checkout_id,a.checkout_id);
+  const at=new Date().toISOString();s.run('INSERT INTO sessions(workspace_id,role,provider,external_id,pid,process_start,started_at,last_seen_at) SELECT ?,role,provider,external_id,pid,process_start,?,? FROM sessions WHERE workspace_id=(SELECT id FROM workspaces WHERE name=?) AND ended_at IS NULL',s.ws,at,at,'demo');s.actor='reviewer';const other=registerCheckout(s,root);assert.equal(other.checkout_id,a.checkout_id);
   const three=task('reviewer');assert.throws(()=>bindCheckout(s,{...input,task:three,provider:'codex',session:'second'}),/Checkout already/);
   const four=task('builder');assert.throws(()=>bindCheckout(s,{...input,task:four}),/Role already/);
   s.use('demo');s.actor='builder';assert.throws(()=>releaseCheckout(s),/verified retirement/);
@@ -80,7 +81,7 @@ test('release rejects live/end-marker sessions and active jobs but ignores ended
   assert.throws(()=>releaseCheckout(s),/verified retirement/);endSession(s,'first');
   assert.throws(()=>releaseCheckout(s),/verified retirement/,'an end marker does not prove exit');
   const exited=once(children.builder,'exit');children.builder.kill();await exited;
-  const at=new Date().toISOString();s.run('INSERT INTO sessions(workspace_id,role,provider,external_id,started_at,last_seen_at,ended_at) VALUES(?,?,?,?,?,?,?)',s.ws,'builder','claude','old-pidless',at,at,at);
+  const at=new Date().toISOString();
   s.run("INSERT INTO jobs(workspace_id,role,kind,command,status,need_mb,cpu_need,margin,pid,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",s.ws,'builder','fixture','[]','running',1,1,1,2147483000,at);
   assert.throws(()=>releaseCheckout(s),/Settle owned jobs/);
   s.run("UPDATE jobs SET status='released' WHERE workspace_id=?",s.ws);
@@ -91,8 +92,13 @@ test('release cannot hide another live role process behind the exited bound sess
   bindCheckout(s,{checkout:checkout.checkout_id,directory:root,task:id,provider:'claude',session:'first'});
   const firstExit=once(children.builder,'exit');children.builder.kill();await firstExit;
   const child=spawn(process.execPath,[join(dir,'claude.mjs')],{cwd:root,stdio:['ignore','ignore','ignore','ipc']});await once(child,'message');
-  children.builder=child;registerSession(s,{provider:'claude',external_id:'other-current',pid:child.pid,replace:true});
+  children.builder=child;initWorkspace(s,'other');registerSession(s,{provider:'claude',external_id:'other-current',pid:child.pid});s.use('demo');
   assert.throws(()=>releaseCheckout(s),/verified retirement/);
+  s.use('other');const ended=endSession(s,'other-current');s.use('demo');
+  const hidden=once(child,'message');child.send('hide');await hidden;
+  assert.equal(sessionState(s.get('SELECT * FROM sessions WHERE id=?',Number(ended.id.slice(1)))),'unknown');
+  assert.doesNotThrow(()=>process.kill(child.pid,0));
+  assert.throws(()=>releaseCheckout(s),/verified retirement/,'unknown PID-bearing process remains blocking after an end marker');
   const exit=once(child,'exit');child.kill();await exit;
   assert.ok(releaseCheckout(s).released_at);
 });

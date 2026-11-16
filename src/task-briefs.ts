@@ -72,8 +72,9 @@ function captureAndSaveBrief(s:Store,taskId:string,input:unknown,expectedVersion
     s.run('INSERT INTO task_briefs VALUES(?,?,?,?,?,?,?,?)',brief.id,s.ws,task.id,actor,binding.id,serialized,brief.digest,brief.created_at);
     s.event('task-brief',brief.id,'saved',{task:taskId,binding_id:binding.id,digest:brief.digest,task_version:task.version});
     if(intent) {
-      const event=s.event('task-handoff',taskId,'pending',{...intent,brief_id:brief.id,brief_digest:brief.digest,task_version:expectedVersion,binding_id:brief.binding_id});
-      return {id:`E${event}`,task_id:taskId,to:intent.to,brief_id:brief.id,state:'pending-retirement',owner:actor,reason:'Task ownership and checkout reservation retained; verified retirement is required before finalization'};
+      const canonicalTask=`T${task.id}`;
+      const event=s.event('task-handoff',canonicalTask,'pending',{...intent,brief_id:brief.id,brief_digest:brief.digest,task_version:expectedVersion,binding_id:brief.binding_id});
+      return {id:`E${event}`,task_id:canonicalTask,to:intent.to,brief_id:brief.id,state:'pending-retirement',owner:actor,reason:'Task ownership and checkout reservation retained; verified retirement is required before finalization'};
     }
     return brief;
   });

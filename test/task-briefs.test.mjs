@@ -85,6 +85,14 @@ test('large clean indexes do not overflow the dirty-path stage query',async t=>{
   writeFileSync(join(root,'edit.txt'),'small edit');
   assert.deepEqual(dirtyManifest(root).map(entry=>entry.path),['edit.txt']);
 });
+test('symlink targets are hashed as bytes, including distinct invalid UTF-8 targets',async t=>{
+  const {root}=await fixture(t),path=join(root,'raw-link');
+  symlinkSync(Buffer.from([255]),path);const first=dirtyManifest(root);
+  unlinkSync(path);symlinkSync(Buffer.from([254]),path);const second=dirtyManifest(root);
+  assert.notDeepEqual(first,second);
+  assert.equal(first[0].working,'symlink:'+hash(Buffer.from([255])));
+  assert.equal(second[0].working,'symlink:'+hash(Buffer.from([254])));
+});
 test('Git capture never holds the SQLite writer lock, including pending handoff',async t=>{
   const {s,db,root,dir,task}=await fixture(t),bin=join(dir,'bin');mkdirSync(bin);
   const realGit=execFileSync('which',['git'],{encoding:'utf8'}).trim(),wrapper=join(bin,'git');

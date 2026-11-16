@@ -116,6 +116,10 @@ A bound handoff records a **pending retirement intent** with its brief and inspe
 task version. It transfers neither task ownership nor checkout reservation. Saving
 a brief does not establish tool quiescence, authorize process termination or start a
 successor; verified managed retirement/finalization is a separate capability.
+This foundations slice deliberately has no pending-intent cancellation or
+finalization path, including after a reservation is released. Keep the task with
+its current owner pending the managed reconciliation capability; repeated brief
+records are evidence, not permission to transfer it.
 Unbound legacy `handoff` behavior remains unchanged. Ordinary commands need no daemon
 or model calls. Do not install a development build against a live coordination database.
 

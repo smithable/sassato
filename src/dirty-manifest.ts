@@ -22,7 +22,7 @@ export function dirtyManifest(root:string):DirtyEntry[] {
   for(const key of ['core.sparseCheckout','index.sparse'])check(run(['config','--bool',key],true).trim()!=='true','Sparse checkouts/indexes are unsupported for dirty-work proof',4);
   const flags=run(['ls-files','-v','-z'],false,16_777_216).split('\0').filter(Boolean);
   check(flags.every(entry=>/^[A-Z] /.test(entry) && !entry.startsWith('S ')),'Assume-unchanged or skip-worktree index flags block dirty-work proof',4);
-  check(!run(['ls-files','--format=%(objectmode)']).split('\n').includes('160000'),'Submodule index entries are unsupported for dirty-work proof',4);
+  check(!run(['ls-files','--format=%(objectmode)'],false,16_777_216).split('\n').includes('160000'),'Submodule index entries are unsupported for dirty-work proof',4);
   check(run(['ls-files','--unmerged','-z'])==='','Unmerged index blocks dirty-work proof',4);
   const filters=run(['config','--null','--name-only','--get-regexp','^filter\\..*\\.(clean|process|required)$'],true).split('\0').filter(Boolean);
   check(filters.length<=128 && filters.every(key=>/^filter\.[A-Za-z0-9_.-]+\.(clean|process|required)$/.test(key)),'Unsupported Git filter configuration blocks handover',4);
@@ -50,7 +50,7 @@ export function dirtyManifest(root:string):DirtyEntry[] {
       check(insideCheckout(root,realpathSync(dirname(full))),'Dirty path parent escapes checkout',4);
       const before=lstatSync(full,{bigint:true});
       mode=String(before.mode);
-      if(before.isSymbolicLink())working='symlink:'+createHash('sha256').update(readlinkSync(full)).digest('hex');
+      if(before.isSymbolicLink())working='symlink:'+createHash('sha256').update(readlinkSync(full,{encoding:'buffer'})).digest('hex');
       else {
         check(before.isFile() && before.size<=64n*1024n*1024n,'Non-regular or oversized dirty file blocks handover',4);
         const fd=openSync(full,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);

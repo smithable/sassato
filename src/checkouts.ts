@@ -92,10 +92,10 @@ export function resolveWorkerPath(s:Store,relativePath:string,task?:string):Row 
 export function releaseCheckout(s:Store):Row {
   return s.tx(()=>{
     const row=currentBinding(s);
-    const sessions=s.all('SELECT * FROM sessions WHERE workspace_id=? AND role=? ORDER BY id DESC',s.ws,s.requireActor());
+    const sessions=s.all('SELECT * FROM sessions WHERE role=? ORDER BY id DESC',s.requireActor());
     const matching=sessions.find(session=>session.id===row.session_row_id);
-    check(matching && matching.external_id===row.provider_session_id && matching.provider===row.provider && matching.pid && matching.process_start && ['ended','stale'].includes(sessionState(matching)) && sessions.every(session=>session.id===matching.id || sessionState(session)!=='running' && (session.ended_at || sessionState(session)!=='unknown')),'A live or unknown session still owns this reservation; verified retirement is required',4);
-    check(!s.get("SELECT id FROM jobs WHERE workspace_id=? AND role=? AND status IN ('waiting','running')",s.ws,s.requireActor()),'Settle owned jobs before releasing the checkout',4);
+    check(matching && matching.external_id===row.provider_session_id && matching.provider===row.provider && matching.pid && matching.process_start && ['ended','stale'].includes(sessionState(matching)) && sessions.every(session=>session.id===matching.id || (session.id<matching.id && session.ended_at && !session.pid && !session.process_start) || (session.pid && session.process_start && ['ended','stale'].includes(sessionState(session)))),'A live or unknown session still owns this reservation; verified retirement is required',4);
+    check(!s.get("SELECT id FROM jobs WHERE role=? AND status IN ('waiting','running')",s.requireActor()),'Settle owned jobs before releasing the checkout',4);
     const at=now();s.run('UPDATE checkout_bindings SET released_at=? WHERE id=? AND released_at IS NULL',at,row.id);
     s.event('checkout-binding',row.id,'released',{});return {...row,released_at:at};
   });
