@@ -17,6 +17,31 @@ Strings containing spaces must be quoted. A value beginning with `--` can use th
 `--option=VALUE` form; use `--` before positional text beginning with a dash.
 IDs are returned by creation commands and are stable. Examples below use T1/H1/M1.
 
+## Supervisor observations
+
+`supervise` (or `supervise status`) reads registered session state, responsiveness,
+checkpoint freshness, managed waiter identity, tasks and jobs separately. Output
+always reports `management_enabled: false`: production provider adapters remain
+observe-only. A missed ping, stale checkpoint or missing waiter never authorizes
+termination or replacement.
+
+`supervise ping ROLE` records a generation-bound nonce, at most once per 60 seconds
+for that role and generation, with a 120-second acknowledgment deadline. The
+role's `wait` returns `supervisor-ping`, including its nonce and generation. After
+reading current state, the worker uses
+`supervise ack NONCE --generation N --as ROLE`. Acknowledgment does not consume mail
+or advance notification progress. Save and reuse the cursor returned by `wait`
+under the usual reconciliation rules.
+
+The experimental controller/bootstrap implementation is available only to fixture
+adapters in source tests. There is no production enrollment, replacement or
+unattended-enable command. See the [implementation contract and remaining gates](supervisor.md).
+Ordinary commands retain their standalone behavior. A role explicitly enrolled by
+a fixture controller must supply `SASSATO_WORKER_GENERATION` and
+`SASSATO_WORKER_TOKEN` for writes; stale, missing or frozen credentials fail closed,
+including through legacy mutation commands. These credentials are not needed for
+unmanaged roles or read-only observations.
+
 ## Setup and administration
 
 | Command | Behavior |

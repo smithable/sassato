@@ -5,6 +5,39 @@ Sassato commands remain standalone, deterministic and usable without a superviso
 or model calls. This document authorizes no installation or live-session takeover.
 Existing [provider probes](provider-capabilities.md) do not prove production handoff.
 
+### Current source implementation
+
+The CLI exposes observation, nonce ping and acknowledgment commands. Schema 10
+adds durable generation fences, controller/worker transitions, pings and managed
+waiter reservations. Legacy writes from an enrolled role require its current
+generation and token inside the same writer transaction; unmanaged roles keep
+their existing behavior. Only token hashes are persisted.
+
+The fixture controller exercises launch intent, bootstrap self-registration and
+release, recovery acknowledgment, drain, atomic brief/checkpoint readiness,
+retirement request, explicit fixture exit observation, generation advance and
+same-role replacement. It also bounds pre-release retries and rechecks locks,
+STOP, task versions, configuration, checkout/cwd identity and dirty manifests on
+resumption and controller recovery. No lifecycle signaling path is implemented.
+The deterministic child fixture voluntarily exits when requested by its test.
+Fixture descendant observations are explicitly synthetic and are never recorded
+as real-provider containment proof. No existing terminal is enrolled or adopted.
+
+When a human policy exists in the source fixture API, `job run` acquires shared
+leases for every configured workspace maintenance lock before admission and holds
+them until the run finishes. A controller requires the corresponding exclusive
+lease and positive busy checks. This covers that job entry point only: external
+gates, merges, releases, detached tools and failure containment still need their
+own verified coverage before automatic replacement could be enabled.
+
+Production providers remain observe-only and `management_enabled` is always false.
+There is no CLI to configure fixture enrollment or enable unattended replacement.
+Real adapter tool-start barriers, complete running/background tool inventory,
+effective configuration continuity, owned descendant containment and the required
+real Codex-then-Claude handoffs remain unproven. Cross-role transfer remains
+unimplemented. This source implementation is partial phase 3 delivery, not phase 3
+acceptance, provider proof, installation approval or unattended enablement.
+
 ## 1. Scope, identity and authority
 
 Start with Linux/WSL `sassato supervise`; an optional service comes later. This

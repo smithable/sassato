@@ -2,6 +2,11 @@
 
 ## 0.1.3 — unreleased
 
+- `supervise status`, `supervise ping ROLE` and `supervise ack NONCE --generation N`
+  separate responsiveness from checkpoints, sessions, waiters and job observations.
+  Schema 10 adds generation-fenced writes and an experimental fixture replacement
+  protocol. Production providers stay observe-only; unattended management is disabled.
+
 - `wait --idle-minutes N` also wakes a role that holds no doing task but has open tasks of its own
   (its owner's or for it) that it can take now and has written nothing for N minutes: reason `open-work`, naming them
   highest priority and oldest first, so it takes one. A role with no open task is still not woken.

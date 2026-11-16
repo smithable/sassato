@@ -9,10 +9,13 @@ const {acknowledgeFixtureRecovery,saveFixtureReady}=await moduleAt('fixture-reco
 const options={managedCredentials:{generation:process.env.SASSATO_WORKER_GENERATION,token:process.env.SASSATO_WORKER_TOKEN}};
 const open=mode=>{const s=new Store(process.env.FIXTURE_DB,'builder',{...options,managedWriteMode:mode});s.use('demo');return s;};
 let store=open('bootstrap'),acting=false,barrier=false;
+let allowReconcile;
+const reconciliationGate=new Promise(resolve=>{allowReconcile=resolve;});
 process.on('message',message=>{
   const reply=value=>process.send({request:message.request,...value});
   try {
     if(message.type==='exit'){store.close();process.exit(0);}
+    if(message.type==='allow-reconcile'){allowReconcile();reply({allowed:true});return;}
     if(message.type==='tool'){
       if(!acting || barrier){reply({blocked:true});return;}
       writeFileSync(message.path,message.content);reply({written:true});return;
@@ -29,6 +32,8 @@ try {
   process.send({booting:true});
   const gate=await registerFixtureBootstrap(store,process.env.FIXTURE_TRANSITION,process.env.FIXTURE_LAUNCH_TOKEN);
   if(!gate.released){process.send({cancelled:gate.reason});store.close();process.exit(0);}
+  process.send({released:true});
+  if(process.env.FIXTURE_PAUSE_RECONCILE==='1')await reconciliationGate;
   store.close();store=open('reconcile');
   const result=acknowledgeFixtureRecovery(store,process.env.FIXTURE_TRANSITION,randomUUID());
   store.close();store=open('normal');acting=true;process.send({acting:result});

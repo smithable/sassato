@@ -8,6 +8,7 @@ import { basename } from 'node:path';
 import type { Row, Store } from './storage.js';
 import { check, name, now, safe } from './errors.js';
 import { processIdentity } from './coordination.js';
+import { acquireSupervisorLock,type SupervisorLease } from './supervisor-locks.js';
 
 const MB = 1024 * 1024;
 /** Until a kind has been measured: what it may need (MB) and how many cores it keeps busy. */
@@ -195,15 +196,31 @@ function sampleTree(pids: number[]): { mb: number; cpuS: number } {
 
 export interface RunOptions { kind: string; wait: boolean; command: string[]; estimate?: Estimate; log?: (line: string) => void }
 
+/** Jobs are machine-wide, so honor every configured workspace maintenance lock. */
+function maintenancePaths(s:Store):string[] {
+  return [...new Set(s.all("SELECT e.detail FROM events e WHERE e.entity='supervisor-policy' AND e.action='configured' AND e.id=(SELECT max(n.id) FROM events n WHERE n.workspace_id=e.workspace_id AND n.entity='supervisor-policy' AND n.action='configured')").map(row=>String(JSON.parse(row.detail).policy.maintenance_lock)))].sort();
+}
+
 /** Ask, wait if told to, run, measure, release. Resolves to the exit status to leave with. */
 export async function runJob(s: Store, options: RunOptions): Promise<number> {
+  const paths=maintenancePaths(s),leases:SupervisorLease[]=[];
+  try {
+    for(const path of paths)leases.push(acquireSupervisorLock(path,'shared'));
+    return await runProtectedJob(s,options,()=>{
+      for(const lease of leases)lease.assertHeld();
+      check(JSON.stringify(maintenancePaths(s))===JSON.stringify(paths),'Supervisor maintenance policy changed before job admission; retry after reconciliation',4);
+    });
+  } finally {for(const lease of leases.reverse())lease.close();}
+}
+async function runProtectedJob(s:Store,options:RunOptions,assertProtection:()=>void):Promise<number> {
   const log = options.log ?? ((line: string) => process.stderr.write(`sassato: ${line}\n`));
-  const id = enqueue(s, options.kind, options.command, machine(), process.pid, options.estimate);
+  const id = s.tx(()=>{assertProtection();return enqueue(s, options.kind, options.command, machine(), process.pid, options.estimate);});
   let said = '';
   for (;;) {
     // The start is written in the same transaction that decided it, so no other job's decision falls between.
     const decision = s.tx(() => {
       releaseStale(s);
+      assertProtection();
       const d = admit(s, id, machine());
       if (d.start) s.run("UPDATE jobs SET status='running',started_at=? WHERE id=?", now(), id);
       return d;
