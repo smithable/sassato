@@ -15,6 +15,7 @@
     "bin",
     "dist",
     "docs/commands.md",
+    "docs/index.md",
     "docs/architecture.md",
     "docs/permissions.md",
     "docs/integrations.md",
@@ -36,7 +37,7 @@
     "examples/smithable.config.json"
   ],
   "scripts": {
-    "build": "node scripts/clean-build.mjs && tsc && node scripts/build-info.mjs",
+    "build": "node scripts/clean-build.mjs && tsc && node scripts/index-parser.mjs && node scripts/build-info.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "node scripts/lint.mjs",
     "test": "npm run build && node --test --test-concurrency=3 test/*.test.mjs",

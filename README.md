@@ -7,6 +7,10 @@ after a session reset or a change of provider.
 One SQLite file. No server, daemon, model calls or runtime npm dependencies.
 Works with Claude Code, Codex and manually started workers. MIT licensed.
 
+The optional [repository code map](docs/index.md) indexes TypeScript/JavaScript
+symbols, imports and related tests without a workspace database or model calls.
+Its parser is bundled; ordinary coordination commands do not load it.
+
 ## Install from source
 
 Requires Node.js **24.13 or later**. The test matrix covers Node 24 and 26 on Linux.

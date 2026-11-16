@@ -4,6 +4,10 @@ Sassato keeps independent provider processes coordinated through a local SQLite 
 The CLI is compiled TypeScript with no runtime npm dependencies. A small `Store` adapter
 encapsulates `node:sqlite`, so a future driver change need not change CLI commands.
 
+The independent [repository index](index.md) uses immutable exact-commit file caches
+and transient worktree overlays. Its lockfile-resolved compiler API is bundled at
+build time and loaded only by code-map commands. Index commands do not open `Store`.
+
 ## Storage and concurrency
 
 WAL allows readers and one writer to progress concurrently. Connections enable foreign
