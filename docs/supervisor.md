@@ -1,0 +1,167 @@
+# Optional supervisor: implementation contract
+
+Status: proposed contract for foundations and managed replacement. Ordinary
+Sassato commands remain standalone, deterministic and usable without a supervisor
+or model calls. This document authorizes no installation or live-session takeover.
+Existing [provider probes](provider-capabilities.md) do not prove production handoff.
+
+## 1. Scope, identity and authority
+
+Start with Linux/WSL `sassato supervise`; an optional service comes later. This
+deterministic controller has a non-human reporting identity and monitors registered
+workers, managing only its own launches. Existing terminals are observe-only. Keep
+coordinator, human-assistant and design-reviewer identities; use numbered
+builder/reviewer instances. Preserve existing role names.
+
+Human-owned policy bounds role templates, instance counts, repositories, task routing
+and provider configurations. Instances copy templates; the supervisor cannot create
+human roles, expand permissions, answer approvals or clear STOP. Reports, facts and
+briefs never grant authority. Keep human-only launch/configuration controls; add a
+narrow managed-launch path. No AI planner initially.
+
+Register existing folders first, with immutable project, repository and checkout
+IDs. A project shares coordination; each task binds an explicit checkout and cwd.
+A physical repository is identified by canonical Git common directory, its
+device/inode and object format; linked worktrees share it, separate clones do not.
+A checkout records canonical per-worktree Git directory, root and existing cwd
+beneath that root, each with device/inode. Branch and HEAD are observations, never
+IDs. Revalidate before use; missing, moved or replaced paths require explicit rebind,
+never fallback. The first release supports non-bare Git checkouts only.
+
+Reserve one coding worker per checkout, and one worker per role instance, across
+projects sharing this local database. Separate review checkouts are required.
+Serialize common-Git-dir ref/worktree mutations as well as registry reservations.
+Replacement never creates a worktree, resets, stashes, deletes files or switches
+branches. Persist SQLite and controller locks on a verified local native Linux filesystem;
+unsupported locking/identity semantics block management. Multi-host scheduling is deferred.
+The independent index uses the same physical fingerprint as its cache namespace,
+with registry IDs optional; resolve its view against actual HEAD plus dirty files,
+never an unrelated latest-main snapshot. Index failure falls back to source search.
+
+## 2. Health and session boundaries
+
+Record worker generation, task/version bindings, provider/session ID, controller
+launch ID, PID, Linux boot ID/start time, cwd, and effective configuration digest.
+The digest covers model, effort, sandbox, approval mode, tools/hooks/instructions
+and their content hashes, executable/version, profile, actual argv and relevant
+environment provenance without storing secrets or credential hashes. Inherit the
+same authentication and behavior. Unverifiable settings block replacement; never
+substitute defaults. Require a new conversation ID, not resumed context. Gate UI
+reconnection separately for each mode.
+
+Every 60 seconds, request a generation-bound nonce acknowledgment through Sassato,
+due within 120 seconds. Report responsiveness, provider activity, last checkpoint
+freshness, task state, waiter identity/cursor and tool/job state separately. The
+worker handles pings at tool boundaries; a busy provider may be responsive without
+an armed waiter. Idle workers need exactly one waiter. Checkpoints and heartbeats
+alone prove neither useful progress nor process exit. A missed deadline, stale
+checkpoint or missing waiter marks attention-needed and requests reconciliation;
+none alone permits termination. Declared long work, approval waits and task blockers
+are visible states, not hang heuristics. No fixed context-percentage or task-count
+reset; native compaction stays enabled. Idle time alone does not cause replacement.
+
+Keep a session for the same objective, tests and review fixes. Request handover for
+an unrelated objective, accepted design moving to implementation, independent PR
+review, or corrected requirements after confusion. Same-review follow-up can retain
+the reviewer, which must inspect the new head and intervening diff. Independent
+review receives requirements, decisions and evidence, not the author's transcript.
+
+## 3. Handover and replacement protocol
+
+Use durable states `running -> draining -> ready -> retiring -> exited -> starting
+-> reconciling -> running`, with `blocked` and `stopped` outcomes. One transition ID
+and expected generation make retries idempotent. A database reservation and a
+single-controller OS lock fence competing supervisors; lease expiry alone never
+proves a worker dead or permits another launch. Every managed-role write requires
+its current generation in the same transaction, including legacy commands; unmanaged
+roles remain compatible. This
+fences database operations, not filesystem writes: an adapter-enforced no-new-tool
+barrier and verified process-tree exit are also mandatory.
+
+A bound task handoff records pending intent plus brief, retaining both owner and
+checkout reservation until verified retirement. Foundations (delivery phase 1) cannot
+finalize it; replacement (phase 3) adds that capability. Different successor checkouts
+do not waive retirement. Legacy unbound handoff stays compatible.
+Same-role replacement preserves the owner; cross-role transfer requires exact brief
+and task versions after exit. CLI: `brief save/show`, `handoff --brief-file FILE
+--expect VERSION` (`--brief` remains the context flag).
+
+1. **Drain.** Stop new assignments and tools. Settle every tool, waiter and background
+   job. In release 1, running or unknown jobs block handover; no implicit adoption.
+   Preserve the last safely handled notification cursor, including timeout results.
+2. **Save ready.** Save a versioned, immutable brief and checkpoint atomically with
+   readiness: objective/acceptance criteria, accepted decisions and provenance,
+   open issues, validation/artifact references, exact next action, task versions,
+   notification progress, configuration digest, repository/checkout/cwd/HEAD,
+   staged/unstaged/untracked manifest digest and explicit settled-job evidence.
+   Cap the serialized brief at 32 KiB; reject oversize or incomplete evidence rather
+   than truncate silently. Hash bounded file manifests locally without persisting
+   contents; ignored files stay untouched but are excluded from preservation proof.
+   Unsupported sparse/submodule/index states or in-progress Git operations block
+   handover in v1. Unreadable files or changing observations block readiness. Observe
+   the final manifest after the no-new-tool barrier. The worker waits for retirement; it never marks its live session ended or starts its successor.
+3. **Retire.** Recheck readiness, identity, configuration, STOP and busy guards.
+   Prefer adapter graceful shutdown, then bounded TERM (30 seconds). KILL is a
+   logged, human-notified fallback only for an already quiesced, positively owned
+   process with all guards still satisfied. A stuck worker without proven quiescence
+   stays blocked for the human. Signal only the recorded controller-owned process
+   identity via a verified pidfd, never a discovered terminal, ancestor or reused PID.
+   Require an owned containment scope with provable descendant membership/exit (such
+   as an already delegated cgroup); a process group alone is insufficient. No host
+   policy changes to obtain this capability. Confirm the whole scope empty; an end
+   marker or delivered signal is not exit. If unsupported, management stays off.
+4. **Start.** Only after confirmed exit, advance generation, preserve task ownership
+   under the role instance, and start fresh in the exact saved cwd with the same
+   configured provider/settings. Persist launch intent before spawn. Use an owned
+   child bootstrap that self-registers PID/start/boot identity and launch token
+   against that intent before polling a durable generation-bound release. It cannot
+   execute the provider before release; STOP, cancelled intent or a 120-second
+   unreleased timeout makes it exit. Recovery can verify token plus identity and
+   complete or cancel the handshake. Reconcile uncertain spawns before retrying.
+5. **Reconcile.** The new worker acknowledges the transition/generation, reads live
+   STOP, context, checkpoint, inbox and relevant records, verifies Git/files/settings
+   and reconciles changed task versions before acting. HEAD/manifest/cwd/configuration
+   mismatch blocks; never restore files automatically. Resume the durable handled
+   notification cursor, never latest. Release assignments only after
+   this acknowledgment. One automatic retry, with a new generation and token, is
+   allowed only for a conclusively failed, exited startup that never passed its
+   bootstrap release gate. Recheck Git/brief/settings/tasks before retrying.
+   Post-release failure or a second failure blocks for the human.
+
+Every destructive lifecycle action and spawn checks both durable role/workspace
+STOP and the configured stop file. STOP during replacement cancels pending launch;
+a spawned but unreconciled child must not begin work. Never clear or acknowledge
+STOP on a worker's behalf. Recheck immediately before releasing the child; filesystem
+STOP is also checked by its bootstrap because it is not atomic with SQLite.
+
+Busy checks cover gates, the configured merge lock, release steps and heavy jobs.
+Require positive idle evidence; absent configuration, errors or unknown results
+block retirement. Prevent races with a common maintenance flock: jobs hold shared
+mode for their whole duration; retirement takes
+exclusive mode nonblocking before final idle checks. Hold through retirement/startup,
+release on blocked/stopped states while retaining the checkout reservation, and
+reacquire/recheck before any resumed retire, start or release, including after a
+block or controller crash. Until that exclusion
+covers every protected job source, automatic replacement remains off. Do not interpret missing job reports as an empty machine.
+
+After controller failure, reacquire its lock and reconcile every transition against
+recorded process fingerprints, launch tokens and exit evidence before any new spawn.
+Surviving owned children may be reattached only by that durable controller identity;
+unprovable ownership or incomplete dirty-work evidence blocks recovery. Never edit
+provider transcripts or use `session end` to bypass an active-session check.
+
+## 4. Delivery and acceptance
+
+| Phase | Required evidence before completion |
+| --- | --- |
+| 1. Foundations | Two workers resolve the right checkouts/cwd; linked worktrees, separate clones and symlink aliases distinguish correctly; replaced/missing paths fail closed; duplicate role/checkout claims conflict; bounded briefs preserve dirty staged, unstaged and untracked work. |
+| 2. Index (independent) | Immutable commit/schema snapshots; divergent HEAD, rename, deletion and dirty overlays; older publication cannot replace newer latest; stale/unavailable view reports fallback. |
+| 3. Replacement | Fixture providers exercise every state; crash before/after each durable transition, especially spawn/record/release; concurrent controllers, PID reuse, lost acknowledgments and duplicate retry never yield two acting workers. STOP at every boundary prevents work/launch; busy/unknown checks and an overlapping job acquisition prevent signals. Missing cwd/config changes block. Dirty content, task ownership and cursor survive; startup retries are bounded. |
+| 3. Provider gate | One real disposable same-role handoff per exact provider/adapter version and operating mode, first Codex then Claude: distinct conversation, preserved settings/instructions/tools, dirty files, owner, notification replay, exit proof and recovery acknowledgment. Cross-role transfer requires separate proof of owner/checkout transfer after exit. Fixture/conversation-only success does not enable either. Changed provider/configuration invalidates evidence. Human explicitly enables unattended replacement after reviewing evidence. |
+| 4. Workflow | Record repository, isolated review checkout, exact base/head/merge-base commit OIDs and content-addressed tree. Uncommitted review captures all non-ignored files, with explicit exclusions; secret-bearing input blocks materialization. Approval binds tree and task version. Immediately before merge verify exact approved head/tree and base; changed integration context requires renewed review. Test stale approval rejection; route fixes to the coding checkout. |
+| 5. Tuning | Measure orientation time, token use, rediscovery and defects; adaptive reset policy and service installation come later. |
+
+Use fixture databases/providers for CI; never production sessions. No session installs
+this build. Human deployment separately performs backup, stop, installation and host
+restart after the required release review or explicit human authorization. Source
+merge, provider evidence and unattended enablement are distinct decisions.
