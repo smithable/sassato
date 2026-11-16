@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -59,13 +60,13 @@ os._exit(81)
                 lab.rejection(action, "STOP", {}, "release")
 
     def test_injection_receipt_is_durable_before_abrupt_exit_at_each_exact_phase(self):
-        from types import SimpleNamespace
         for case, code in lab.CASES.items():
             with self.subTest(case=case), tempfile.TemporaryDirectory(prefix="sassato-crash-receipt-") as name:
                 path = Path(name)
                 scope_dir = path / "new-scope"
                 scope_dir.mkdir()
-                intent = {"binding_started": True, "state": "held" if case == "binding-intent" else "released"}
+                intent = {"binding_started": True, "state": "held" if case == "binding-intent" else "released", "bootstrap": {"pid": 11, "role": "main"}}
+                native.atomic_json(scope_dir / "claim-11.json", intent["bootstrap"])
                 if case == "sealed":
                     intent["inventory"] = {"phase": "ready"}
                 native.atomic_json(scope_dir / "intent.json", intent)
@@ -85,6 +86,105 @@ os._exit(81)
             with self.assertRaises(native.UnknownScope):
                 lab.run_controller(Path("/no-scenario-needed"), "inject", time.monotonic() - 1)
             spawn.assert_not_called()
+
+    def test_wrong_injection_phase_cannot_emit_receipt_or_exit(self):
+        for case in lab.CASES:
+            with self.subTest(case=case), tempfile.TemporaryDirectory(prefix="sassato-wrong-phase-") as name:
+                path = Path(name)
+                native.atomic_json(path / "intent.json", {"binding_started": True, "state": "held"})
+                scope = SimpleNamespace(directory=path, retained=object())
+                with patch.object(lab.os, "_exit") as abrupt:
+                    with self.assertRaises(native.UnknownScope):
+                        lab.crash_receipt(scope, path, {"case": case})
+                    abrupt.assert_not_called()
+                self.assertFalse((path / "injection.json").exists())
+
+    def test_reconciliation_guards_never_execute_manager_mutation_or_constructor(self):
+        with patch.object(native.subprocess, "run", return_value="readonly") as run, patch.object(native, "RetainedScope") as constructor:
+            with lab.reconciliation_guards("owned.service"):
+                self.assertEqual(native.subprocess.run(["systemctl", "--user", "show", "--no-pager", "--", "owned.service"]), "readonly")
+                for argv in [["systemctl", "--user", "stop", "--", "owned.service"], ["systemd-run", "--user"], ["systemctl", "--user", "show", "--no-pager", "--", "other.service"]]:
+                    with self.assertRaises(native.UnknownScope):
+                        native.subprocess.run(argv)
+                with self.assertRaises(native.UnknownScope):
+                    native.RetainedScope()
+            run.assert_called_once()
+            constructor.assert_not_called()
+
+    def test_unknown_identity_never_signals_and_preserves_unreaped_diagnostic(self):
+        with tempfile.TemporaryDirectory(prefix="sassato-unknown-controller-") as name:
+            path = Path(name)
+            process = SimpleNamespace(pid=123, returncode=None, poll=lambda: None)
+            real_close = os.close
+            with patch.object(lab.subprocess, "Popen", return_value=process), patch.object(lab.os, "pidfd_open", return_value=777), patch.object(native, "fingerprint", return_value="owned"), patch.object(lab, "verify_process", side_effect=native.UnknownScope("identity mismatch")), patch.object(lab.signal, "pidfd_send_signal") as send, patch.object(lab.os, "close", side_effect=lambda fd: None if fd == 777 else real_close(fd)):
+                with self.assertRaisesRegex(native.UnknownScope, "identity mismatch"):
+                    lab.run_controller(path, "inject", time.monotonic() + 10)
+                send.assert_not_called()
+            report = native.read_json(path / "inject-exit.json")
+            self.assertTrue(report["unreaped_controller"])
+            self.assertIn("ownership unknown", report["reap_error"])
+
+    def test_summary_preserves_primary_error_even_when_settling_also_fails(self):
+        with tempfile.TemporaryDirectory(prefix="sassato-summary-error-") as name:
+            path = Path(name)
+            summary = {"result": "blocked-preserve-evidence", "error": "primary"}
+            original = RuntimeError("primary")
+            with patch.object(lab, "settle_failed_helpers", side_effect=OSError("secondary")):
+                lab.save_summary(path, summary, original)
+            saved = native.read_json(path / "crash-lab-result.json")
+            self.assertEqual(saved["error"], "primary")
+            self.assertIn("secondary", saved["preserve_errors"][0]["error"])
+            with patch.object(native, "atomic_json", side_effect=OSError("storage")):
+                lab.save_summary(path, summary, original)
+            self.assertIn("storage", original.__notes__[0])
+
+    def test_timeout_is_bounded_and_reaps_only_the_verified_new_controller(self):
+        with tempfile.TemporaryDirectory(prefix="sassato-timeout-controller-") as name:
+            path = Path(name)
+            stub = path / "fixed_hanging_stub.py"
+            stub.write_text("import sys\nsys.path.insert(0, " + repr(str(Path(native.__file__).parent)) + ")\n" + '''import signal, time
+from pathlib import Path
+import native_containment as native
+from native_containment_crash_lab import controller_claim
+signal.alarm(8)
+path = Path(sys.argv[sys.argv.index("--scenario") + 1])
+mode = sys.argv[sys.argv.index("--controller") + 1]
+native.atomic_json(path / (mode + "-controller.json"), controller_claim())
+while True:
+    time.sleep(0.01)
+''')
+            start = time.monotonic()
+            with patch.object(lab, "SCRIPT", stub), patch.object(lab, "CONTROLLER_SECONDS", 2), patch.object(lab, "REAP_SECONDS", 1):
+                with self.assertRaises(lab.subprocess.TimeoutExpired):
+                    lab.run_controller(path, "inject", time.monotonic() + 10)
+            self.assertLess(time.monotonic() - start, 5)
+            report = native.read_json(path / "inject-exit.json")
+            self.assertTrue(report["owned_controller_timeout_or_error_kill"])
+            self.assertTrue(report["wait_reaped"] and report["owned_pidfd_pollin"])
+            self.assertEqual(report["exit_code"], -lab.signal.SIGKILL)
+            with self.assertRaises(ChildProcessError):
+                os.waitpid(report["pid"], os.WNOHANG)
+
+    def test_parent_primary_failure_and_secondary_preservation_error_are_both_saved(self):
+        with tempfile.TemporaryDirectory(prefix="sassato-parent-failure-") as name:
+            path = Path(name)
+            with patch.object(lab, "run_controller", side_effect=RuntimeError("primary failure")), patch.object(lab, "settle_failed_helpers", side_effect=OSError("secondary preservation")):
+                with self.assertRaisesRegex(RuntimeError, "primary failure"):
+                    lab.run_parent(path)
+            saved = native.read_json(next(path.glob("controller-crash-*/crash-lab-result.json")))
+            self.assertEqual(saved["result"], "blocked-preserve-evidence")
+            self.assertIn("primary failure", saved["error"])
+            self.assertIn("secondary preservation", saved["preserve_errors"][0]["error"])
+
+    def test_changed_scenario_source_or_nonprivate_directory_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix="sassato-scenario-fault-") as name:
+            path = Path(name)
+            native.atomic_json(path / "scenario.json", {"case": "sealed", "script_hash": "wrong", "deadline": time.monotonic() + 10})
+            with self.assertRaises(native.UnknownScope):
+                lab.checked_scenario(path)
+            path.chmod(0o755)
+            with self.assertRaises(native.UnknownScope):
+                lab.checked_scenario(path)
 
 
 if __name__ == "__main__":

@@ -1,11 +1,17 @@
 """Explicit bounded native controller-death lab; fixed inert fixtures only."""
+import sys
+import signal
+
+# Arm only a newly exec'd controller, before custom imports or scenario I/O.
+if __name__ == "__main__" and "--controller" in sys.argv:
+    signal.alarm(30)
+
 import argparse
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import select
-import signal
 import subprocess
-import sys
 import time
 import uuid
 
@@ -14,6 +20,8 @@ import native_containment as native
 SCRIPT = Path(__file__).resolve()
 PYTHON = str(Path(sys.executable).resolve())
 CASES = {"binding-intent": 81, "sealed": 82}
+CONTROLLER_SECONDS = 35
+REAP_SECONDS = 2
 
 
 def wait_for(predicate, deadline, message):
@@ -42,6 +50,8 @@ def crash_receipt(scope, path, state):
     native.require(durable["binding_started"], "Crash point lacks durable binding intent")
     if state["case"] == "binding-intent":
         native.require(scope.retained is None and durable["state"] == "held" and not durable.get("retained_binding"), "Binding crash point is not before construction")
+        native.require(not (scope.directory / "release.json").exists() and not (scope.directory / "ready.json").exists(), "Held fork barrier was released")
+        native.require([native.read_json(p) for p in scope.directory.glob("claim-*.json")] == [durable["bootstrap"]], "Held bootstrap is not the only recorded process")
     else:
         native.require(scope.retained is not None and durable["state"] == "released" and durable["inventory"]["phase"] == "ready", "Sealed crash point is not established")
     native.atomic_json(path / "injection.json", {"controller": controller_claim(), "case": state["case"], "scope_directory": str(scope.directory), "durable_intent": durable, "exit_code": CASES[state["case"]], "cleanup_attempted": False})
@@ -75,6 +85,22 @@ def rejection(action, expected, report, name):
         raise native.UnknownScope("Expected rejection did not occur: " + name)
 
 
+@contextmanager
+def reconciliation_guards(unit):
+    """A regression being probed must not mutate the manager or rebind handles."""
+    original_run, original_retained = native.subprocess.run, native.RetainedScope
+    def readonly(argv, **kwargs):
+        native.require(argv[:4] == ["systemctl", "--user", "show", "--no-pager"] and argv[-2:] == ["--", unit], "Forbidden manager mutation during reconciliation")
+        return original_run(argv, **kwargs)
+    def no_binding(*args, **kwargs):
+        raise native.UnknownScope("Forbidden constructor reached during reconciliation")
+    native.subprocess.run, native.RetainedScope = readonly, no_binding
+    try:
+        yield
+    finally:
+        native.subprocess.run, native.RetainedScope = original_run, original_retained
+
+
 def reconcile(path, state):
     injected = native.read_json(path / "injection.json")
     recorded = native.read_json(path / "scope.json")
@@ -84,6 +110,11 @@ def reconcile(path, state):
     native.require(before == injected["durable_intent"], "State did not survive death exactly")
     report = {"controller": controller_claim(), "case": state["case"], "unit": recorded["unit"], "durable_state_survived": True, "cleanup_attempted": False}
     # A new process must acquire the old file's OS lock without replacement.
+    with reconciliation_guards(recorded["unit"]):
+        return reconcile_owned(directory, state, before, recorded, report, path)
+
+
+def reconcile_owned(directory, state, before, recorded, report, path):
     scope = native.FixtureScope(directory)
     try:
         native.require(scope.state["lock_identity"] == before["lock_identity"], "OS lock path was replaced")
@@ -106,6 +137,7 @@ def reconcile(path, state):
         claims = before.get("inventory", {}).get("claims", [before["bootstrap"]])
         # In the binding-intent window no retained inventory was saved yet.
         if state["case"] == "binding-intent":
+            native.require(not (directory / "release.json").exists() and not (directory / "ready.json").exists(), "Held barrier changed after controller death")
             claims = [before["bootstrap"]]
         native.require(1 <= len(claims) <= 4, "Fixture process count exceeds bound")
         exits = []
@@ -113,7 +145,8 @@ def reconcile(path, state):
             def exited():
                 try:
                     return native.positively_exited(claim)
-                except (OSError, native.UnknownScope):
+                except (OSError, native.UnknownScope) as error:
+                    report["last_exit_observation_error"] = {"pid": claim["pid"], "error": str(error), "errno": getattr(error, "errno", None)}
                     return False  # Unknown/error is not positive exit evidence.
             wait_for(exited, min(scope.state["deadline"] + 2, state["deadline"]), "Fixture exit remains unknown")
             exits.append({"pid": claim["pid"], "start": claim["start"], "positive_exit": True})
@@ -131,7 +164,7 @@ def reconcile(path, state):
 def child(path, mode):
     path, state = checked_scenario(path)
     # Only this new disposable process arms its own finite watchdog.
-    signal.alarm(35)
+    signal.alarm(30)
     claim = controller_claim()
     native.atomic_json(path / (mode + "-controller.json"), claim)
     def released():
@@ -144,6 +177,34 @@ def child(path, mode):
         reconcile(path, state)
 
 
+def verify_process(process, argv, start):
+    native.require(native.fingerprint(process.pid) == start, "Controller start changed")
+    actual = Path(f"/proc/{process.pid}/cmdline").read_bytes().split(b"\0")
+    native.require([part.decode() for part in actual if part] == argv, "Controller executable changed")
+    status = Path(f"/proc/{process.pid}/status").read_text().splitlines()
+    uids = next(line.split()[1:] for line in status if line.startswith("Uid:"))
+    native.require(uids and all(int(uid) == os.getuid() for uid in uids), "Controller actual UID changed")
+    native.require(next(int(line.split()[1]) for line in status if line.startswith("PPid:")) == os.getpid(), "Controller actual parent changed")
+
+
+def reap_controller(process, fd, argv, report, deadline):
+    """Bound error cleanup to this new, retained and reverified controller only."""
+    if process.poll() is None:
+        native.require(fd is not None and report.get("verified_ownership"), "Controller ownership unknown; preserve without signaling")
+        verify_process(process, argv, report["start"])
+        signal.pidfd_send_signal(fd, signal.SIGKILL)
+        report["owned_controller_timeout_or_error_kill"] = True
+        process.wait(timeout=max(0, deadline - time.monotonic()))
+    report["wait_reaped"] = True
+    report["exit_code"] = process.returncode
+    if fd is not None:
+        poll = select.poll()
+        poll.register(fd, select.POLLIN)
+        observed = poll.poll(0)
+        native.require(observed and observed[0][1] & select.POLLIN and not observed[0][1] & (select.POLLNVAL | select.POLLERR), "Controller pidfd exit is unknown")
+        report["owned_pidfd_pollin"] = True
+
+
 def run_controller(path, mode, deadline):
     native.require(not Path.home().joinpath("repos/stop").exists() and time.monotonic() < deadline, "STOP or deadline blocks a new disposable controller")
     argv = [PYTHON, "-B", str(SCRIPT), "--controller", mode, "--scenario", str(path)]
@@ -152,37 +213,82 @@ def run_controller(path, mode, deadline):
     with (path / (mode + "-controller.log")).open("xb") as log:
         native.require(not Path.home().joinpath("repos/stop").exists(), "Host STOP blocks a new disposable controller")
         process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+        hard_deadline = min(deadline, time.monotonic() + CONTROLLER_SECONDS)
+        work_deadline = hard_deadline - REAP_SECONDS
+        fd, original_error = None, None
         # The child waits for the exact parent-approved live identity before work.
         try:
             report["pid"] = process.pid
+            fd = os.pidfd_open(process.pid)
             report["start"] = native.fingerprint(process.pid)
-            wait_for(lambda: (path / (mode + "-controller.json")).exists(), min(deadline, time.monotonic() + 5), "Controller did not register")
+            # The startup handshake precedes all fixture work. A hung startup is
+            # still an owned new process once actual executable identity matches.
+            verify_process(process, argv, report["start"])
+            report["verified_ownership"] = True
+            native.atomic_json(path / (mode + "-owned.json"), report)
+            wait_for(lambda: (path / (mode + "-controller.json")).exists(), min(work_deadline, time.monotonic() + 5), "Controller did not register")
             claim = native.read_json(path / (mode + "-controller.json"))
             native.require(claim == {"pid": process.pid, "parent": os.getpid(), "start": report["start"], "uid": os.getuid()}, "Controller identity/parent changed")
-            actual = Path(f"/proc/{process.pid}/cmdline").read_bytes().split(b"\0")
-            native.require([part.decode() for part in actual if part] == argv and native.fingerprint(process.pid) == report["start"], "Controller executable/start changed")
-            status = Path(f"/proc/{process.pid}/status").read_text().splitlines()
-            native.require(all(int(uid) == os.getuid() for line in status if line.startswith("Uid:") for uid in line.split()[1:]), "Controller actual UID changed")
-            native.require(next(int(line.split()[1]) for line in status if line.startswith("PPid:")) == os.getpid(), "Controller actual parent changed")
-            fd = os.pidfd_open(process.pid)
-            try:
-                native.require(native.fingerprint(process.pid) == report["start"], "Controller changed before pinning")
-                native.atomic_json(path / (mode + "-owned.json"), report)
-                native.atomic_json(path / (mode + "-release.json"), claim)
-                code = process.wait(timeout=38)
-                poll = select.poll()
-                poll.register(fd, select.POLLIN)
-                observed = poll.poll(0)
-                native.require(observed and observed[0][1] & select.POLLIN and not observed[0][1] & (select.POLLNVAL | select.POLLERR), "Controller pidfd exit is unknown")
-                report.update({"exit_code": code, "wait_reaped": True, "owned_pidfd_pollin": True})
-                native.atomic_json(path / (mode + "-exit.json"), report)
-                return report
-            finally:
-                os.close(fd)
+            verify_process(process, argv, report["start"])
+            native.atomic_json(path / (mode + "-release.json"), claim)
+            process.wait(timeout=max(0, work_deadline - time.monotonic()))
+            return report
+        except BaseException as error:
+            original_error = error
+            report["error"] = type(error).__name__ + ": " + str(error)
+            raise
         finally:
-            # No guessed signals. The child's own watchdog bounds even error paths.
-            if process.poll() is None:
-                process.wait(timeout=38)
+            try:
+                reap_controller(process, fd, argv, report, hard_deadline)
+            except BaseException as error:
+                report["reap_error"] = type(error).__name__ + ": " + str(error)
+                report["unreaped_controller"] = process.returncode is None
+                if original_error is None:
+                    original_error = error
+                    raise
+            finally:
+                if fd is not None:
+                    os.close(fd)
+                try:
+                    native.atomic_json(path / (mode + "-exit.json"), report)
+                except BaseException as error:
+                    if original_error is None:
+                        raise
+                    original_error.add_note("Exit report could not be saved: " + str(error))
+
+
+def settle_failed_helpers(suite, summary):
+    deadlines = []
+    for case in CASES:
+        try:
+            recorded = suite / case / "scope.json"
+            if not recorded.exists():
+                continue
+            scope_directory = Path(native.read_json(recorded)["directory"])
+            native.require(scope_directory.parent == suite / case, "Unexpected scope outside this invocation")
+            deadline = native.read_json(scope_directory / "intent.json")["deadline"]
+            native.require(deadline <= time.monotonic() + 21, "Fixture deadline exceeds the fixed bound")
+            deadlines.append(deadline)
+        except BaseException as error:
+            summary.setdefault("preserve_errors", []).append({"case": case, "error": type(error).__name__ + ": " + str(error)})
+    if deadlines:
+        while time.monotonic() < max(deadlines) + 1:
+            time.sleep(0.05)
+        summary["bounded_helper_deadlines_elapsed"] = True
+
+
+def save_summary(suite, summary, original_error):
+    try:
+        if summary.get("result") == "blocked-preserve-evidence":
+            settle_failed_helpers(suite, summary)
+    except BaseException as error:
+        summary.setdefault("preserve_errors", []).append({"error": type(error).__name__ + ": " + str(error)})
+    try:
+        native.atomic_json(suite / "crash-lab-result.json", summary)
+    except BaseException as error:
+        if original_error is None:
+            raise
+        original_error.add_note("Crash summary could not be saved: " + str(error))
 
 
 def run_parent(parent):
@@ -190,6 +296,7 @@ def run_parent(parent):
     suite = parent / ("controller-crash-" + uuid.uuid4().hex)
     suite.mkdir(mode=0o700)
     summary = {"kind": "fake-controller-os-crash-only", "provider_proof": False, "cases": [], "directory": str(suite)}
+    original_error = None
     print(suite, flush=True)
     try:
         for case in CASES:
@@ -200,36 +307,21 @@ def run_parent(parent):
             native.atomic_json(path / "scenario.json", state)
             injection = run_controller(path, "inject", state["deadline"])
             native.require(injection["exit_code"] == CASES[case] and (path / "injection.json").exists(), "Actual abrupt controller injection did not complete")
-            native.require(native.read_json(path / "injection.json")["controller"]["pid"] == injection["pid"], "Injection receipt is not from the owned controller")
+            native.require(native.read_json(path / "injection.json")["controller"] == {"pid": injection["pid"], "start": injection["start"], "parent": os.getpid(), "uid": os.getuid()}, "Injection receipt is not from the owned controller")
             reconciliation = run_controller(path, "reconcile", state["deadline"])
             native.require(reconciliation["exit_code"] == 0, "Fresh controller reconciliation failed; preserve unit/evidence")
             result = native.read_json(path / "reconciliation.json")
+            native.require(result["controller"] == {"pid": reconciliation["pid"], "start": reconciliation["start"], "parent": os.getpid(), "uid": os.getuid()}, "Reconciliation receipt is not from the owned fresh controller")
             summary["cases"].append({"case": case, "injection": injection, "reconciliation": reconciliation, "result": result})
             native.atomic_json(suite / "crash-lab-result.json", summary)
         summary["result"] = "both-actual-controller-crash-cases-passed"
     except BaseException as error:
+        original_error = error
         summary["result"] = "blocked-preserve-evidence"
         summary["error"] = type(error).__name__ + ": " + str(error)
         raise
     finally:
-        if summary.get("result") == "blocked-preserve-evidence":
-            # Only scopes just created by this bounded invocation are examined.
-            # Even on failure, wait out their fixed self-exit deadlines; never
-            # signal, adopt or retrospectively clean any unknown unit.
-            deadlines = []
-            for case in CASES:
-                recorded = suite / case / "scope.json"
-                if recorded.exists():
-                    scope_directory = Path(native.read_json(recorded)["directory"])
-                    native.require(scope_directory.parent == suite / case, "Unexpected scope outside this invocation")
-                    intent = native.read_json(scope_directory / "intent.json")
-                    deadlines.append(intent["deadline"])
-            if deadlines:
-                native.require(max(deadlines) <= time.monotonic() + 21, "Fixture deadline exceeds the fixed bound")
-                while time.monotonic() < max(deadlines) + 1:
-                    time.sleep(0.05)
-                summary["bounded_helper_deadlines_elapsed"] = True
-        native.atomic_json(suite / "crash-lab-result.json", summary)
+        save_summary(suite, summary, original_error)
 
 
 def main():

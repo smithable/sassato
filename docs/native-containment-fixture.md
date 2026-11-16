@@ -154,11 +154,23 @@ checks cleanup remains rejected without the original retained handles. Exact
 unit metadata and evidence are preserved in both cases; no unit-stop or guessed
 signal occurs. Historical experiments are never adopted or cleaned up.
 
+The fresh reconciler also installs guards allowing only metadata reads for its
+exact new unit and rejecting any new retained-handle constructor. A regression
+under test therefore cannot actually launch a duplicate, reset binding history
+or stop a unit before the harness reports failure.
+
 There are exactly two newly created units and four disposable controller
 processes per invocation. Helpers have their existing 20-second self-exit bound
-and at most four members per unit. Each new controller arms its own 35-second
-watchdog; the parent waits/reaps it with a bounded timeout. Case deadlines are
-70 seconds, and failure waits out only this invocation's known helper deadlines.
+and at most four members per unit. Each new controller arms its own 30-second
+watchdog before custom imports or scenario reads. The parent uses a single
+35-second absolute controller deadline clamped to the 70-second case deadline,
+reserving its final two seconds for reaping. A timeout or setup error may terminate
+only that newly spawned controller through its original pinned pidfd after fresh
+start/argv/UID/parent verification. It never signals helpers, groups, shared
+processes or existing sessions. Unknown ownership blocks signaling and records an
+unreaped-controller diagnostic; it cannot produce a passing case. Failure waits
+out only this invocation's known helper deadlines. Errors while preserving those
+observations are attached to the original failure and do not suppress its summary.
 Offline tests exercise a fixed inert Python stub and temporary locks/files,
 without invoking a user manager, native unit, provider or external model.
 
