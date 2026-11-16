@@ -19,6 +19,8 @@ import { getCheckpoint } from './checkpoints.js';
 import { getNotificationProgress, saveNotificationProgress } from './notification-progress.js';
 import { saveCheckpoint } from './recovery-write.js';
 import * as jobs from './jobs.js';
+import * as supervisor from './supervisor-monitor.js';
+import { waitWithManagedObservation } from './managed-wait.js';
 import * as checkouts from './checkouts.js';
 import * as briefs from './task-briefs.js';
 
@@ -64,6 +66,8 @@ Checkouts:  checkout register --dir PATH | checkout list | checkout show ID
             checkout resolve PATH [--task T1] | checkout release
 Briefs:     brief save T1 --file JSON --expect TASK_VERSION | brief show T1
             handoff T1 ROLE SUMMARY --brief-file JSON_FILE --expect TASK_VERSION (pending retirement)
+Supervisor: supervise [status] | supervise ping ROLE | supervise ack NONCE --generation N
+            (observation only; real provider management remains disabled)
 Sessions:   session register --provider NAME [--session-id ID] [--pid PID]
             [--replace] | session heartbeat [--session-id ID] | session end
             sessions | usage TEXT [--until DATE]
@@ -88,7 +92,7 @@ select workspace when not explicit. Writes require --as; human actions require a
 Lists default to bounded results; --limit N. Context never consumes inbox receipts.
 Exit codes: 0 success/no matches; 1 storage/runtime; 2 input; 3 identity/access; 4 conflict; 5 mail-wait timeout.
 `;
-const strings = ['repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes'];
+const strings = ['generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes'];
 const booleans = ['json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','wait','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
 const globalFlags = ['db','workspace','as','json','help'];
 const allowed: Record<string,string[]> = {
@@ -101,6 +105,7 @@ const allowed: Record<string,string[]> = {
   'wip show':[],'wip set':['current','next','notes','expect'],sessions:[], 'session register':['provider','session-id','pid','replace'],'session heartbeat':['session-id'],'session end':['session-id'],usage:['until'],
   stop:['all','timeout','no-wait','force'],'stop-status':['quiet','stop-file'],stopped:[],'resume-work':['all'],
   context:['brief','since','limit'],status:[],'job run':['kind','wait','no-wait','job-version','load','mem'],'job list':[],'job stats':[],search:['type','owner','status','since','limit','phrase','prefix'],
+  'supervise status':[],'supervise ping':[],'supervise ack':['generation'],
   'checkout register':['dir'],'checkout list':[],'checkout show':[],'checkout bind':['dir','task','provider','session-id','mode'],'checkout resolve':['task'],'checkout release':[],'brief save':['file','expect'],'brief show':[],
   'checkpoint show':[], 'checkpoint save':['current','next','notes','expect','evidence'], 'progress show':[], 'progress save':['cursor','expect'],
   import:['backlog','wip','actions','sessions','dry-run','confirm','repair'],export:[],launch:['fresh','resume','dry-run','no-prompt','terminal','distro','window','stop-file','all','new-window'],'launch-unlock':[],migrate:[],doctor:[],backup:[],restore:[],machine:[]
@@ -142,7 +147,8 @@ function humanOutput(value: unknown, command?: string): string {
   if(value && typeof value==='object' && 'reason' in value && 'role' in value) {
     const event=value as WaitResult;
     let summary:string;
-    if(event.reason==='urgent') summary=`URGENT ${event.message!.id} from ${event.message!.sender}: ${event.message!.summary}`;
+    if(event.reason==='supervisor-ping') summary=`PING generation ${event.generation}, nonce ${event.nonce}: acknowledge through sassato supervise ack NONCE --generation GENERATION after reconciling current state`;
+    else if(event.reason==='urgent') summary=`URGENT ${event.message!.id} from ${event.message!.sender}: ${event.message!.summary}`;
     else if(event.reason==='reply-needed') summary=`REPLY ${event.message!.id} from ${event.message!.sender} asks for your reply: ${event.message!.summary}`;
     else if(event.reason==='open-work') summary=`OPEN WORK ${(event.tasks??[]).slice(0,8).join(', ')} for ${event.role}, none taken, with nothing written for a while: take one (sassato take ${(event.tasks??[])[0]}), or say why not.`;
     else if(event.reason==='own-work') summary=`OWN WORK ${(event.tasks??[]).slice(0,8).join(', ')} held by ${event.role} with nothing written for a while: carry on, or block or release what waits on others.`;
@@ -229,6 +235,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     const p=[...positionals];let command=p.shift()!;
     if (command==='task') command=p.shift()??'tasks';
     if (['workspace','role','fact','session','job','checkout','brief','index'].includes(command)) command+=' '+(p.shift()??'');
+    if (command==='supervise') command+=' '+(p.shift()??'status');
     if (command==='checkpoint' || command==='progress') command+=' '+(p.shift()??'show');
     // wip get is an alias of wip show, which prints the version that wip set --expect takes.
     if (command==='wip') command+=' '+(p[0]==='show'||p[0]==='set'?p.shift():p[0]==='get'?(p.shift(),'show'):'show');
@@ -268,9 +275,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     else if(command==='restore') {const source=arg('backup');empty();check(str('db'),'Restore requires explicit --db NEW_FILE');result=await a.restoreDatabase(source,db);}
     else if(command==='machine') {empty();result=a.machine();}
     else {
-      const reads=['checkout list','checkout show','checkout resolve','brief show','job list','job stats','tasks','show','blockers','humans','outbox','sent','fact get','fact history','facts','wip show','sessions','roles','workspace settings','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
+      const reads=['supervise status','checkout list','checkout show','checkout resolve','brief show','job list','job stats','tasks','show','blockers','humans','outbox','sent','fact get','fact history','facts','wip show','sessions','roles','workspace settings','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
       const readonly=reads.includes(command)||command==='retitle'&&!bool('apply')||command==='inbox'&&bool('peek')||['launch','import'].includes(command)&&bool('dry-run');
-      store=new Store(db,actor,{readonly});
+      store=new Store(db,actor,{readonly,managedWriteMode:command==='supervise ack'?'normal':command==='stopped'?'stop-ack':'normal'});
       const s=store;
       if(command!=='migrate') s.use(workspace);
       switch(command) {
@@ -312,7 +319,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'answer': {const question=arg('question or task');result=t.answerQuestion(s,question,rest('answer'),{close:bool('close'),relayedBy:str('relayed-by')});break;}
         case 'humans': empty();result=t.humanQueue(s,{limit:num('limit'),forRole:str('for')});break;
         case 'send': {const to=arg('recipient');result=c.send(s,to==='all'?'all':to.split(','),rest('message'),{task:str('re'),urgent:bool('urgent'),needsReply:bool('needs-reply')});break;}
-        case 'wait': {empty();result=await waitForWork(s,{timeout:num('timeout'),stopFile:str('stop-file'),since:num('since'),idleMinutes:num('idle-minutes')});if((result as WaitResult).reason==='timeout')process.exitCode=5;break;}
+        case 'wait': {empty();result=await waitWithManagedObservation(s,{timeout:num('timeout'),stopFile:str('stop-file'),since:num('since'),idleMinutes:num('idle-minutes')});if((result as WaitResult).reason==='timeout')process.exitCode=5;break;}
         case 'inbox': empty();result=c.inbox(s,{peek:bool('peek'),state:str('state') as 'unread'|'read'|'done'|undefined,limit:num('limit')});break;
         case 'sent': case 'outbox': empty();result=c.outbox(s,{limit:num('limit')});break;
         case 'ack': {const message=arg('message');empty();result=c.acknowledge(s,message);break;}
@@ -345,6 +352,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'resume-work': result=control.resumeWork(s,p.splice(0),{all:bool('all')});break;
         case 'usage': result=c.setUsage(s,rest('usage note'),str('until'));break;
         case 'context': empty();result=c.context(s,{since:num('since'),limit:num('limit')});break;
+        case 'supervise status': empty();result=supervisor.supervisorStatus(s);break;
+        case 'supervise ping': {const role=arg('worker role');empty();result=supervisor.requestSupervisorPing(s,role);break;}
+        case 'supervise ack': {const nonce=arg('ping nonce');empty();result=supervisor.acknowledgeSupervisorPing(s,nonce,integer(need('generation'),'worker generation'));break;}
         case 'checkout register': empty();result=checkouts.registerCheckout(s,need('dir'));break;
         case 'checkout list': empty();result=checkouts.listCheckouts(s);break;
         case 'checkout show': {const checkout=arg('checkout');empty();result={...checkouts.registeredCheckout(s,checkout),observed:checkouts.inspectCheckout(s,checkout)};break;}

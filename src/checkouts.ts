@@ -59,6 +59,10 @@ export function bindCheckout(s:Store,input:BindCheckoutInput):Row {
     const configured=s.role(actor).provider;
     check(configured===null || configured===provider,'Provider differs from the configured role',4);
     assertPhysicalIdentity(identity);
+    const managed=s.get('SELECT role,workspace_id FROM managed_workers WHERE checkout_id=?',input.checkout);
+    check(!managed || managed.role===actor && managed.workspace_id===s.ws,'Checkout is reserved by a durable managed launch, including uncertain or cancelled startup',4);
+    const ownManaged=s.get('SELECT checkout_id FROM managed_workers WHERE role=?',actor);
+    check(!ownManaged || ownManaged.checkout_id===input.checkout,'Managed worker must retain its reserved checkout',4);
     const runtime=s.get('SELECT * FROM sessions WHERE workspace_id=? AND role=? AND provider=? AND external_id=? AND ended_at IS NULL',s.ws,actor,provider,session);
     check(runtime && runtime.pid && runtime.process_start && sessionState(runtime)==='running','Binding requires the current verified provider session with PID/start identity; register it first',4);
     const cwd=statSync(identity.working_dir,{bigint:true});

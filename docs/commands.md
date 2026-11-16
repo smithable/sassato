@@ -17,6 +17,51 @@ Strings containing spaces must be quoted. A value beginning with `--` can use th
 `--option=VALUE` form; use `--` before positional text beginning with a dash.
 IDs are returned by creation commands and are stable. Examples below use T1/H1/M1.
 
+## Supervisor observations
+
+`supervise` (or `supervise status`) reads registered session state, responsiveness,
+checkpoint freshness, managed waiter identity, tasks and jobs separately. Output
+always reports `management_enabled: false`: production provider adapters remain
+observe-only. A missed ping, stale checkpoint or missing waiter never authorizes
+termination or replacement.
+
+`supervise ping ROLE` records a generation-bound nonce, at most once per 60 seconds
+for that role and generation, with a 120-second acknowledgment deadline. The
+outstanding nonce remains active until answered; later cadence requests cannot
+replace it and mask an overdue response. The
+role's `wait` returns `supervisor-ping`, including its nonce and generation. After
+reading current state, the worker uses
+`supervise ack NONCE --generation N --as ROLE`. Acknowledgment does not consume mail
+or advance notification progress. Save and reuse the cursor returned by `wait`
+under the usual reconciliation rules.
+Frozen lifecycle states report responsiveness as `suspended`, retaining prior
+nonce/deadline evidence without an acknowledgment obligation. Returning to
+running/draining advances a durable ping epoch; the next request gets a fresh
+nonce and deadline, and pre-freeze requests cannot be replayed or acknowledged.
+
+The experimental controller/bootstrap implementation is available only to fixture
+adapters in source tests. There is no production enrollment, replacement or
+unattended-enable command. See the [implementation contract and remaining gates](supervisor.md).
+Ordinary commands retain their standalone behavior. A role explicitly enrolled by
+a fixture controller must supply `SASSATO_WORKER_GENERATION` and
+`SASSATO_WORKER_TOKEN` for writes; stale, missing or frozen credentials fail closed,
+including through legacy mutation commands. These credentials are not needed for
+unmanaged roles or read-only observations. Managed `wait` additionally writes its
+PID-bound observation and therefore requires current credentials. It cannot start
+in a frozen lifecycle state: after Ready the worker stays behind its existing
+adapter barrier, with no new tool or waiter, until retirement.
+
+A role name denotes one instance across workspaces sharing the local database.
+While managed, that instance is reserved to its enrolled workspace; switching
+workspaces cannot bypass its generation fence. Use distinct role names for
+independent workers.
+
+If a generation freezes while an existing managed waiter is finishing, the waiter
+still returns its notification cursor and marks `managed_observation` as
+`cleanup-fenced`. Its observation remains reserved until the originating PID is
+positively gone; the next eligible waiter can then reclaim the slot. This never
+advances handled notification progress or permits work in the frozen generation.
+
 ## Setup and administration
 
 | Command | Behavior |
