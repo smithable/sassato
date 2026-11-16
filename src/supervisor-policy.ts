@@ -25,6 +25,8 @@ export function setSupervisorPolicy(s:Store,input:unknown):SupervisorPolicy {
   check(Number.isSafeInteger(p.maximum_workers) && p.maximum_workers>0 && p.maximum_workers<=p.worker_roles.length,'Worker limit exceeds the explicit allowed roles');
   return s.tx(()=>{
     s.requireHuman();check(!s.get("SELECT id FROM managed_workers WHERE workspace_id=? AND state NOT IN ('exited','stopped') LIMIT 1",s.ws),'Drain and reconcile existing managed workers before changing policy',4);
+    const previous=getSupervisorPolicy(s);
+    if(previous && s.get('SELECT id FROM managed_workers WHERE workspace_id=? LIMIT 1',s.ws))check(JSON.stringify(previous)===JSON.stringify(p),'Existing generation tombstones retain their controller and policy; do not orphan them',4);
     check(!s.get("SELECT id FROM jobs WHERE status IN ('waiting','running') OR (orphans IS NOT NULL AND orphans!='[]') LIMIT 1"),'Settle machine-wide jobs before changing supervisor maintenance policy',4);
     s.event('supervisor-policy',p.controller_id,'configured',{policy:p});return p as SupervisorPolicy;
   });

@@ -47,6 +47,13 @@ test('changing workspace or actor inside a transaction rechecks managed authorit
   assert.throws(()=>admin.tx(()=>{admin.actor='builder';admin.run('UPDATE tasks SET title=? WHERE id=?','Bypass',Number(task.slice(1)));}),/generation/);
   admin.actor='human';assert.equal(admin.task(task).title,'Owned work');
 });
+test('workspace switching cannot bypass a globally reserved role while unrelated roles remain compatible',t=>{
+  const {admin,worker}=fixture(t);initWorkspace(admin,'other');
+  for(const connection of [worker('',''),worker('2'),worker()]){
+    connection.use('other');assert.throws(()=>addTask(connection,{title:'Workspace bypass'}),/reserved in another workspace/);
+  }
+  admin.actor='reviewer';assert.ok(addTask(admin,{title:'Independent unmanaged role'}).id);
+});
 test('frozen generations reject normal writes while narrow reconciliation and stop acknowledgments are distinct',t=>{
   const {admin,task,worker}=fixture(t),normal=worker();
   admin.run("UPDATE managed_workers SET state='ready' WHERE id='worker'");
@@ -58,10 +65,14 @@ test('frozen generations reject normal writes while narrow reconciliation and st
   assert.doesNotThrow(()=>worker('1',token,'reconcile').tx(()=>{}));
 });
 test('legacy CLI mutations cannot omit generation credentials; reads and unmanaged commands still work',t=>{
-  const {db,task}=fixture(t),cli=resolve('bin/sassato.js');
+  const {db,task,admin}=fixture(t),cli=resolve('bin/sassato.js');
   const run=(args,credentials={})=>spawnSync(process.execPath,[cli,'--db',db,'--workspace','demo','--as','builder','--json',...args],{encoding:'utf8',env:{...process.env,SASSATO_WORKER_GENERATION:'',SASSATO_WORKER_TOKEN:'',...credentials},timeout:5000});
   assert.equal(run(['show',task]).status,0);
   assert.equal(run(['note',task,'Missing credentials']).status,4);
   const good=run(['note',task,'Current credentials'],{SASSATO_WORKER_GENERATION:'1',SASSATO_WORKER_TOKEN:token});assert.equal(good.status,0,good.stderr);
   assert.equal(good.stdout.includes(token),false);
+  admin.run("UPDATE managed_workers SET state='ready' WHERE id='worker'");
+  for(const args of [['show',task],['context'],['supervise','status'],['inbox','--peek']]){
+    const observed=run(args);assert.equal(observed.status,0,observed.stderr);
+  }
 });

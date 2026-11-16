@@ -40,7 +40,15 @@ Ordinary commands retain their standalone behavior. A role explicitly enrolled b
 a fixture controller must supply `SASSATO_WORKER_GENERATION` and
 `SASSATO_WORKER_TOKEN` for writes; stale, missing or frozen credentials fail closed,
 including through legacy mutation commands. These credentials are not needed for
-unmanaged roles or read-only observations.
+unmanaged roles or read-only observations. Managed `wait` additionally writes its
+PID-bound observation and therefore requires current credentials. It cannot start
+in a frozen lifecycle state: after Ready the worker stays behind its existing
+adapter barrier, with no new tool or waiter, until retirement.
+
+A role name denotes one instance across workspaces sharing the local database.
+While managed, that instance is reserved to its enrolled workspace; switching
+workspaces cannot bypass its generation fence. Use distinct role names for
+independent workers.
 
 ## Setup and administration
 

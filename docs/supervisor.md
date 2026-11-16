@@ -22,6 +22,12 @@ resumption and controller recovery. No lifecycle signaling path is implemented.
 The deterministic child fixture voluntarily exits when requested by its test.
 Fixture descendant observations are explicitly synthetic and are never recorded
 as real-provider containment proof. No existing terminal is enrolled or adopted.
+Replaying an existing launch intent returns its durable identity with
+`new_intent: false` and no credentials; it never authorizes a second spawn. An
+uncertain, unregistered spawn remains blocked for a human. Cancellation revokes
+both release credentials without erasing the reservation or permitting a retry.
+Active running/draining recovery observes current work; immutable Ready snapshots
+remain strict requirements for retirement and replacement.
 
 When a human policy exists in the source fixture API, `job run` acquires shared
 leases for every configured workspace maintenance lock before admission and holds
@@ -37,6 +43,10 @@ effective configuration continuity, owned descendant containment and the require
 real Codex-then-Claude handoffs remain unproven. Cross-role transfer remains
 unimplemented. This source implementation is partial phase 3 delivery, not phase 3
 acceptance, provider proof, installation approval or unattended enablement.
+The in-process Store and fixture adapter APIs are trusted implementation interfaces,
+including their narrow lifecycle write modes. They do not sandbox code with raw
+database or filesystem access; generation fencing is enforced on CLI mutations and
+the Store mutation path. No CLI flag exposes privileged lifecycle write modes.
 
 ## 1. Scope, identity and authority
 
