@@ -19,7 +19,7 @@ function fixture(t,managed=false) {
   if(managed) {
     const at=new Date().toISOString();
     controller.run('INSERT INTO managed_controllers VALUES(?,?,?,?,?,?,?)','controller',controller.ws,'reviewer',join(dir,'controller.lock'),null,null,at);
-    controller.run('INSERT INTO managed_workers VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)','worker',controller.ws,'builder','controller',null,1,workerTokenHash(token),'running','claude',null,null,null,'0'.repeat(64),at);
+    controller.run('INSERT INTO managed_workers(id,workspace_id,role,controller_id,binding_id,generation,token_hash,state,provider,external_id,pid,process_start,configuration_digest,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)','worker',controller.ws,'builder','controller',null,1,workerTokenHash(token),'running','claude',null,null,null,'0'.repeat(64),at);
   }
   const worker=new Store(db,'builder',{managedCredentials:{generation:managed?'1':undefined,token:managed?token:undefined}});worker.use('demo');
   t.after(()=>{worker.close();controller.close();rmSync(dir,{recursive:true,force:true});});return {dir,db,controller,worker};

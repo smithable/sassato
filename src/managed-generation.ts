@@ -3,7 +3,7 @@ import type { Store } from './storage.js';
 import { check } from './errors.js';
 
 export interface ManagedCredentials {generation?:string;token?:string}
-export type ManagedWriteMode='normal'|'reconcile'|'stop-ack';
+export type ManagedWriteMode='normal'|'reconcile'|'stop-ack'|'bootstrap';
 export function workerTokenHash(token:string):string {
   return createHash('sha256').update(token).digest('hex');
 }
@@ -17,6 +17,6 @@ export function assertManagedWrite(s:Store,credentials:ManagedCredentials,mode:M
   check(typeof credentials.token==='string' && credentials.token.length>=32 && credentials.token.length<=256,'Managed worker authentication is missing',3);
   const supplied=Buffer.from(workerTokenHash(credentials.token),'hex'),expected=Buffer.from(String(worker.token_hash),'hex');
   check(expected.length===supplied.length && timingSafeEqual(supplied,expected),'Managed worker authentication does not match its generation',3);
-  const allowed=mode==='reconcile'?worker.state==='reconciling':mode==='stop-ack'?!['exited','starting'].includes(worker.state):['running','draining'].includes(worker.state);
+  const allowed=mode==='bootstrap'?worker.state==='starting':mode==='reconcile'?worker.state==='reconciling':mode==='stop-ack'?!['exited','starting'].includes(worker.state):['running','draining'].includes(worker.state);
   check(allowed,'Managed worker is frozen; no new writes are allowed in this lifecycle state',4);
 }

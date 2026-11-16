@@ -17,7 +17,7 @@ function fixture(t) {
   const at=new Date().toISOString();
   admin.run('INSERT INTO managed_controllers VALUES(?,?,?,?,?,?,?)','controller',admin.ws,'reviewer',join(dir,'controller.lock'),null,null,at);
   // This models the write fence only; it is not a provider launch or handoff proof.
-  admin.run('INSERT INTO managed_workers VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)','worker',admin.ws,'builder','controller',null,1,workerTokenHash(token),'running','claude',null,null,null,'0'.repeat(64),at);
+  admin.run('INSERT INTO managed_workers(id,workspace_id,role,controller_id,binding_id,generation,token_hash,state,provider,external_id,pid,process_start,configuration_digest,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)','worker',admin.ws,'builder','controller',null,1,workerTokenHash(token),'running','claude',null,null,null,'0'.repeat(64),at);
   const connections=[];
   const worker=(generation='1',secret=token,mode='normal')=>{
     const s=new Store(db,'builder',{managedCredentials:{generation,token:secret},managedWriteMode:mode});s.use('demo');connections.push(s);return s;
