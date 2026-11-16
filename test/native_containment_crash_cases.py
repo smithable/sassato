@@ -1,5 +1,6 @@
 """Offline controller protocol: temporary files and a fixed inert stub, no unit."""
 import fcntl
+import io
 import os
 from pathlib import Path
 import sys
@@ -204,6 +205,17 @@ while True:
             with self.assertRaises(native.UnknownScope):
                 lab.run_controller(Path("/no-scenario-needed"), "reconcile", time.monotonic() + lab.REAP_SECONDS + 0.1)
             spawn.assert_not_called()
+
+    def test_abbreviated_controller_flag_cannot_reach_child_mode(self):
+        with patch.object(sys, "argv", [str(lab.SCRIPT), "--contr", "inject", "--scenario", "/unused"]), patch.object(lab, "child") as child, patch.object(sys, "stderr", io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                lab.main()
+            self.assertEqual(error.exception.code, 2)
+            child.assert_not_called()
+        for argv in [["--controller", "inject"], ["--controller=inject"]]:
+            with patch.object(sys, "argv", [str(lab.SCRIPT), *argv, "--scenario", "/unused"]), patch.object(lab, "child") as child:
+                lab.main()
+                child.assert_called_once_with("/unused", "inject")
 
 
 if __name__ == "__main__":

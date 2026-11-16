@@ -3,7 +3,7 @@ import sys
 import signal
 
 # Arm only a newly exec'd controller, before custom imports or scenario I/O.
-if __name__ == "__main__" and "--controller" in sys.argv:
+if __name__ == "__main__" and any(arg == "--controller" or arg.startswith("--controller=") for arg in sys.argv[1:]):
     signal.alarm(30)
 
 import argparse
@@ -341,7 +341,7 @@ def run_parent(parent):
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--run-kernel-crash-fixture", action="store_true")
     parser.add_argument("--evidence-parent")
     parser.add_argument("--controller", choices=["inject", "reconcile"])
