@@ -7,6 +7,37 @@ import time
 from native_containment import FixtureScope, UnknownScope, atomic_json, positively_exited
 
 
+def must_block(action, report, name):
+    try:
+        action()
+    except UnknownScope as error:
+        report.setdefault("blocked_actions", {})[name] = str(error)
+    else:
+        raise UnknownScope("Expected lifecycle rejection did not occur: " + name)
+
+
+def lost_handle_reconnect(scope, report):
+    """Drop the original controller handles, reconnect; never reset history."""
+    directory = scope.directory
+    scope.close()
+    replacement = FixtureScope(directory)
+    try:
+        must_block(replacement.launch, report, "duplicate_launch")
+        must_block(replacement.recover, report, "replacement_binding")
+        replacement.request_stop()
+        must_block(replacement.release, report, "release_after_stop")
+        must_block(replacement.recover, report, "recover_after_stop")
+        while not positively_exited(replacement.state["bootstrap"]):
+            if time.monotonic() >= replacement.state["deadline"] + 1:
+                raise UnknownScope("Reconnect fixture did not positively exit")
+            time.sleep(0.02)
+        must_block(replacement.cleanup, report, "cleanup_without_original_handles")
+        report["positive_bootstrap_exit"] = True
+        report["result"] = "lost-handle-reconnect-rejected-preserve-unit-passed"
+    finally:
+        replacement.close()
+
+
 def full_tree(scope, report):
     scope.release()
     report["released"] = True
@@ -56,7 +87,10 @@ def main():
     parser.add_argument("--run-kernel-fixture", action="store_true", required=True)
     parser.add_argument("--evidence-parent", required=True)
     parser.add_argument("--full-tree", action="store_true", help="Separate explicit bounded fork/owned-pidfd experiment")
+    parser.add_argument("--fault-case", choices=["stop-held", "lost-handle-reconnect"])
     args = parser.parse_args()
+    if args.full_tree and args.fault_case:
+        parser.error("Select one bounded experiment per invocation")
     scope = FixtureScope.prepare(Path(args.evidence_parent), lifetime=20)
     report = {"kind": "fake-kernel-primitive-only", "unit": scope.state["unit"], "directory": str(scope.directory), "released": False, "provider_proof": False}
     print(str(scope.directory), flush=True)
@@ -66,9 +100,15 @@ def main():
         current = scope.snapshot()
         if len(current["claims"]) != 1 or current["claims"][0] != claim or (scope.directory / "release.json").exists():
             raise UnknownScope("Held bootstrap invariant failed")
+        if args.fault_case == "lost-handle-reconnect":
+            lost_handle_reconnect(scope, report)
+            return
         if args.full_tree:
             full_tree(scope, report)
         scope.request_stop()
+        if args.fault_case == "stop-held":
+            must_block(scope.release, report, "release_after_stop")
+            must_block(scope.recover, report, "recover_after_stop")
         end = scope.state["deadline"] + 2
         while True:
             try:

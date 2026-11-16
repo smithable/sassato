@@ -116,3 +116,15 @@ while the numeric process-group/session identity remains allocated: the matching
 requires an associated thread-group task. A native run observed `EINVAL` in that
 window and preserved evidence without signaling or cleanup. That errno is never
 exit proof; the lab instead requires `POLLIN` from the continuously held pidfd.
+
+Before opening the original retained binding, persist `binding_started`. A new
+controller may not bind again after that attempt, even if the helper is still
+held and live. This closes the crash window before the completed binding is
+saved and prevents reconnect from resetting namespace history. The explicit
+`--fault-case lost-handle-reconnect` closes the original handles, opens a fresh
+controller, checks duplicate-launch/rebinding rejection, requests fixture STOP,
+proves helper exit and checks that cleanup remains blocked. It intentionally
+preserves its unit metadata. This exercises handle loss and reconnect, rather
+than claiming an operating-system controller crash. `--fault-case stop-held`
+checks release and recovery rejection after fixture STOP, then uses the original
+retained handles to prove exit and retire its own empty unit.

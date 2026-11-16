@@ -195,6 +195,18 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(native.UnknownScope, "retained scope proof was lost"):
             self.scope.cleanup()
 
+    def test_crash_after_binding_intent_cannot_reset_namespace_history(self):
+        proof = {"identity": {"device": 23, "inode": 99}}
+        with patch.object(native, "RetainedScope", side_effect=OSError("crash during binding")) as constructor:
+            with self.assertRaises(OSError):
+                self.scope._retain(self.parent / "owned", proof)
+            self.assertTrue(native.read_json(self.directory / "intent.json")["binding_started"])
+            self.scope.close()
+            self.scope = native.FixtureScope(self.directory)
+            with self.assertRaisesRegex(native.UnknownScope, "lost or uncertain"):
+                self.scope._retain(self.parent / "owned", proof)
+            constructor.assert_called_once()
+
 
 def event_bytes(watch, mask, name="owned.service"):
     raw = name.encode() + b"\0"

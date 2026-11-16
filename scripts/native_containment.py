@@ -283,8 +283,7 @@ class FixtureScope:
                     current = self.snapshot()
                     require(current["claims"] == [claim], "Held bootstrap is not the only scope member")
                     if self.retained is None:
-                        parent = CGROUP_ROOT / self.state["parent_group"].lstrip("/")
-                        self.retained = RetainedScope(root, proof["identity"], parent, self.state["parent_identity"])
+                        self._retain(root, proof)
                     require(self._claim(pid) == claim, "Bootstrap exited or changed during retained binding")
                     self._save(inventory={"phase": "held", "claims": current["claims"], "generation": self.state["generation"], "token_hash": self.state["token_hash"]}, retained_binding=self.retained.initial)
                 return claim
@@ -293,6 +292,15 @@ class FixtureScope:
                 return self.snapshot()
             time.sleep(0.02)
         raise UnknownScope("Bootstrap is absent/uncertain; preserve intent and never relaunch")
+
+    def _retain(self, root, proof):
+        self._guard()
+        require(self.retained is None and not self.state.get("binding_started"), "Original retained binding was lost or uncertain; do not establish a replacement")
+        # Persist before opening any handle: a crash at every subsequent point
+        # leaves an explicit unknown, never permission to reset the history.
+        self._save(binding_started=True)
+        parent = CGROUP_ROOT / self.state["parent_group"].lstrip("/")
+        self.retained = RetainedScope(root, proof["identity"], parent, self.state["parent_identity"])
 
     def snapshot(self):
         _, root, _ = self._unit()
