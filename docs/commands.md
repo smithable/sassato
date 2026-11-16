@@ -50,6 +50,12 @@ While managed, that instance is reserved to its enrolled workspace; switching
 workspaces cannot bypass its generation fence. Use distinct role names for
 independent workers.
 
+If a generation freezes while an existing managed waiter is finishing, the waiter
+still returns its notification cursor and marks `managed_observation` as
+`cleanup-fenced`. Its observation remains reserved until the originating PID is
+positively gone; the next eligible waiter can then reclaim the slot. This never
+advances handled notification progress or permits work in the frozen generation.
+
 ## Setup and administration
 
 | Command | Behavior |

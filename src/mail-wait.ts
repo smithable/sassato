@@ -13,6 +13,7 @@ export interface WaitResult {
   /** Task version recorded by the workflow event, not a substitute for reading current work. */
   version?:number;
   nonce?:string;generation?:number;ping_deadline?:string;
+  managed_observation?:string;
 }
 export interface WaitOptions { timeout?:number; stopFile?:string; since?:number; idleMinutes?:number }
 const maximum=(s:Store):number=>Number(s.get('SELECT coalesce(max(id),0) n FROM events WHERE workspace_id=?',s.ws)!.n);

@@ -4,6 +4,7 @@ import { armManagedWaiter,disarmManagedWaiter } from './supervisor-monitor.js';
 import { getNotificationProgress } from './notification-progress.js';
 import { activeStop } from './control.js';
 import { workspaceSettings } from './workspace-settings.js';
+import { AppError } from './errors.js';
 
 /** Legacy unmanaged waits remain read-only. Managed waits add PID-bound observations. */
 export async function waitWithManagedObservation(s:Store,options:WaitOptions):Promise<WaitResult> {
@@ -20,7 +21,10 @@ export async function waitWithManagedObservation(s:Store,options:WaitOptions):Pr
     catch(error) {
       // STOP and the original failure remain visible even if a generation froze
       // during cleanup. A later arm must prove this PID gone before reusing the slot.
-      if(!failed && result?.reason!=='stop')throw error;
+      if(!failed && result?.reason!=='stop'){
+        if(result && error instanceof AppError && /Managed (worker (generation|is frozen)|role is reserved)/.test(error.message))result.managed_observation='cleanup-fenced; originating waiter PID must exit before its slot can be reclaimed';
+        else throw error;
+      }
     }
   }
 }
