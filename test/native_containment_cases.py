@@ -215,12 +215,13 @@ class LabExitTests(unittest.TestCase):
                 return main
             scope = SimpleNamespace(directory=directory, state={"bootstrap": main, "deadline": time.monotonic() + 10}, release=lambda: None, _guard=lambda: None, _claim=claim, seal_idle_inventory=lambda: {"claims": [main] + descendants}, snapshot=lambda: {"claims": descendants}, signal_owned=sent.append)
             poll = SimpleNamespace(register=lambda fd, mask: None, poll=lambda timeout: [(777, lab.select.POLLIN)])
+            real_close = os.close
             # A second open would reproduce the native post-reap EINVAL failure.
-            with patch.object(lab.os, "pidfd_open", side_effect=[777, OSError(errno.EINVAL, "reaped")]) as opened, patch.object(lab.os, "close") as closed, patch.object(lab.select, "poll", return_value=poll), patch.object(lab, "positively_exited", return_value=False):
+            with patch.object(lab.os, "pidfd_open", side_effect=[777, OSError(errno.EINVAL, "reaped")]) as opened, patch.object(lab.os, "close", side_effect=lambda fd: None if fd == 777 else real_close(fd)) as closed, patch.object(lab.select, "poll", return_value=poll), patch.object(lab, "positively_exited", return_value=False):
                 report = {}
                 lab.full_tree(scope, report)
                 opened.assert_called_once_with(123)
-                closed.assert_called_once_with(777)
+                self.assertEqual(sum(call.args == (777,) for call in closed.call_args_list), 1)
             self.assertTrue(report["main_exit"]["retained_pidfd_pollin"])
             self.assertEqual(sent, descendants)
 
