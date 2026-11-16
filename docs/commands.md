@@ -45,6 +45,69 @@ Use `none` to clear the default human or stop file. `role set NAME --kind human`
 human; only an existing human can create/promote roles. Agent model/permission settings
 inherit provider defaults unless explicitly configured.
 
+## Registered checkouts and task briefs
+
+Registration records existing non-bare Git checkouts; it never creates a worktree or
+changes files, refs, branches or provider sessions. Coordination remains shared by
+the workspace (project), with immutable project/repository/checkout IDs. Linked
+worktrees share a physical repository ID; clones do not. Canonical Git paths,
+device/inode and object format establish identity; branch and HEAD are observations.
+Missing, moved or replaced paths fail closed and require operator reconciliation.
+
+```sh
+sas checkout register --dir /repos/project
+sas checkout list
+sas checkout show CHECKOUT_ID
+sas checkout bind CHECKOUT_ID --dir /repos/project/src --task T1 --provider codex --session-id CONVERSATION_ID
+sas checkout resolve src/parser.ts --task T1
+sas brief save T1 --file ./brief.json --expect TASK_VERSION
+sas brief show T1
+sas handoff T1 reviewer 'Continue the parser' --brief-file ./brief.json --expect TASK_VERSION
+```
+
+Binding requires an owned active task and reserves one worker per role instance
+and checkout across this database's projects. Use a separate registered checkout
+for a reviewer (`checkout bind ... --mode review`). Working directories must be
+existing canonical descendants of the registered root. Repository-relative path
+resolution rejects symlinks escaping that root. `checkout release` requires verified
+exit of the matching registered provider session and no active owned jobs; expired
+task leases or session end markers alone do not release a reservation.
+
+The brief input is a version-1 JSON object:
+
+```json
+{
+  "version": 1,
+  "objective": "Complete the parser",
+  "acceptance": ["The parser accepts the documented grammar"],
+  "decisions": [{"decision": "Preserve the public API", "source": "T1 accepted decision"}],
+  "open_issues": [],
+  "validation": [{"command": "npm test", "result": "Passed"}],
+  "artifacts": ["logs/test.txt"],
+  "next_action": "Inspect the new failing input",
+  "configuration": {"digest": "0000000000000000000000000000000000000000000000000000000000000000", "provenance": ["configuration manifest reference"]},
+  "jobs": []
+}
+```
+
+Supply the actual configuration manifest's SHA-256 digest and references. These
+reported claims do not grant authority. The immutable saved brief adds observed
+registry identity, cwd, branch/HEAD, active task versions, safely handled notification
+progress, role-settings digest and dirty-work manifest. Staged blob IDs and local
+hashes of unstaged/untracked content preserve evidence without storing file contents.
+Dirty files must remain stable during capture; unsupported submodules, unreadable
+files and files over 64 MiB block it. The complete saved brief is capped at 32 KiB;
+oversize or incomplete input is rejected, never silently truncated. Report every
+settled job as `{ "id": "tests", "state": "completed", "evidence": "logs/tests.txt" }`;
+running or unknown jobs and active recorded jobs block capture.
+
+A bound handoff records a **pending retirement intent** with its brief and inspected
+task version. It transfers neither task ownership nor checkout reservation. Saving
+a brief does not establish tool quiescence, authorize process termination or start a
+successor; verified managed retirement/finalization is a separate capability.
+Unbound legacy `handoff` behavior remains unchanged. Ordinary commands need no daemon
+or model calls. Do not install a development build against a live coordination database.
+
 ## Tasks, ownership and reviews
 
 | Command | Behavior |

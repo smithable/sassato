@@ -7,7 +7,7 @@ import { check, name, now, safe, id } from './errors.js';
 // SQLite rows deliberately stay flexible at this small adapter boundary.
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 export function databasePath(value?: string): string {
   const path = resolve(value ?? process.env.SASSATO_DB ?? `${process.env.XDG_DATA_HOME ?? `${homedir()}/.local/share`}/sassato/sassato.db`);
   let ancestor = path;
@@ -120,7 +120,8 @@ export class Store {
       }
       if (current === 5) { this.db.exec(MIGRATION_6); current = 6; }
       if (current === 6) { this.db.exec(MIGRATION_7); current = 7; }
-      if (current === 7) this.db.exec(MIGRATION_8);
+      if (current === 7) { this.db.exec(MIGRATION_8); current = 8; }
+      if (current === 8) this.db.exec(MIGRATION_9);
     });
   }
   private cancelClosedQuestions(): void {
@@ -262,4 +263,19 @@ CREATE INDEX jobs_kind ON jobs(kind,id);
 CREATE INDEX jobs_turns ON jobs(workspace_id,role,started_at);
 INSERT INTO schema_migrations VALUES(8,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 PRAGMA user_version=8;
+`;
+
+const MIGRATION_9 = `
+CREATE TABLE registry_projects(id TEXT PRIMARY KEY, workspace_id INTEGER NOT NULL UNIQUE REFERENCES workspaces(id));
+CREATE TABLE registry_repositories(id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL UNIQUE, common_dir TEXT NOT NULL UNIQUE, identity TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE registry_checkouts(id TEXT PRIMARY KEY, repository_id TEXT NOT NULL REFERENCES registry_repositories(id), fingerprint TEXT NOT NULL UNIQUE, root TEXT NOT NULL UNIQUE, git_dir TEXT NOT NULL UNIQUE, identity TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE project_checkouts(project_id TEXT NOT NULL REFERENCES registry_projects(id), checkout_id TEXT NOT NULL REFERENCES registry_checkouts(id), PRIMARY KEY(project_id,checkout_id));
+CREATE TABLE checkout_bindings(id TEXT PRIMARY KEY, workspace_id INTEGER NOT NULL, task_id INTEGER NOT NULL, role TEXT NOT NULL, checkout_id TEXT NOT NULL REFERENCES registry_checkouts(id), working_dir TEXT NOT NULL, provider TEXT NOT NULL, provider_session_id TEXT NOT NULL, mode TEXT NOT NULL CHECK(mode IN ('coding','review')), created_at TEXT NOT NULL, released_at TEXT, FOREIGN KEY(workspace_id,task_id) REFERENCES tasks(workspace_id,id), FOREIGN KEY(workspace_id,role) REFERENCES roles(workspace_id,name));
+CREATE UNIQUE INDEX checkout_coding_reservation ON checkout_bindings(checkout_id) WHERE released_at IS NULL;
+CREATE UNIQUE INDEX role_checkout_reservation ON checkout_bindings(role) WHERE released_at IS NULL;
+CREATE TABLE task_briefs(id TEXT PRIMARY KEY, workspace_id INTEGER NOT NULL, task_id INTEGER NOT NULL, role TEXT NOT NULL, binding_id TEXT NOT NULL REFERENCES checkout_bindings(id), body TEXT NOT NULL, digest TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY(workspace_id,task_id) REFERENCES tasks(workspace_id,id), FOREIGN KEY(workspace_id,role) REFERENCES roles(workspace_id,name));
+CREATE TRIGGER immutable_briefs_update BEFORE UPDATE ON task_briefs BEGIN SELECT RAISE(ABORT,'Briefs are immutable'); END;
+CREATE TRIGGER immutable_briefs_delete BEFORE DELETE ON task_briefs BEGIN SELECT RAISE(ABORT,'Briefs are immutable'); END;
+INSERT INTO schema_migrations VALUES(9,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+PRAGMA user_version=9;
 `;

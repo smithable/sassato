@@ -179,6 +179,7 @@ export function updateTask(s: Store, task: string, options: UpdateTaskOptions): 
 export function handoffTask(s: Store, task: string, to: string, note: string): Row {
   return s.tx(() => {
     const row = s.task(task); writable(s, row); active(row); text(note, 'handoff summary');
+    check(!s.get('SELECT id FROM checkout_bindings WHERE workspace_id=? AND task_id=? AND released_at IS NULL',s.ws,row.id),'Registered checkout handoff requires --brief-file FILE and --expect VERSION; ownership stays pending verified retirement',4);
     const target = s.role(to); check(!row.human_only || target.kind === 'human', 'Human-only work cannot be handed to an agent', 3);
     check(to !== row.owner, 'Task already belongs to this role', 4);
     const result = change(s, row, { owner: to, for_role: to, lease_until: null, status: blocking(s, row).some(b => b.kind !== 'dependency') ? 'blocked' : 'open', reviewed_by: null, review_note: null }, 'handed-off', { note });

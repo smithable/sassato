@@ -19,6 +19,8 @@ import { getCheckpoint } from './checkpoints.js';
 import { getNotificationProgress, saveNotificationProgress } from './notification-progress.js';
 import { saveCheckpoint } from './recovery-write.js';
 import * as jobs from './jobs.js';
+import * as checkouts from './checkouts.js';
+import * as briefs from './task-briefs.js';
 
 const HELP = `sassato (sas) — local agent coordination
 
@@ -53,6 +55,11 @@ WIP:        wip [show ROLE] | wip set --current TEXT --next TEXT --notes TEXT
 Recovery:   checkpoint show [ROLE]
             checkpoint save --current TEXT --next TEXT --notes TEXT [--expect WIP_VERSION] [--evidence FILE]
             progress show [ROLE] | progress save --cursor N --expect VERSION
+Checkouts:  checkout register --dir PATH | checkout list | checkout show ID
+            checkout bind ID --dir PATH --task T1 --provider NAME --session-id ID [--mode coding|review]
+            checkout resolve PATH [--task T1] | checkout release
+Briefs:     brief save T1 --file JSON --expect TASK_VERSION | brief show T1
+            handoff T1 ROLE SUMMARY --brief-file JSON_FILE --expect TASK_VERSION (pending retirement)
 Sessions:   session register --provider NAME [--session-id ID] [--pid PID]
             [--replace] | session heartbeat [--session-id ID] | session end
             sessions | usage TEXT [--until DATE]
@@ -77,18 +84,19 @@ select workspace when not explicit. Writes require --as; human actions require a
 Lists default to bounded results; --limit N. Context never consumes inbox receipts.
 Exit codes: 0 success/no matches; 1 storage/runtime; 2 input; 3 identity/access; 4 conflict; 5 mail-wait timeout.
 `;
-const strings = ['job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes'];
+const strings = ['brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes'];
 const booleans = ['json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','wait','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
 const globalFlags = ['db','workspace','as','json','help'];
 const allowed: Record<string,string[]> = {
   init:['config','humans','interactive','no-interactive','launch','dry-run','fresh','resume','no-prompt','terminal','distro','window','stop-file','new-window'], 'workspace attach':[], 'workspace settings':[], 'workspace set':['default-human','import-timezone','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','open-work-roles'],roles:[], 'role set':['provider','model','effort','permission-mode','sandbox','approval','dir','kind'],
   add:['title','body','for','owner','priority','human-only','review-required'],tasks:['status','owner','for','available','limit','after'],show:['limit','before-event'],
-  take:['hours'],renew:['hours'],note:[],update:['expect','title','body','priority','for','human-only','agent-allowed','review-required','no-review'],handoff:[],release:[],submit:['reviewer'],review:['approve','reject','note','expect'],done:['ref'],drop:[],reopen:[],after:[],unafter:[],block:['kind','waits-on','on'],blockers:['task','chain','limit','all'],resolve:[],
+  take:['hours'],renew:['hours'],note:[],update:['expect','title','body','priority','for','human-only','agent-allowed','review-required','no-review'],handoff:['brief-file','expect'],release:[],submit:['reviewer'],review:['approve','reject','note','expect'],done:['ref'],drop:[],reopen:[],after:[],unafter:[],block:['kind','waits-on','on'],blockers:['task','chain','limit','all'],resolve:[],
   'ask-human':['for','options','recommend','command'],answer:['close','relayed-by'],withdraw:[],humans:['for','limit'],send:['re','urgent','needs-reply'],wait:['urgent','timeout','stop-file','since','idle-minutes'],inbox:['peek','state','limit'],outbox:['limit'],sent:['limit'],retitle:['owner','apply'],ack:[],
   'fact set':['source','checked-at','expect','answers'],'fact get':[],'fact history':[],facts:['limit'],
   'wip show':[],'wip set':['current','next','notes','expect'],sessions:[], 'session register':['provider','session-id','pid','replace'],'session heartbeat':['session-id'],'session end':['session-id'],usage:['until'],
   stop:['all','timeout','no-wait','force'],'stop-status':['quiet','stop-file'],stopped:[],'resume-work':['all'],
   context:['brief','since','limit'],status:[],'job run':['kind','wait','no-wait','job-version','load','mem'],'job list':[],'job stats':[],search:['type','owner','status','since','limit','phrase','prefix'],
+  'checkout register':['dir'],'checkout list':[],'checkout show':[],'checkout bind':['dir','task','provider','session-id','mode'],'checkout resolve':['task'],'checkout release':[],'brief save':['file','expect'],'brief show':[],
   'checkpoint show':[], 'checkpoint save':['current','next','notes','expect','evidence'], 'progress show':[], 'progress save':['cursor','expect'],
   import:['backlog','wip','actions','sessions','dry-run','confirm','repair'],export:[],launch:['fresh','resume','dry-run','no-prompt','terminal','distro','window','stop-file','all','new-window'],'launch-unlock':[],migrate:[],doctor:[],backup:[],restore:[],machine:[]
 };
@@ -215,7 +223,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (bool('version')) {const build=JSON.parse(readFileSync(new URL('./build-info.json',import.meta.url),'utf8'));console.log(bool('json')?JSON.stringify({...build,schema:SCHEMA_VERSION}):`${build.version} (build ${build.build})`);return;}
     const p=[...positionals];let command=p.shift()!;
     if (command==='task') command=p.shift()??'tasks';
-    if (['workspace','role','fact','session','job'].includes(command)) command+=' '+(p.shift()??'');
+    if (['workspace','role','fact','session','job','checkout','brief'].includes(command)) command+=' '+(p.shift()??'');
     if (command==='checkpoint' || command==='progress') command+=' '+(p.shift()??'show');
     // wip get is an alias of wip show, which prints the version that wip set --expect takes.
     if (command==='wip') command+=' '+(p[0]==='show'||p[0]==='set'?p.shift():p[0]==='get'?(p.shift(),'show'):'show');
@@ -246,7 +254,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     else if(command==='restore') {const source=arg('backup');empty();check(str('db'),'Restore requires explicit --db NEW_FILE');result=await a.restoreDatabase(source,db);}
     else if(command==='machine') {empty();result=a.machine();}
     else {
-      const reads=['job list','job stats','tasks','show','blockers','humans','outbox','sent','fact get','fact history','facts','wip show','sessions','roles','workspace settings','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
+      const reads=['checkout list','checkout show','checkout resolve','brief show','job list','job stats','tasks','show','blockers','humans','outbox','sent','fact get','fact history','facts','wip show','sessions','roles','workspace settings','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
       const readonly=reads.includes(command)||command==='retitle'&&!bool('apply')||command==='inbox'&&bool('peek')||['launch','import'].includes(command)&&bool('dry-run');
       store=new Store(db,actor,{readonly});
       const s=store;
@@ -276,7 +284,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'submit': {const task=arg('task'),note=rest('note');result=t.submitTask(s,task,note,str('reviewer')?.split(','));break;}
         case 'note': case 'release': case 'drop': case 'reopen': {const task=arg('task'),note=rest('note');result=({note:t.noteTask,release:t.releaseTask,drop:t.dropTask,reopen:t.reopenTask}[command]!)(s,task,note);break;}
         case 'update': {const task=arg('task');empty();check(!(bool('human-only')&&bool('agent-allowed')),'Conflicting human flags');check(!(bool('review-required')&&bool('no-review')),'Conflicting review flags');result=t.updateTask(s,task,{version:integer(expectNum(),'expect',1),title:str('title'),body:str('body'),priority:num('priority'),forRole:str('for')==='none'?null:str('for'),humanOnly:bool('human-only')?true:bool('agent-allowed')?false:undefined,reviewRequired:bool('review-required')?true:bool('no-review')?false:undefined});break;}
-        case 'handoff': {const task=arg('task'),to=arg('role');result=t.handoffTask(s,task,to,rest('summary'));break;}
+        case 'handoff': {const task=arg('task'),to=arg('role'),summary=rest('summary');result=str('brief-file')===undefined?t.handoffTask(s,task,to,summary):briefs.pendingBoundHandoff(s,task,to,summary,checkpointEvidence(need('brief-file')),expectNum());break;}
         case 'review': {const task=arg('task');empty();check(bool('approve')!==bool('reject'),'Choose --approve or --reject');result=t.reviewTask(s,task,{approve:bool('approve'),note:need('note'),expected_version:integer(expectNum(),'expected version',1)});break;}
         case 'done': {const task=arg('task');empty();result=t.doneTask(s,task,{ref:str('ref')});break;}
         case 'after': case 'unafter': {const task=arg('task'),dep=arg('dependency');empty();result=(command==='after'?t.addDependency:t.removeDependency)(s,task,dep);break;}
@@ -323,6 +331,14 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'resume-work': result=control.resumeWork(s,p.splice(0),{all:bool('all')});break;
         case 'usage': result=c.setUsage(s,rest('usage note'),str('until'));break;
         case 'context': empty();result=c.context(s,{since:num('since'),limit:num('limit')});break;
+        case 'checkout register': empty();result=checkouts.registerCheckout(s,need('dir'));break;
+        case 'checkout list': empty();result=checkouts.listCheckouts(s);break;
+        case 'checkout show': {const checkout=arg('checkout');empty();result={...checkouts.registeredCheckout(s,checkout),observed:checkouts.inspectCheckout(s,checkout)};break;}
+        case 'checkout bind': {const checkout=arg('checkout');empty();result=checkouts.bindCheckout(s,{checkout,directory:need('dir'),task:need('task'),provider:need('provider'),session:need('session-id'),mode:str('mode') as 'coding'|'review'|undefined});break;}
+        case 'checkout resolve': {const path=arg('repository relative path');empty();result=checkouts.resolveWorkerPath(s,path,str('task'));break;}
+        case 'checkout release': empty();result=checkouts.releaseCheckout(s);break;
+        case 'brief save': {const task=arg('task');empty();result=briefs.saveTaskBrief(s,task,checkpointEvidence(need('file')),expectNum());break;}
+        case 'brief show': {const task=arg('task');empty();result=briefs.showTaskBrief(s,task);break;}
         case 'checkpoint show': {const role=p.shift();empty();result=getCheckpoint(s,role);break;}
         case 'checkpoint save': empty();result=saveCheckpoint(s,{current:need('current'),next:need('next'),notes:need('notes'),expected_version:num('expect'),evidence:checkpointEvidence(str('evidence'))});break;
         case 'progress show': {const role=p.shift();empty();result=getNotificationProgress(s,role);break;}
