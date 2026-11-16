@@ -46,6 +46,20 @@ test('overdue and late responses are observations and never enable management',t
   assert.equal(status.workers.find(w=>w.role==='builder').responsiveness.state,'late');assert.equal(status.management_enabled,false);
   assert.equal(controller.get('SELECT count(*) n FROM managed_transitions').n,0);
 });
+test('frozen lifecycle suspends ping obligations; thaw creates a fresh epoch and deadline',async t=>{
+  const {controller,worker}=fixture(t,true),clock=Date.now(),before=controller.get('SELECT max(id) n FROM events').n,old=requestSupervisorPing(controller,'builder',clock);
+  controller.run("UPDATE managed_workers SET state='ready' WHERE id='worker'");
+  const frozen=supervisorStatus(controller,clock+120001).workers.find(row=>row.role==='builder');
+  assert.equal(frozen.responsiveness.state,'suspended');assert.equal(frozen.responsiveness.prior_ping.nonce,old.nonce);
+  assert.equal(requestSupervisorPing(controller,'builder',clock+120001).state,'suspended');
+  assert.equal(controller.get('SELECT count(*) n FROM supervisor_pings').n,1);
+  controller.run("UPDATE managed_workers SET state='running' WHERE id='worker'");
+  assert.equal(supervisorStatus(controller,clock+1000).workers.find(row=>row.role==='builder').responsiveness.state,'unconfirmed');
+  const fresh=requestSupervisorPing(controller,'builder',clock+1000);assert.notEqual(fresh.nonce,old.nonce);assert.equal(Date.parse(fresh.deadline),clock+121000);
+  const replay=await waitForWork(worker,{since:before,timeout:1});assert.equal(replay.nonce,fresh.nonce,'A pre-freeze ping must not create a thawed obligation');
+  assert.throws(()=>acknowledgeSupervisorPing(worker,old.nonce,1),/superseded/);
+  assert.ok(acknowledgeSupervisorPing(worker,fresh.nonce,1,clock+2000).acknowledged_at);
+});
 test('managed waiter observations reserve one live PID and are distinct from checkpoints',t=>{
   const {controller,worker}=fixture(t,true),lease=armManagedWaiter(worker,0);
   assert.ok(lease);assert.throws(()=>armManagedWaiter(worker,0),/already exists/);

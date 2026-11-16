@@ -32,6 +32,10 @@ reading current state, the worker uses
 `supervise ack NONCE --generation N --as ROLE`. Acknowledgment does not consume mail
 or advance notification progress. Save and reuse the cursor returned by `wait`
 under the usual reconciliation rules.
+Frozen lifecycle states report responsiveness as `suspended`, retaining prior
+nonce/deadline evidence without an acknowledgment obligation. Returning to
+running/draining advances a durable ping epoch; the next request gets a fresh
+nonce and deadline, and pre-freeze requests cannot be replayed or acknowledged.
 
 The experimental controller/bootstrap implementation is available only to fixture
 adapters in source tests. There is no production enrollment, replacement or

@@ -39,8 +39,8 @@ function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
   if(event.entity==='supervisor-ping' && event.entity_id===actor && event.action==='requested') {
     let detail:Row;try{detail=JSON.parse(event.detail);}catch{return undefined;}
     const ping=s.get('SELECT * FROM supervisor_pings WHERE workspace_id=? AND role=? AND nonce=? AND acknowledged_at IS NULL',s.ws,actor,String(detail.nonce??''));
-    const current=s.get('SELECT generation FROM managed_workers WHERE workspace_id=? AND role=?',s.ws,actor)?.generation??0;
-    if(ping && ping.generation===current)return {role:actor,cursor:event.id,reason:'supervisor-ping',nonce:ping.nonce,generation:ping.generation,ping_deadline:ping.deadline};
+    const current=s.get('SELECT generation,state,ping_epoch FROM managed_workers WHERE workspace_id=? AND role=?',s.ws,actor);
+    if(ping && (!current || ['running','draining'].includes(current.state)) && ping.generation===(current?.generation??0) && ping.ping_epoch===(current?.ping_epoch??0))return {role:actor,cursor:event.id,reason:'supervisor-ping',nonce:ping.nonce,generation:ping.generation,ping_deadline:ping.deadline};
     return undefined;
   }
   // A role already observed its own successful action. Consume its event cursor
