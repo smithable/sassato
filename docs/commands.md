@@ -1,5 +1,12 @@
 # Command reference
 
+## Repository code map
+
+`index build [--repo PATH]`, `index update --diff BASE..HEAD`, `index find WORD` and
+`index show FILE|FUNCTION|MODULE` work without a workspace database. All accept
+`--repo PATH`, `--cache PATH` and `--json`; queries accept `--limit 1..100`.
+See [snapshot, dirty-view and safety semantics](index.md).
+
 Both `sas` and `sassato` invoke the same CLI. Global flags may appear anywhere:
 `--db PATH`, `--workspace NAME`, `--as ROLE`, `--json`, `--help`. Environment alternatives
 are SASSATO_DB, SASSATO_WORKSPACE and SASSATO_ROLE. An explicitly supplied flag wins.

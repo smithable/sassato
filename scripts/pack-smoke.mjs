@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync,mkdirSync,rmSync,existsSync,readFileSync } from 'node:fs';
+import { mkdtempSync,mkdirSync,rmSync,existsSync,readFileSync,renameSync,writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join,resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -19,9 +19,21 @@ try {
   assert.ok(!packed.files.some(f=>/\.db(?:-|$)|\.tgz$|^node_modules\//.test(f.path)));
   assert.ok(!packed.files.some(f=>f.path.startsWith('docs/provider-capabilit')),'Maintainer probe notes must remain source-only');
   const info=JSON.parse(run(process.execPath,[join(pkg,'bin','sassato.js'),'--version','--json']));assert.match(info.build,/^[0-9a-f]{16}$/);
+  for(const resource of ['dist/vendor/typescript.cjs','dist/vendor/typescript.LICENSE.txt','docs/index.md'])assert.ok(packed.files.some(file=>file.path===resource),`Missing index resource ${resource}`);
+  const fixture=join(dir,'indexed');mkdirSync(fixture);
+  run('git',['init','-b','main'],fixture);run('git',['config','user.name','Fixture'],fixture);run('git',['config','user.email','fixture@example.invalid'],fixture);
+  writeFileSync(join(fixture,'example.ts'),'export function packedIndex(value: number) { return value; }\n');
+  run('git',['add','.'],fixture);run('git',['-c','core.hooksPath=/dev/null','commit','-m','Package fixture'],fixture);
+  const indexEnv={SASSATO_INDEX_CACHE:join(dir,'index-cache'),SASSATO_DB:join(dir,'no-index-db.db')};
+  run(process.execPath,[join(pkg,'bin','sassato.js'),'index','build','--repo',fixture,'--json'],dir,indexEnv);
+  const indexed=JSON.parse(run(process.execPath,[join(pkg,'bin','sassato.js'),'index','show','packedIndex','--repo',fixture,'--json'],dir,indexEnv));
+  assert.ok(indexed.items.some(item=>item.name==='packedIndex'&&item.kind==='function'));assert.equal(existsSync(indexEnv.SASSATO_DB),false);
   const clean=join(dir,'clean'),cache=join(dir,'cache');mkdirSync(clean);
   const db=join(clean,'state.db'),env={npm_config_cache:cache,npm_config_registry:'http://127.0.0.1:9',SASSATO_DB:db,SASSATO_WORKSPACE:'packtest',SASSATO_ROLE:''};
   assert.equal(JSON.parse(run(process.execPath,[join(pkg,'bin','sassato.js'),'init','--json'],clean,env)).created,true);
+  const parser=join(pkg,'dist/vendor/typescript.cjs');renameSync(parser,parser+'.held');
+  try {assert.equal(JSON.parse(run(process.execPath,[join(pkg,'bin','sassato.js'),'tasks','--json'],clean,env)).items.length,0);}
+  finally {renameSync(parser+'.held',parser);}
   // Local tarball only: no network registry or globally installed Sassato/TypeScript needed.
   const npx=['exec','--offline','--yes','--package',tarball,'--'];
   const task=JSON.parse(run('npm',[...npx,'sassato','add','Packed CLI works','--as','builder','--json'],clean,env));
@@ -42,5 +54,5 @@ try {
   const mailCursor=JSON.parse(run('npm',[...npx,'sas','context','--as','reviewer','--json'],clean,env)).cursor;
   run('npm',[...npx,'sas','send','reviewer','Packed urgent message','--urgent','--as','builder','--json'],clean,env);
   const notification=JSON.parse(run('npm',[...npx,'sas','wait','--since',String(mailCursor),'--urgent','--as','reviewer','--timeout','1','--stop-file',join(clean,'no-stop'),'--json'],clean,env));assert.equal(notification.reason,'urgent');
-  console.log(JSON.stringify({ok:true,tarball:packed.filename,files:packed.files.length,size:packed.size,node:process.version,tests:['unpacked Node CLI','offline npx sassato','offline npx sas alias','packaged stop/resume','build identity','packaged evidence/progress recovery','packaged urgent wait','no compiler/runtime dependencies']},null,2));
+  console.log(JSON.stringify({ok:true,tarball:packed.filename,files:packed.files.length,size:packed.size,node:process.version,tests:['unpacked Node CLI','offline npx sassato','offline npx sas alias','packaged stop/resume','build identity','packaged evidence/progress recovery','packaged urgent wait','bundled index compiler and license','ordinary commands without compiler','no runtime npm dependencies']},null,2));
 }finally{rmSync(dir,{recursive:true,force:true});}
