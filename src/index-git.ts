@@ -26,9 +26,14 @@ export function isAncestor(identity:RepositoryIdentity,older:string,newer:string
   check(!result.error&&[0,1].includes(result.status??-1),'Index ancestry could not be verified',4);
   return result.status===0;
 }
+/** Git paths are raw bytes. Never invent replacement characters or collide distinct names. */
+function decodePaths(data:Buffer):string {
+  try {return new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data);}
+  catch {throw new AppError('Repository index does not support filenames with invalid UTF-8 bytes',4);}
+}
 export interface TreeFile {path:string;blob:string;size?:number;}
 export function treeFiles(identity:RepositoryIdentity,commit:string):TreeFile[] {
-  const rows=indexGit(identity,['ls-tree','-rlz','--full-tree',commit]).toString().split('\0').filter(Boolean);
+  const rows=decodePaths(indexGit(identity,['ls-tree','-rlz','--full-tree',commit])).split('\0').filter(Boolean);
   check(rows.length<=100_000,'Repository exceeds index file-count limit',4);
   const files:TreeFile[]=[];
   for(const row of rows) {
@@ -80,11 +85,11 @@ export function worktreeFile(identity:RepositoryIdentity,path:string):{data?:Buf
   }catch(error){if(error instanceof AppError)throw error;if(['ENOENT','ENOTDIR'].includes((error as NodeJS.ErrnoException).code??''))return undefined;throw new AppError(`Worktree file could not be read safely: ${path}`,4);}
 }
 export function worktreePaths(identity:RepositoryIdentity):string[] {
-  const stages=indexGit(identity,['ls-files','--stage','-z']).toString().split('\0').filter(Boolean);
+  const stages=decodePaths(indexGit(identity,['ls-files','--stage','-z'])).split('\0').filter(Boolean);
   check(stages.every(row=>/^100(?:644|755) [a-f0-9]+ 0\t/.test(row)||/^120000 [a-f0-9]+ 0\t/.test(row)),'Unmerged or submodule indexes are not supported by the repository index',4);
-  const flags=indexGit(identity,['ls-files','-v','-z']).toString().split('\0');
+  const flags=decodePaths(indexGit(identity,['ls-files','-v','-z'])).split('\0');
   check(!flags.some(row=>/^[sS] /.test(row)),'Sparse/skip-worktree indexes are not supported by the repository index',4);
-  const paths=indexGit(identity,['ls-files','-z','--cached','--others','--exclude-standard']).toString().split('\0').filter(indexablePath);
+  const paths=decodePaths(indexGit(identity,['ls-files','-z','--cached','--others','--exclude-standard'])).split('\0').filter(indexablePath);
   check(paths.length<=100_000,'Worktree exceeds index file-count limit',4);
   return [...new Set(paths)].sort((a,b)=>a.localeCompare(b,'en'));
 }

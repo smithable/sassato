@@ -33,7 +33,8 @@ changing HEAD or files invalidates the previous view digest. Missing or malforme
 exact-HEAD snapshots visibly report `missing` or `stale` and search current source.
 They never substitute a different branch's latest-main snapshot. The index refuses
 an unborn HEAD or a repository/HEAD change detected during the read.
-Submodules, unmerged indexes and sparse/skip-worktree entries fail explicitly.
+Submodules, unmerged indexes, sparse/skip-worktree entries and filenames with
+invalid UTF-8 bytes fail explicitly. Valid Unicode filenames remain distinct.
 Git reads use object plumbing and file listings; repository clean filters,
 filesystem monitors and external diff commands are not executed.
 

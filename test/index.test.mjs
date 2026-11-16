@@ -165,3 +165,18 @@ test('metadata exceeding the read limit is rejected before immutable publication
   assert.throws(()=>publish(path,{payload:'x'.repeat(64*1024*1024)}),/size limit/);
   assert.equal(existsSync(path),false);
 });
+
+test('raw invalid UTF-8 paths fail explicitly in tracked and untracked listings; Unicode remains distinct',t=>{
+  const {repo,options}=setup(t);
+  write(repo,'src/café.ts','export function unicodeName() {}');
+  write(repo,'src/�.ts','export function replacementName() {}');commit(repo);buildIndex(options);
+  assert.ok(showIndex('unicodeName',options).items.some(item=>item.path==='src/café.ts'));
+  assert.ok(showIndex('replacementName',options).items.some(item=>item.path==='src/�.ts'));
+  const bad=Buffer.concat([Buffer.from(repo+'/src/'),Buffer.from([0xff]),Buffer.from('.ts')]);
+  writeFileSync(bad,'export function bytePathOnly() {}');
+  assert.throws(()=>showIndex('bytePathOnly',options),/invalid UTF-8/,'untracked path decoding must fail closed');
+  commit(repo);assert.throws(()=>buildIndex(options),/invalid UTF-8/,'canonical tree decoding must fail closed');
+  assert.throws(()=>showIndex('bytePathOnly',options),/invalid UTF-8/,'tracked index decoding must fail closed');
+  git(repo,'rm','-r','src');write(repo,'\uFEFFvalid.ts','export function bomName() {}');commit(repo);buildIndex(options);
+  assert.ok(showIndex('bomName',options).items.some(item=>item.path==='\uFEFFvalid.ts'),'decoder must preserve a leading BOM in the first path');
+});
