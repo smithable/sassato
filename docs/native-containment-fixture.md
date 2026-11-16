@@ -94,8 +94,17 @@ escaped surviving fixture. Directory link counts are unsuitable because
 [kernfs_refresh_inode](https://github.com/microsoft/WSL2-Linux-Kernel/blob/linux-msft-wsl-6.6.87.2/fs/kernfs/inode.c)
 refreshes them from the subdirectory count.
 
-Native validation of this candidate predicate is still required. Each lab report
+One held-only native run observed the exact directory-deletion event, unchanged
+retained descriptor identities and positive helper exit, followed by cleanup of
+its own empty unit. The event-file descriptor returned `ENODEV` after removal;
+that result was audit data only. Full fork-tree and fault validation, predicate
+assessment and source review remain required. Each lab report
 records pre/post descriptor metadata, actual events and event-file errno/results.
 Losing the original descriptors before proof, including controller crash, leaves
 exit unknown. Temporary-filesystem watch tests verify the implementation only;
-they do not establish cgroup behavior. The next native invocation stays held-only.
+they do not establish cgroup behavior. Default native invocation stays held-only.
+The separate explicit `--full-tree` lab option releases the bounded fork phase,
+seals its no-new-child inventory, lets main exit, verifies that child, grandchild
+and detached descendant remain in the original scope, and signals only those
+positively owned processes through pidfds. It requires the same positive empty
+proof before cleanup.

@@ -177,6 +177,11 @@ class RetainedScope:
             check(self.bound, "Owned entry vanished before its live binding was established")
             return  # Absence is only an observation, never the predicate.
         check(stat.S_ISDIR(info.st_mode) and info.st_dev == self.root_meta["device"] and info.st_ino == self.root_meta["inode"], "Owned path was replaced")
+        live_fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            check(fd_metadata(live_fd) == self.root_meta, "Owned path mount identity changed")
+        finally:
+            os.close(live_fd)
 
     def drain(self):
         self.assert_continuous()
@@ -189,10 +194,14 @@ class RetainedScope:
             except OSError:
                 self.tainted = True
                 raise
-            check(data, "Namespace event stream ended")
-            total += len(data)
-            check(total <= 65536, "Namespace event read exceeds bound")
-            self.ledger.feed(data)
+            try:
+                check(data, "Namespace event stream ended")
+                total += len(data)
+                check(total <= 65536, "Namespace event read exceeds bound")
+                self.ledger.feed(data)
+            except BaseException:
+                self.tainted = True
+                raise
         return self.ledger.deleted
 
     def event_file_observation(self):
@@ -208,7 +217,13 @@ class RetainedScope:
         if not raw or len(raw) >= 4096:
             self.tainted = True
             raise UnprovenRemoval("Missing or oversized retained event-file observation")
-        return dict(line.split() for line in raw.splitlines())
+        try:
+            values = dict(line.split() for line in raw.splitlines())
+            check(values.get("populated") in ["0", "1"] and values.get("frozen") in ["0", "1"], "Malformed retained cgroup events")
+            return values
+        except BaseException:
+            self.tainted = True
+            raise
 
     def deletion_evidence(self):
         check(self.drain(), "No positive removal event for the continuously bound owned entry")

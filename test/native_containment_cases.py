@@ -303,6 +303,25 @@ class RetainedHandleTests(unittest.TestCase):
         with self.assertRaises(events.UnprovenRemoval):
             self.retained.deletion_evidence()
 
+    def test_same_inode_on_a_different_mount_is_rejected(self):
+        real = events.fd_metadata
+        def changed_mount(fd):
+            value = real(fd)
+            if fd not in self.retained.fds and value["inode"] == self.retained.root_meta["inode"]:
+                return {**value, "mount_id": value["mount_id"] + 1}
+            return value
+        with patch.object(events, "fd_metadata", side_effect=changed_mount):
+            with self.assertRaisesRegex(events.UnprovenRemoval, "mount identity"):
+                self.retained.assert_continuous()
+
+    def test_eof_is_permanently_unknown(self):
+        with patch.object(events.os, "read", return_value=b""):
+            with self.assertRaisesRegex(events.UnprovenRemoval, "stream ended"):
+                self.retained.drain()
+        self.remove()
+        with self.assertRaises(events.UnprovenRemoval):
+            self.retained.deletion_evidence()
+
 
 if __name__ == "__main__":
     unittest.main()
