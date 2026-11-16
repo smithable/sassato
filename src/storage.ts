@@ -3,11 +3,12 @@ import { mkdirSync, existsSync, realpathSync, chmodSync } from 'node:fs';
 import { dirname, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { check, name, now, safe, id } from './errors.js';
+import { assertManagedWrite,type ManagedCredentials,type ManagedWriteMode } from './managed-generation.js';
 
 // SQLite rows deliberately stay flexible at this small adapter boundary.
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 export function databasePath(value?: string): string {
   const path = resolve(value ?? process.env.SASSATO_DB ?? `${process.env.XDG_DATA_HOME ?? `${homedir()}/.local/share`}/sassato/sassato.db`);
   let ancestor = path;
@@ -23,7 +24,12 @@ export class Store {
   actor: string | null;
   path: string;
   private depth = 0;
-  constructor(path: string, actor?: string, options: { readonly?: boolean; create?: boolean } = {}) {
+  private authorizedWriter:{workspace:number;actor:string|null}|null=null;
+  private readonly credentials:ManagedCredentials;
+  private readonly managedWriteMode:ManagedWriteMode;
+  constructor(path: string, actor?: string, options: { readonly?: boolean; create?: boolean; managedCredentials?:ManagedCredentials; managedWriteMode?:ManagedWriteMode } = {}) {
+    this.credentials=options.managedCredentials??{generation:process.env.SASSATO_WORKER_GENERATION,token:process.env.SASSATO_WORKER_TOKEN};
+    this.managedWriteMode=options.managedWriteMode??'normal';
     this.path = path === ':memory:' ? path : databasePath(path); path = this.path;
     this.actor = actor ? name(actor) : null;
     if (path !== ':memory:') {
@@ -48,21 +54,26 @@ export class Store {
   get(sql: string, ...params: Param[]): Row | undefined { return this.db.prepare(sql).get(...params); }
   all(sql: string, ...params: Param[]): Row[] { return this.db.prepare(sql).all(...params); }
   run(sql: string, ...params: Param[]): { changes: number; lastInsertRowid: number } {
+    if(!this.depth)return this.tx(()=>this.run(sql,...params));
+    if(this.authorizedWriter?.workspace!==this.ws || this.authorizedWriter.actor!==this.actor) {
+      assertManagedWrite(this,this.credentials,this.managedWriteMode);
+      this.authorizedWriter={workspace:this.ws,actor:this.actor};
+    }
     const r = this.db.prepare(sql).run(...params); return { changes: Number(r.changes), lastInsertRowid: Number(r.lastInsertRowid) };
   }
   tx<T>(fn: () => T): T {
     if (this.depth) return fn();
     this.db.exec('BEGIN IMMEDIATE'); this.depth++;
-    try { const result = fn(); this.db.exec('COMMIT'); return result; }
+    try { assertManagedWrite(this,this.credentials,this.managedWriteMode);this.authorizedWriter={workspace:this.ws,actor:this.actor};const result = fn(); this.db.exec('COMMIT'); return result; }
     catch (error) { try { this.db.exec('ROLLBACK'); } catch { /* Preserve original error if SQLite already rolled back. */ } throw error; }
-    finally { this.depth--; }
+    finally { this.depth--;this.authorizedWriter=null; }
   }
   snapshot<T>(fn: () => T): T {
     if (this.depth) return fn();
     this.db.exec('BEGIN'); this.depth++;
     try { const result = fn(); this.db.exec('COMMIT'); return result; }
     catch (error) { try { this.db.exec('ROLLBACK'); } catch { /* Preserve original error if SQLite already rolled back. */ } throw error; }
-    finally { this.depth--; }
+    finally { this.depth--;this.authorizedWriter=null; }
   }
   use(workspace?: string, cwd = process.cwd()): void {
     let row: Row | undefined;
@@ -121,7 +132,8 @@ export class Store {
       if (current === 5) { this.db.exec(MIGRATION_6); current = 6; }
       if (current === 6) { this.db.exec(MIGRATION_7); current = 7; }
       if (current === 7) { this.db.exec(MIGRATION_8); current = 8; }
-      if (current === 8) this.db.exec(MIGRATION_9);
+      if (current === 8) { this.db.exec(MIGRATION_9); current = 9; }
+      if (current === 9) this.db.exec(MIGRATION_10);
     });
   }
   private cancelClosedQuestions(): void {
@@ -278,4 +290,16 @@ CREATE TRIGGER immutable_briefs_update BEFORE UPDATE ON task_briefs BEGIN SELECT
 CREATE TRIGGER immutable_briefs_delete BEFORE DELETE ON task_briefs BEGIN SELECT RAISE(ABORT,'Briefs are immutable'); END;
 INSERT INTO schema_migrations VALUES(9,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 PRAGMA user_version=9;
+`;
+
+const MIGRATION_10 = `
+CREATE TABLE managed_controllers(id TEXT PRIMARY KEY, workspace_id INTEGER NOT NULL REFERENCES workspaces(id), role TEXT NOT NULL, lock_path TEXT NOT NULL, pid INTEGER, process_start TEXT, created_at TEXT NOT NULL, FOREIGN KEY(workspace_id,role) REFERENCES roles(workspace_id,name));
+CREATE TABLE managed_workers(id TEXT PRIMARY KEY, workspace_id INTEGER NOT NULL, role TEXT NOT NULL UNIQUE, controller_id TEXT NOT NULL REFERENCES managed_controllers(id), binding_id TEXT REFERENCES checkout_bindings(id), generation INTEGER NOT NULL CHECK(generation>0), token_hash TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('running','draining','ready','retiring','exited','starting','reconciling','blocked','stopped')), provider TEXT NOT NULL, external_id TEXT, pid INTEGER, process_start TEXT, configuration_digest TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(workspace_id,role) REFERENCES roles(workspace_id,name));
+CREATE TABLE managed_transitions(id TEXT PRIMARY KEY, worker_id TEXT NOT NULL REFERENCES managed_workers(id), generation INTEGER NOT NULL, idempotency_key TEXT NOT NULL, state TEXT NOT NULL, expected_task_versions TEXT NOT NULL, brief_id TEXT REFERENCES task_briefs(id), launch_token_hash TEXT, bootstrap_pid INTEGER, bootstrap_start TEXT, bootstrap_released_at TEXT, retry_count INTEGER NOT NULL DEFAULT 0, reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(worker_id,idempotency_key));
+CREATE UNIQUE INDEX managed_transition_active ON managed_transitions(worker_id) WHERE state NOT IN ('complete','blocked','stopped');
+CREATE TABLE supervisor_pings(id TEXT PRIMARY KEY, workspace_id INTEGER NOT NULL, role TEXT NOT NULL, generation INTEGER NOT NULL, nonce TEXT NOT NULL UNIQUE, requested_at TEXT NOT NULL, deadline TEXT NOT NULL, acknowledged_at TEXT, FOREIGN KEY(workspace_id,role) REFERENCES roles(workspace_id,name));
+CREATE TABLE supervisor_waiters(id TEXT PRIMARY KEY, workspace_id INTEGER NOT NULL, role TEXT NOT NULL, pid INTEGER NOT NULL, process_start TEXT NOT NULL, generation INTEGER NOT NULL, cursor INTEGER NOT NULL, armed_at TEXT NOT NULL, ended_at TEXT, FOREIGN KEY(workspace_id,role) REFERENCES roles(workspace_id,name));
+CREATE UNIQUE INDEX supervisor_waiter_active ON supervisor_waiters(role) WHERE ended_at IS NULL;
+INSERT INTO schema_migrations VALUES(10,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+PRAGMA user_version=10;
 `;
