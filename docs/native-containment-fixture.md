@@ -128,3 +128,41 @@ preserves its unit metadata. This exercises handle loss and reconnect, rather
 than claiming an operating-system controller crash. `--fault-case stop-held`
 checks release and recovery rejection after fixture STOP, then uses the original
 retained handles to prove exit and retire its own empty unit.
+
+## Actual disposable-controller death
+
+`python3 -B scripts/native_containment_crash_lab.py --run-kernel-crash-fixture
+--evidence-parent PATH` is a separate explicit experiment. It starts two cases
+sequentially: abrupt death after durable `binding_started` but before handle
+construction, and abrupt death after release and sealing the four-process idle
+inventory. No production controller, provider or existing session is involved.
+
+Before each new disposable controller does work, the parent saves launch intent,
+verifies its actual PID, boot/start fingerprint, executable arguments, UID and
+parent PID, pins a pidfd, and releases an identity-bound gate. At the recorded
+injection point the child fsyncs its receipt and calls `os._exit` with a fixed
+case-specific status. No `finally`, explicit close or unlock runs. The parent
+waits/reaps that exact child and checks its retained pidfd exit result before
+starting a fresh reconciler process with the same ownership handshake.
+
+The fresh process checks that the durable intent survived death exactly, acquires
+the original OS lock without replacing its file, rejects duplicate launch and
+rebinding of lost namespace history, and checks STOP blocks launch, release and
+recovery. The held case also verifies recovery cannot reset binding history.
+It requests fixture STOP, positively observes every recorded helper's exit and
+checks cleanup remains rejected without the original retained handles. Exact
+unit metadata and evidence are preserved in both cases; no unit-stop or guessed
+signal occurs. Historical experiments are never adopted or cleaned up.
+
+There are exactly two newly created units and four disposable controller
+processes per invocation. Helpers have their existing 20-second self-exit bound
+and at most four members per unit. Each new controller arms its own 35-second
+watchdog; the parent waits/reaps it with a bounded timeout. Case deadlines are
+70 seconds, and failure waits out only this invocation's known helper deadlines.
+Offline tests exercise a fixed inert Python stub and temporary locks/files,
+without invoking a user manager, native unit, provider or external model.
+
+This supplies fixture controller-death evidence only. It does not establish
+real-provider recovery, tool barriers, complete job inventory, configuration
+continuity or protected-job exclusion. Deeper native cgroup layouts remain a
+separate unproven case.
