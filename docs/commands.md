@@ -72,6 +72,12 @@ existing canonical descendants of the registered root. Repository-relative path
 resolution rejects symlinks escaping that root. `checkout release` requires verified
 exit of the matching registered provider session and no active owned jobs; expired
 task leases or session end markers alone do not release a reservation.
+Binding requires the current registered provider session with a verified PID/start
+identity. It records that exact session row and the working subfolder's device/inode;
+replacing the subfolder blocks further use. Release also refuses another live or
+unknown current role process. Ended unrelated historical PID-less records do not
+permanently block subsequent bindings. Unknown ownership needs explicit human
+reconciliation; this foundations release has no automatic override or retirement.
 
 The brief input is a version-1 JSON object:
 
@@ -100,6 +106,11 @@ files and files over 64 MiB block it. The complete saved brief is capped at 32 K
 oversize or incomplete input is rejected, never silently truncated. Report every
 settled job as `{ "id": "tests", "state": "completed", "evidence": "logs/tests.txt" }`;
 running or unknown jobs and active recorded jobs block capture.
+Git probes and file hashing run outside SQLite write transactions. Index entries
+are requested only for dirty paths. Sparse/assume-unchanged/skip-worktree state,
+unmerged indexes, unfinished Git operations and non-UTF8 paths block capture
+explicitly. Notification progress remains the caller's safely-handled attestation;
+brief capture does not consume or acknowledge notifications.
 
 A bound handoff records a **pending retirement intent** with its brief and inspected
 task version. It transfers neither task ownership nor checkout reservation. Saving

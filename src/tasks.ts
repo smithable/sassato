@@ -17,6 +17,9 @@ function writable(s: Store, row: Row): string {
   check(human(s) || row.owner === actor || unownedEditor(row, actor), 'Only the owner, an unowned task\'s creator or target, or a human role may modify this task', 3);
   return actor;
 }
+function pendingHandoff(s:Store,row:Row):boolean {
+  return Boolean(s.get("SELECT id FROM events WHERE workspace_id=? AND entity='task-handoff' AND entity_id=? AND action='pending' LIMIT 1",s.ws,taskId(row)));
+}
 function active(row: Row): void { check(!terminal(row), 'Task is closed; reopen it before changing work state', 4); }
 function executable(s: Store, row: Row): void { check(!row.human_only || human(s), 'Human-only work cannot be claimed or completed by an agent', 3); }
 function indexTask(s: Store, row: Row): void { s.index('task', taskId(row), row.title, row.body, { role: row.owner ?? row.for_role, status: row.status, updated_at: row.updated_at }); }
@@ -179,7 +182,7 @@ export function updateTask(s: Store, task: string, options: UpdateTaskOptions): 
 export function handoffTask(s: Store, task: string, to: string, note: string): Row {
   return s.tx(() => {
     const row = s.task(task); writable(s, row); active(row); text(note, 'handoff summary');
-    check(!s.get('SELECT id FROM checkout_bindings WHERE workspace_id=? AND task_id=? AND released_at IS NULL',s.ws,row.id),'Registered checkout handoff requires --brief-file FILE and --expect VERSION; ownership stays pending verified retirement',4);
+    check(!pendingHandoff(s,row) && !s.get('SELECT id FROM checkout_bindings WHERE workspace_id=? AND task_id=? AND released_at IS NULL',s.ws,row.id),'Registered checkout handoff requires --brief-file FILE and --expect VERSION; ownership stays pending verified retirement',4);
     const target = s.role(to); check(!row.human_only || target.kind === 'human', 'Human-only work cannot be handed to an agent', 3);
     check(to !== row.owner, 'Task already belongs to this role', 4);
     const result = change(s, row, { owner: to, for_role: to, lease_until: null, status: blocking(s, row).some(b => b.kind !== 'dependency') ? 'blocked' : 'open', reviewed_by: null, review_note: null }, 'handed-off', { note });
@@ -187,7 +190,7 @@ export function handoffTask(s: Store, task: string, to: string, note: string): R
   });
 }
 export function releaseTask(s: Store, task: string, note: string): Row {
-  return s.tx(() => { const row = s.task(task); writable(s, row); active(row); text(note, 'release reason'); return change(s, row, { owner: null, lease_until: null, status: blocking(s, row).some(b => b.kind !== 'dependency') ? 'blocked' : 'open', reviewed_by: null, review_note: null }, 'released', { note }); });
+  return s.tx(() => { const row = s.task(task); writable(s, row); active(row); text(note, 'release reason'); check(!pendingHandoff(s,row) && !s.get('SELECT id FROM checkout_bindings WHERE workspace_id=? AND task_id=? AND released_at IS NULL',s.ws,row.id),'Bound work cannot be released before verified retirement and handoff reconciliation',4); return change(s, row, { owner: null, lease_until: null, status: blocking(s, row).some(b => b.kind !== 'dependency') ? 'blocked' : 'open', reviewed_by: null, review_note: null }, 'released', { note }); });
 }
 /** Submits work for review. reviewers names the roles a review is asked of (their waiters wake);
  *  without it the task's creator is asked, or every role when the owner created it. */

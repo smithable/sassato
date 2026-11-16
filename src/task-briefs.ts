@@ -5,6 +5,7 @@ import { currentBinding,inspectCheckout,registeredCheckout } from './checkouts.j
 import { dirtyManifest } from './dirty-manifest.js';
 import { getNotificationProgress } from './notification-progress.js';
 import { assertWorkAllowed } from './control.js';
+import { assertPhysicalIdentity } from './repository-identity.js';
 
 export interface BriefInput {
   version:1; objective:string; acceptance:string[]; decisions:{decision:string;source:string}[];
@@ -43,10 +44,12 @@ export function validateBriefInput(value:unknown):BriefInput {
   return v as BriefInput;
 }
 const digest=(value:unknown):string=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
-export function saveTaskBrief(s:Store,taskId:string,input:unknown,expectedVersion:number):Row {
+function captureAndSaveBrief(s:Store,taskId:string,input:unknown,expectedVersion:number,intent?:{to:string;summary:string}):Row {
   const reported=validateBriefInput(input),actor=s.requireActor(),binding=currentBinding(s,taskId);
   const identity=inspectCheckout(s,binding.checkout_id,binding.working_dir),manifest=dirtyManifest(identity.checkout_root);
   const roleConfig=s.role(actor),roleConfigDigest=digest(roleConfig);
+  const fresh=inspectCheckout(s,binding.checkout_id,binding.working_dir);
+  check(JSON.stringify(identity)===JSON.stringify(fresh) && digest(manifest)===digest(dirtyManifest(identity.checkout_root)),'Git or dirty files changed during brief capture; retry',4);
   return s.tx(()=>{
     assertWorkAllowed(s,actor);
     const task=s.task(taskId);
@@ -55,8 +58,11 @@ export function saveTaskBrief(s:Store,taskId:string,input:unknown,expectedVersio
     check(currentBinding(s,taskId).id===binding.id,'Checkout binding changed during capture',4);
     check(digest(s.role(actor))===roleConfigDigest,'Role configuration changed during capture',4);
     check(!s.get("SELECT id FROM jobs WHERE workspace_id=? AND role=? AND status IN ('waiting','running')",s.ws,actor),'Active jobs block handover',4);
-    const fresh=inspectCheckout(s,binding.checkout_id,binding.working_dir);
-    check(JSON.stringify(identity)===JSON.stringify(fresh) && digest(manifest)===digest(dirtyManifest(identity.checkout_root)),'Git or dirty files changed during brief capture; retry',4);
+    assertPhysicalIdentity(identity);
+    if(intent) {
+      const target=s.role(intent.to);check(!task.human_only || target.kind==='human','Human-only work cannot be handed to an agent',3);
+      check(intent.to!==actor,'Task already belongs to this role',4);text(intent.summary,'handoff summary');
+    }
     const progress=getNotificationProgress(s);check(progress,'Save a safely handled notification cursor before the brief',4);
     const taskVersions=s.all("SELECT id,version,status,owner FROM tasks WHERE workspace_id=? AND owner=? AND status NOT IN ('done','dropped') ORDER BY id",s.ws,actor).map(row=>({...row,id:`T${row.id}`}));
     const registry=registeredCheckout(s,binding.checkout_id);
@@ -64,8 +70,16 @@ export function saveTaskBrief(s:Store,taskId:string,input:unknown,expectedVersio
     const serialized=JSON.stringify(body);check(Buffer.byteLength(serialized)<=32768,'Complete brief exceeds 32768 bytes; shorten fields or split work without omitting dirty evidence');
     const brief={id:randomUUID(),workspace_id:s.ws,task_id:task.id,role:actor,binding_id:binding.id,body,digest:digest(body),created_at:now()};
     s.run('INSERT INTO task_briefs VALUES(?,?,?,?,?,?,?,?)',brief.id,s.ws,task.id,actor,binding.id,serialized,brief.digest,brief.created_at);
-    s.event('task-brief',brief.id,'saved',{task:taskId,binding_id:binding.id,digest:brief.digest,task_version:task.version});return brief;
+    s.event('task-brief',brief.id,'saved',{task:taskId,binding_id:binding.id,digest:brief.digest,task_version:task.version});
+    if(intent) {
+      const event=s.event('task-handoff',taskId,'pending',{...intent,brief_id:brief.id,brief_digest:brief.digest,task_version:expectedVersion,binding_id:brief.binding_id});
+      return {id:`E${event}`,task_id:taskId,to:intent.to,brief_id:brief.id,state:'pending-retirement',owner:actor,reason:'Task ownership and checkout reservation retained; verified retirement is required before finalization'};
+    }
+    return brief;
   });
+}
+export function saveTaskBrief(s:Store,taskId:string,input:unknown,expectedVersion:number):Row {
+  return captureAndSaveBrief(s,taskId,input,expectedVersion);
 }
 export function showTaskBrief(s:Store,taskId:string):Row|null {
   s.task(taskId);
@@ -75,11 +89,5 @@ export function showTaskBrief(s:Store,taskId:string):Row|null {
 export function pendingBoundHandoff(s:Store,taskId:string,to:string,summary:string,input:unknown,expectedVersion:number):Row {
   // This is a durable request, never evidence that the current worker is quiescent.
   // Ownership and checkout reservations remain with the old role until verified retirement.
-  return s.tx(()=>{
-    const target=s.role(to);check(!s.task(taskId).human_only || target.kind==='human','Human-only work cannot be handed to an agent',3);
-    check(to!==s.requireActor(),'Task already belongs to this role',4);text(summary,'handoff summary');
-    const brief=saveTaskBrief(s,taskId,input,expectedVersion);
-    const event=s.event('task-handoff',taskId,'pending',{to,summary,brief_id:brief.id,brief_digest:brief.digest,task_version:expectedVersion,binding_id:brief.binding_id});
-    return {id:`E${event}`,task_id:taskId,to,brief_id:brief.id,state:'pending-retirement',owner:s.requireActor(),reason:'Task ownership and checkout reservation retained; verified retirement is required before finalization'};
-  });
+  return captureAndSaveBrief(s,taskId,input,expectedVersion,{to,summary});
 }

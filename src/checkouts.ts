@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { realpathSync } from 'node:fs';
+import { realpathSync,statSync } from 'node:fs';
 import { isAbsolute,resolve } from 'node:path';
 import { type Store, type Row } from './storage.js';
 import { check, id, name, now, text } from './errors.js';
 import { assertWorkAllowed } from './control.js';
 import { sessionState } from './coordination.js';
-import { probeRepositoryIdentity, repositoryFingerprint, checkoutFingerprint, insideCheckout, type RepositoryIdentity } from './repository-identity.js';
+import { probeRepositoryIdentity, repositoryFingerprint, checkoutFingerprint, insideCheckout, assertPhysicalIdentity, type RepositoryIdentity } from './repository-identity.js';
 
 export function registerCheckout(s:Store,directory:string):Row {
   const actor=s.requireActor(),identity=probeRepositoryIdentity(directory);
@@ -13,8 +13,7 @@ export function registerCheckout(s:Store,directory:string):Row {
     assertWorkAllowed(s,actor);
     // Check again under the registry write lock; folder replacement cannot silently
     // retarget an existing identity. No Git refs or worktree registration are mutated.
-    const fresh=probeRepositoryIdentity(directory);
-    check(checkoutFingerprint(identity)===checkoutFingerprint(fresh),'Checkout changed during registration; retry',4);
+    assertPhysicalIdentity(identity);
     let project=s.get('SELECT * FROM registry_projects WHERE workspace_id=?',s.ws);
     if(!project) {project={id:randomUUID()};s.run('INSERT INTO registry_projects VALUES(?,?)',project.id,s.ws);}
     let repository=s.get('SELECT * FROM registry_repositories WHERE common_dir=?',identity.git_common_dir);
@@ -59,21 +58,28 @@ export function bindCheckout(s:Store,input:BindCheckoutInput):Row {
     check(!task.human_only || s.role(actor).kind==='human','Human-only work cannot be bound by an agent',3);
     const configured=s.role(actor).provider;
     check(configured===null || configured===provider,'Provider differs from the configured role',4);
-    inspectCheckout(s,input.checkout,input.directory);
+    assertPhysicalIdentity(identity);
+    const runtime=s.get('SELECT * FROM sessions WHERE workspace_id=? AND role=? AND provider=? AND external_id=? AND ended_at IS NULL',s.ws,actor,provider,session);
+    check(runtime && runtime.pid && runtime.process_start && sessionState(runtime)==='running','Binding requires the current verified provider session with PID/start identity; register it first',4);
+    const cwd=statSync(identity.working_dir,{bigint:true});
     const prior=s.get('SELECT * FROM checkout_bindings WHERE role=? AND released_at IS NULL',actor);
     if(prior) {
-      check(prior.workspace_id===s.ws && prior.task_id===task.id && prior.checkout_id===input.checkout && prior.working_dir===identity.working_dir && prior.provider===provider && prior.provider_session_id===session && prior.mode===mode,'Role already has an active checkout reservation',4);
+      const workspace=s.get('SELECT name FROM workspaces WHERE id=?',prior.workspace_id)!.name;
+      check(prior.workspace_id===s.ws && prior.task_id===task.id && prior.checkout_id===input.checkout && prior.working_dir===identity.working_dir && prior.provider===provider && prior.provider_session_id===session && prior.mode===mode && prior.session_row_id===runtime.id && prior.cwd_device===String(cwd.dev) && prior.cwd_inode===String(cwd.ino),`Role already has an active checkout reservation in workspace ${workspace}`,4);
       return prior;
     }
     check(!s.get('SELECT id FROM checkout_bindings WHERE checkout_id=? AND released_at IS NULL',input.checkout),'Checkout already has an active worker; use a separate checkout',4);
-    const binding={id:randomUUID(),workspace_id:s.ws,task_id:task.id,role:actor,checkout_id:input.checkout,working_dir:identity.working_dir,provider,provider_session_id:session,mode,created_at:now(),released_at:null};
-    s.run('INSERT INTO checkout_bindings VALUES(?,?,?,?,?,?,?,?,?,?,?)',binding.id,s.ws,task.id,actor,input.checkout,binding.working_dir,provider,session,mode,binding.created_at,null);
+    const binding={id:randomUUID(),workspace_id:s.ws,task_id:task.id,role:actor,checkout_id:input.checkout,working_dir:identity.working_dir,cwd_device:String(cwd.dev),cwd_inode:String(cwd.ino),session_row_id:runtime.id,provider,provider_session_id:session,mode,created_at:now(),released_at:null};
+    s.run('INSERT INTO checkout_bindings VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',binding.id,s.ws,task.id,actor,input.checkout,binding.working_dir,binding.cwd_device,binding.cwd_inode,runtime.id,provider,session,mode,binding.created_at,null);
     s.event('checkout-binding',binding.id,'reserved',{...binding,identity});return binding;
   });
 }
 export function currentBinding(s:Store,task?:string):Row {
   const row=s.get('SELECT * FROM checkout_bindings WHERE workspace_id=? AND role=? AND released_at IS NULL'+(task?' AND task_id=?':''),s.ws,s.requireActor(),...(task?[id(task,'T')]:[]));
-  check(row,'No active checkout binding for this role/task',3);return row;
+  check(row,'No active checkout binding for this role/task',3);
+  const cwd=statSync(row.working_dir,{bigint:true});
+  check(String(cwd.dev)===row.cwd_device && String(cwd.ino)===row.cwd_inode && realpathSync(row.working_dir)===row.working_dir,'Bound working directory was replaced or moved; explicit reconciliation is required',4);
+  return row;
 }
 export function resolveWorkerPath(s:Store,relativePath:string,task?:string):Row {
   const binding=currentBinding(s,task),identity=inspectCheckout(s,binding.checkout_id,binding.working_dir);
@@ -87,7 +93,8 @@ export function releaseCheckout(s:Store):Row {
   return s.tx(()=>{
     const row=currentBinding(s);
     const sessions=s.all('SELECT * FROM sessions WHERE workspace_id=? AND role=? ORDER BY id DESC',s.ws,s.requireActor());
-    check(sessions.some(session=>session.external_id===row.provider_session_id && session.provider===row.provider) && sessions.every(session=>session.pid && session.process_start && ['ended','stale'].includes(sessionState(session))),'A live or unknown session still owns this reservation; verified retirement is required',4);
+    const matching=sessions.find(session=>session.id===row.session_row_id);
+    check(matching && matching.external_id===row.provider_session_id && matching.provider===row.provider && matching.pid && matching.process_start && ['ended','stale'].includes(sessionState(matching)) && sessions.every(session=>session.id===matching.id || sessionState(session)!=='running' && (session.ended_at || sessionState(session)!=='unknown')),'A live or unknown session still owns this reservation; verified retirement is required',4);
     check(!s.get("SELECT id FROM jobs WHERE workspace_id=? AND role=? AND status IN ('waiting','running')",s.ws,s.requireActor()),'Settle owned jobs before releasing the checkout',4);
     const at=now();s.run('UPDATE checkout_bindings SET released_at=? WHERE id=? AND released_at IS NULL',at,row.id);
     s.event('checkout-binding',row.id,'released',{});return {...row,released_at:at};

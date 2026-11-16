@@ -49,3 +49,8 @@ export function repositoryFingerprint(value:RepositoryIdentity):string {
 export function checkoutFingerprint(value:RepositoryIdentity):string {
   return createHash('sha256').update(JSON.stringify([repositoryFingerprint(value),value.git_dir,value.git_device,value.git_inode,value.checkout_root,value.root_device,value.root_inode])).digest('hex');
 }
+/** Cheap filesystem-only recheck while holding a database reservation lock. */
+export function assertPhysicalIdentity(value:RepositoryIdentity):void {
+  const common=physical(value.git_common_dir),git=physical(value.git_dir),root=physical(value.checkout_root);
+  check(common.device===value.common_device && common.inode===value.common_inode && git.device===value.git_device && git.inode===value.git_inode && root.device===value.root_device && root.inode===value.root_inode && realpathSync(value.working_dir)===value.working_dir && insideCheckout(value.checkout_root,value.working_dir),'Physical checkout changed during capture; inspect before rebinding',4);
+}
