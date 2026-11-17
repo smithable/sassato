@@ -98,7 +98,7 @@ export function savedCodexSession(workspace:string,role:string,cwd:string,home=p
   };
   walk(join(home,'sessions'),0);
   files.sort((a,b)=>basename(b).localeCompare(basename(a))); // the name starts with the session's start time
-  for(const file of files.slice(0,1000)) {
+  for(const file of files.slice(0,200)) { // the newest 200: a role with no match never reads much
     let head:string;
     // The first MB: the prompt comes about 120 KB in, after Codex's own instructions.
     try {const fd=openSync(file,'r');try {const buffer=Buffer.alloc(1<<20);head=buffer.subarray(0,readSync(fd,buffer,0,buffer.length,0)).toString('utf8');} finally {closeSync(fd);}} catch {continue;}
