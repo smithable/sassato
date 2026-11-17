@@ -594,3 +594,15 @@ waiter. Unmanaged waits have no managed observation and appear unregistered.
 `status --json` retains workspace totals and adds the structured role summary.
 Without a role, `status` keeps its previous workspace summary and JSON shape.
 Both views are read-only and leave receipts and notification progress unchanged.
+
+### Cooperative attended probe
+
+`supervise enroll --role ROLE --file JSON` is human-only enrollment of an existing
+provider role, active scratch task, registered checkout and explicit busy/lock
+guards. `supervise --attended --role ROLE` requires a human terminal;
+`supervise attach --role ROLE` opens the separate provider terminal. Workers use
+`supervise assignment`, `supervise reconcile --session-id ID` and finally
+`supervise ready --file JSON --expect TASK_VERSION`. Ready is cooperative and
+freezes further CLI writes; it proves no enforced tool barrier. The two-generation
+probe requires fresh human Enter before each owned retirement and never enables
+unattended management. See the [operator runbook](attended-supervisor.md).

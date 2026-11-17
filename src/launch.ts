@@ -25,7 +25,7 @@ interface LaunchRuntime { provider:'claude'|'codex'; executable:string; path:str
 interface StartupResponse { token:string; status:'started'|'already-running'|'failed'; message?:string; session_id?:string; pid?:number; process_start?:string }
 const startupTimeoutMs=15_000;
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function resolveExecutable(command:string,required:boolean):string {
+export function resolveExecutable(command:string,required:boolean):string {
   const candidates=isAbsolute(command)?[command]:(process.env.PATH??'').split(':').map(directory=>resolve(directory||'.',command));
   for(const candidate of candidates)try {accessSync(candidate,constants.X_OK);if(statSync(candidate).isFile())return candidate;}catch { /* Try the next PATH entry. */ }
   check(!required,`Cannot find executable ${command} on PATH. Install it or adjust PATH before launching.`,3);

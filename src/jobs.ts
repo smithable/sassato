@@ -199,7 +199,8 @@ export interface RunOptions { kind: string; wait: boolean; command: string[]; es
 
 /** Jobs are machine-wide, so honor every configured workspace maintenance lock. */
 function maintenancePaths(s:Store):string[] {
-  return [...new Set(s.all("SELECT e.detail FROM events e WHERE e.entity='supervisor-policy' AND e.action='configured' AND e.id=(SELECT max(n.id) FROM events n WHERE n.workspace_id=e.workspace_id AND n.entity='supervisor-policy' AND n.action='configured')").map(row=>String(JSON.parse(row.detail).policy.maintenance_lock)))].sort();
+  const configured=s.all("SELECT detail FROM events WHERE entity='attended-enrollment' AND action='configured'").map(row=>String(JSON.parse(row.detail).maintenance_lock));
+  return [...new Set([...configured,...s.all("SELECT e.detail FROM events e WHERE e.entity='supervisor-policy' AND e.action='configured' AND e.id=(SELECT max(n.id) FROM events n WHERE n.workspace_id=e.workspace_id AND n.entity='supervisor-policy' AND n.action='configured')").map(row=>String(JSON.parse(row.detail).policy.maintenance_lock))])].sort();
 }
 
 /** Ask, wait if told to, run, measure, release. Resolves to the exit status to leave with. */
