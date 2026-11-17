@@ -119,7 +119,9 @@ test('open tasks that cannot be taken now (a pending human question, an unfinish
   const {s,stopFile}=fixture(t);const real=performance.now.bind(performance);let shift=0;performance.now=()=>real()+shift;t.after(()=>{performance.now=real;});
   const later=(ms,fn)=>{const timer=setTimeout(fn,ms);t.after(()=>clearTimeout(timer));};
   s.actor='b';const asked=addTask(s,{title:'Waits on a human',forRole:'b'});askHuman(s,asked.id,{question:'Which one?'});
-  s.actor='a';const first=addTask(s,{title:'First'});const after=addTask(s,{title:'After the first',forRole:'b'});addDependency(s,after.id,first.id);
+  // Keep the prerequisite routed to a: an unrouted open task is now correctly
+  // eligible for b's idle reminder under the default open-work routing policy.
+  s.actor='a';const first=addTask(s,{title:'First',forRole:'a'});const after=addTask(s,{title:'After the first',forRole:'b'});addDependency(s,after.id,first.id);
   s.actor='b';
   later(50,()=>{shift+=61_000;});
   assert.equal((await waitForUrgent(s,{settle:0,timeout:3,stopFile,since:context(s).snapshot_cursor,idleMinutes:1})).reason,'timeout','nothing takeable: no wake');
