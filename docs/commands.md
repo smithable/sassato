@@ -269,10 +269,10 @@ does not grant permission or authenticate either identity.
 
 | Command | Behavior |
 | --- | --- |
-| `send ROLE[,ROLE]\|all TEXT [--re T1] [--urgent] [--needs-reply]` | Append message, snapshot recipients, optional task link; `--needs-reply` asks each recipient for a reply or review |
+| `send ROLE[,ROLE]\|all TEXT [--re T1] [--urgent \| --now] [--needs-reply]` | Append message, snapshot recipients, optional task link; `--needs-reply` asks each recipient for a reply or review |
 | `inbox [--peek] [--state unread\|read\|done] [--limit N]` | Unread first; marks only returned unread messages read unless --peek |
 | `sent [--limit N]` (alias `outbox`) | Sent messages with unread/read/acked status per recipient; JSON retains receipt timestamps |
-| `ack M1` | Recipient marks message done, preserving read/done timestamps |
+| `ack M1 [M2 ...]` | Atomically mark up to 100 addressed messages done; validate the whole batch first; retries preserve timestamps |
 | `fact set KEY TEXT --source LOCATION [--checked-at ISO_DATE] [--expect VERSION] [--answers T1]` | Create/correct shared fact; updates require expected version. `--answers` marks the open human task the fact answers: `humans` shows it as answered in the fact, and a human closes it |
 | `fact get KEY` / `fact history KEY` | Current fact or immutable revisions |
 | `facts [--limit N]` | List facts |
@@ -462,7 +462,7 @@ fi
 - `answer H123 'answer' --close --as alice` answers and completes the associated task atomically. If another blocker or review prevents closing, neither change is committed.
 - `send b 'Please review now' --urgent --as a` stores urgent mail. Urgent unread mail is prioritized within the inbox.
 - `send b 'Please read PR 4' --needs-reply --as a` asks b for a reply or review. It wakes b's waiter once (`REPLY M1 from a asks for your reply: …`; urgent mail instead wakes it until acknowledged), and b's context lists it under `replies`, read or not, until b acknowledges it with `ack`.
-- `wait --as b [--since EVENT_CURSOR] [--timeout SECONDS] [--stop-file PATH] [--idle-minutes N]` waits for unacknowledged urgent mail, workflow changes relevant to b, or a stop request, prints one line and exits 0. Stop takes precedence; timeout exits 5. It never consumes receipts or spawns a provider. Default timeout 0 waits indefinitely. With `--idle-minutes N` it also wakes b (`OWN WORK T1, … held by b …`) when b holds doing tasks and has written nothing for N minutes; when b holds none doing but has open tasks (b's own or for b) that b can take now (no open blocker or pending human question, no unfinished dependency), it wakes b with those instead (`OPEN WORK T1, … for b …`, highest priority and oldest first) so b takes one. A role with no open task is not woken. Any write of b's own starts the period again. Off by default.
+- `wait --as b [--since EVENT_CURSOR] [--timeout SECONDS] [--stop-file PATH] [--idle-minutes N] [--settle SECONDS] [--settle-max SECONDS]` waits for relevant mail/workflow changes or a stop request, prints a bounded digest and exits 0. Stop takes precedence; timeout exits 5. It never consumes receipts or spawns a provider. Default timeout 0 waits indefinitely. With `--idle-minutes N` it also wakes b (`OWN WORK T1, … held by b …`) when b holds doing tasks and has written nothing for N minutes; when b holds none doing but has open tasks (b's own or for b) that b can take now (no open blocker or pending human question, no unfinished dependency), it wakes b with those instead (`OPEN WORK T1, … for b …`, highest priority and oldest first) so b takes one. A role with no open task is not woken. Any write of b's own starts the period again. Off by default.
 - `import ... --repair --dry-run` previews conservative corrections to existing imports; use the same options and `--confirm DIGEST` to apply. Agent-edited tasks and WIP are preserved; untouched imported WIP can be refreshed from a newer dated entry.
 
 Version 0.1.2 imports the newest dated WIP entry per role (ordinary or stopped), supports
@@ -491,8 +491,8 @@ Edits that clear approval while work remains in review request another review
 read the current task and supply that inspected version to `review --expect`. Notifications do not claim or
 review anything. Every result includes `cursor`; human output prints it too.
 Without `--since`, wait resumes from durable notification progress when present;
-otherwise it preserves the legacy behavior of starting at the latest event at
-invocation. Explicit `--since` always overrides progress. When progress is absent, retain the initial context `cursor`, inspect the full inbox
+otherwise it fails rather than inventing a new baseline. Explicit `--since` always
+overrides progress. When progress is absent, retain the initial context `cursor`, inspect the full inbox
 and relevant records (including truncated items), and reconcile pending work before
 initializing that captured cursor with `--expect 0`. Do not use `snapshot_cursor`
 or a later context cursor; leave progress absent if handling is incomplete.
@@ -502,7 +502,66 @@ progress unchanged so recovery replays the event. Never substitute a newer conte
 `snapshot_cursor` for the last safely handled waiter cursor. Existing unacknowledged urgent
 mail and STOP still return independently of progress. See [notification recovery](context-management.md#durable-notification-progress).
 
-Urgent messages continue to wake the waiter after reading until `ack M1` records
-handling. Wait output includes up to 2,000 characters and an identity-qualified inbox
+Unacknowledged urgent messages remain eligible after reading until `ack M1` records
+handling. Legacy single-event output (`--settle 0`) includes up to 2,000 characters
+and an identity-qualified inbox
 command when truncated. Without `--since` or saved notification progress, `wait`
 fails with an input error instead of silently skipping events. STOP still takes precedence.
+
+## Settled notification digests
+
+Agent roles default to `--settle 120 --settle-max 600`. After the first eligible
+wake, only a **new relevant notification** restarts the quiet window. Pending
+urgent messages are deduplicated during that wait; unrelated role traffic does
+not extend it. Human roles default to `--settle 0`, which preserves the original
+first-event output. Any caller can choose immediate legacy behavior explicitly.
+The API uses the same role defaults. Seconds must be integers: settle 0–3600,
+maximum 1–3600; the maximum can be shorter than the quiet window.
+
+```sh
+sas wait --since 123 --settle 120 --settle-max 600 --as builder
+sas send builder 'Please review the result' --urgent --needs-reply --as lead
+sas send builder 'Main is broken: inspect T4 immediately' --now --re T4 --as lead
+sas ack M12 M13 M14 --as builder
+```
+
+`--now` implies urgency and bypasses settling. Plain `--urgent` collects normally.
+STOP, a human answer and a valid supervisor ping also return immediately, with
+any notifications already collected attached. Supervisor deadlines remain in
+force. The `now` bit is stored with recipients in the canonical send audit event;
+old messages without it are false. No schema migration is needed.
+
+A digest groups entries under `needs-a-decision`, `review-requested`, `finished`
+and `other`. Each entry has record/event IDs, sender, kind, optional task and a
+single-line summary of at most 160 Unicode characters. Show the full record by ID
+and read the current task before acting; the digest grants no authority. Once
+collection starts, relevant ordinary mail and completed tasks created/owned by
+the role can join the digest, although they do not start an idle waiter themselves.
+
+The collector stops at 100 entries. If another relevant event would overflow it,
+the continuation cursor stays **before** that omitted event. Immediate answers and
+supervisor pings bypass even a full urgent-mail page; the digest may repeat that
+signal until earlier work is handled and its safe cursor catches up. `has_more`
+marks continuation work in an immediate result. Handle and acknowledge
+the returned entries, save the returned cursor with `progress save --expect`, then
+wait again. Urgent mail remains eligible until acknowledged, even if its send event
+precedes the cursor; this makes an interrupted or repeated wait safe. The digest
+never marks a receipt read/done or saves notification progress. Atomic multi-ack
+rejects the whole request when any ID is malformed or belongs to another recipient;
+duplicate IDs are acknowledged once.
+
+The hard maximum and the overall `--timeout` bound collection. If the overall
+timeout expires with collected notifications, the result is a digest (exit 0),
+with `flush: deadline`; an empty timeout still exits 5. Other flush reasons are
+`quiet`, `max`, `capacity` and `immediate`. Polling can add up to one 500 ms poll to
+an arrival's observation. JSON includes `digest.entries`, settings and flush reason;
+`reason` is `digest` for a normal collection, while immediate results retain their
+`stop`, `answer`, `urgent` or `supervisor-ping` reason and carry the buffered digest.
+
+For a reproducible estimate, `scripts/wait-replay.mjs TRACE.json [SETTLE] [MAX]`
+accepts a sanitized array (or `{ "events": [...] }`) of unique notification IDs
+with numeric monotonic/millisecond timestamps, `wake: false` for ordinary updates,
+and `immediate: true` for answers/now/STOP. It uses the runtime quiet/max policy and
+reports first-event versus batched wake counts and delay. It does not read databases
+or claim that event counts equal actual provider turns. Keep private traces outside
+the repository; document the historical audience projection and omitted event kinds.

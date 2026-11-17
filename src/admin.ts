@@ -1,3 +1,4 @@
+import { messageIsNow } from './wait-digest.js';
 import { backup, DatabaseSync } from 'node:sqlite';
 import { closeSync, existsSync, mkdirSync, openSync, realpathSync, statSync, unlinkSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -131,6 +132,7 @@ export function showRecord(s: Store, recordId: string): Row {
   if (row.blocker_id) result.blocker_id=`B${row.blocker_id}`;
   if (prefix==='H') { result.options=JSON.parse(row.options); result.for_role=s.get('SELECT waiting_on FROM blockers WHERE workspace_id=? AND id=?',s.ws,row.blocker_id)!.waiting_on; }
   if (prefix==='E') result.detail=JSON.parse(row.detail);
+  if (prefix==='M') result.now=messageIsNow(s,recordId);
   if (prefix==='M') result.receipts=s.all('SELECT recipient,state,read_at,done_at FROM receipts WHERE workspace_id=? AND message_id=? ORDER BY recipient',s.ws,row.id);
   return result;
 }

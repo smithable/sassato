@@ -19,7 +19,7 @@ function fixture(t){
 }
 function as(s,role,fn){const old=s.actor;s.actor=role;try{return fn();}finally{s.actor=old;}}
 const task=(s,title,owner='a')=>addTask(s,{title,owner});
-const wait=(f,since,extra={})=>waitForWork(f.reader,{timeout:1,stopFile:f.stopFile,...(since===undefined?{}:{since}),...extra});
+const wait=(f,since,extra={})=>waitForWork(f.reader,{settle:0,timeout:1,stopFile:f.stopFile,...(since===undefined?{}:{since}),...extra});
 const finish=(s,id)=>as(s,s.task(id).owner??'human',()=>{takeTask(s,id);doneTask(s,id);});
 
 test('human answer wakes once with its canonical event, without consuming ordinary mail',async t=>{

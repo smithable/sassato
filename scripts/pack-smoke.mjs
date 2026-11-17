@@ -53,6 +53,6 @@ try {
   assert.ok(!packed.files.some(f=>f.path.startsWith('dist/context-advice.')));
   const mailCursor=JSON.parse(run('npm',[...npx,'sas','context','--as','reviewer','--json'],clean,env)).cursor;
   run('npm',[...npx,'sas','send','reviewer','Packed urgent message','--urgent','--as','builder','--json'],clean,env);
-  const notification=JSON.parse(run('npm',[...npx,'sas','wait','--since',String(mailCursor),'--urgent','--as','reviewer','--timeout','1','--stop-file',join(clean,'no-stop'),'--json'],clean,env));assert.equal(notification.reason,'urgent');
+  const notification=JSON.parse(run('npm',[...npx,'sas','wait','--settle','0','--since',String(mailCursor),'--urgent','--as','reviewer','--timeout','1','--stop-file',join(clean,'no-stop'),'--json'],clean,env));assert.equal(notification.reason,'urgent');
   console.log(JSON.stringify({ok:true,tarball:packed.filename,files:packed.files.length,size:packed.size,node:process.version,tests:['unpacked Node CLI','offline npx sassato','offline npx sas alias','packaged stop/resume','build identity','packaged evidence/progress recovery','packaged urgent wait','bundled index compiler and license','ordinary commands without compiler','no runtime npm dependencies']},null,2));
 }finally{rmSync(dir,{recursive:true,force:true});}

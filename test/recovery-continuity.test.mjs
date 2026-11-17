@@ -33,7 +33,7 @@ test('reopening durable state preserves unfinished work, checkpoint, bytes and n
     assert.equal(s.role('builder').model,'fixture-model');assert.equal(readFileSync(file,'utf8'),'unfinished bytes\n\n');
     const restored=getCheckpoint(s);assert.equal(restored.id,checkpoint.id);assert.equal(restored.state,'stale');assert.equal(restored.evidence.reported.jobs[0].state,'completed');
     assert.deepEqual(getNotificationProgress(s),progress);assert.equal(inbox(s,{peek:true})[0].body,'Message after checkpoint');
-    const event=await waitForWork(s,{timeout:1});assert.equal(event.reason,'review-submitted');assert.deepEqual(await waitForWork(s,{timeout:1}),event);
+    const event=await waitForWork(s,{settle:0,timeout:1});assert.equal(event.reason,'review-submitted');assert.deepEqual(await waitForWork(s,{settle:0,timeout:1}),event);
     assert.deepEqual(getNotificationProgress(s),progress);assert.equal(inbox(s,{peek:true})[0].state,'unread');
   } finally {s.close();}
 });
