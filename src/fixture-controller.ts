@@ -15,6 +15,7 @@ import { captureSupervisorSnapshot,assertSupervisorSnapshot,assertSupervisorRese
 import { workspaceSettings } from './workspace-settings.js';
 import { observeBusyChecks } from './busy-checks.js';
 import { positivelyGone } from './supervisor-monitor.js';
+import { assertNoOrdinaryLauncher } from './launch-admission.js';
 
 const canonicalLock=(path:string)=>resolve(realpathSync(dirname(path)),basename(path));
 export interface FixtureLaunch {role:string;task:string;checkout:string;directory:string;configuration:Row;idempotency_key:string}
@@ -136,6 +137,7 @@ export class FixtureController {
       }
       check(!this.s.get('SELECT id FROM checkout_bindings WHERE released_at IS NULL AND (role=? OR checkout_id=?)',input.role,input.checkout),'Existing checkout/worker reservation blocks launch',4);
       check(!this.s.get('SELECT id FROM managed_workers WHERE checkout_id=?',input.checkout),'Checkout is already reserved by a durable managed launch',4);
+      assertNoOrdinaryLauncher(this.s,input.role);
       const sessions=this.s.all('SELECT * FROM sessions WHERE role=?',input.role);
       check(sessions.every(row=>row.pid && row.process_start && ['ended','stale'].includes(sessionState(row))),'Existing live or unknown terminals are observe-only',4);
       check(Number(this.s.get("SELECT count(*) n FROM managed_workers WHERE controller_id=? AND state NOT IN ('exited','stopped')",this.policy.controller_id)!.n)<this.policy.maximum_workers,'Human worker limit reached',4);

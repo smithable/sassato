@@ -1,9 +1,9 @@
 import { readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
 import { Store, type Row } from './storage.js';
 import { check, id, name, now, text } from './errors.js';
 import { processIdentity, sessionState } from './coordination.js';
 import { workspaceSettings } from './workspace-settings.js';
+import { launchLockPath } from './launch-admission.js';
 
 export type StopState = 'acknowledged' | 'exited' | 'inactive' | 'waiting';
 export interface StopRequest {
@@ -37,7 +37,7 @@ function selectedRoles(s: Store, selected: string[], options: SelectionOptions, 
 }
 function pendingLauncher(s: Store, role: string): boolean {
   if (s.path === ':memory:') return false;
-  const path = join(`${s.path}.launch`,s.workspace,`${name(role)}.lock`);
+  const path = launchLockPath(s,role);
   let lock: {pid?: unknown; identity?: unknown};
   try { lock = JSON.parse(readFileSync(path,'utf8')); }
   catch (error) { return (error as NodeJS.ErrnoException).code !== 'ENOENT'; }

@@ -34,7 +34,9 @@
     "docs/compatibility.md",
     "docs/context-management.md",
     "examples/recovery-evidence.example.json",
-    "examples/smithable.config.json"
+    "examples/smithable.config.json",
+    "docs/supervisor.md",
+    "docs/attended-supervisor.md"
   ],
   "scripts": {
     "build": "node scripts/clean-build.mjs && tsc && node scripts/index-parser.mjs && node scripts/build-info.mjs",

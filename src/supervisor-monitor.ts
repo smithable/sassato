@@ -68,7 +68,7 @@ export function supervisorStatus(s:Store,clock=Date.now()):Row {
   return s.snapshot(()=>{
     const runtime=sessions(s);
     const workers=s.all("SELECT name FROM roles WHERE workspace_id=? AND kind='agent' ORDER BY name LIMIT 100",s.ws).map(({name:role})=>{
-      const worker=s.get('SELECT id,generation,state,controller_id,ping_epoch FROM managed_workers WHERE workspace_id=? AND role=?',s.ws,role);
+      const worker=s.get("SELECT id,generation,state,controller_id,ping_epoch,json_extract(context,'$.evidence_kind') AS mode FROM managed_workers WHERE workspace_id=? AND role=?",s.ws,role);
       const prior=s.get('SELECT * FROM supervisor_pings WHERE workspace_id=? AND role=? AND generation=? ORDER BY rowid DESC LIMIT 1',s.ws,role,worker?.generation??0);
       const ping=prior?.ping_epoch===(worker?.ping_epoch??0)?prior:undefined;
       const waiter=s.get('SELECT * FROM supervisor_waiters WHERE workspace_id=? AND role=? AND ended_at IS NULL',s.ws,role);
@@ -79,6 +79,6 @@ export function supervisorStatus(s:Store,clock=Date.now()):Row {
       const work=s.all("SELECT id,status,version FROM tasks WHERE workspace_id=? AND owner=? AND status NOT IN ('done','dropped') ORDER BY id LIMIT 100",s.ws,role).map(row=>({...row,id:`T${row.id}`}));
       return {role,management:worker??{state:'observe-only'},session,responsiveness:{state:acting(worker)?response:'suspended',lifecycle_state:worker?.state??null,ping:ping??null,prior_ping:prior??null},checkpoint:checkpoint?{id:checkpoint.id,state:checkpoint.state,reasons:checkpoint.reasons}:null,waiter:{registered:Boolean(waiter),armed,observation:waiter??null},jobs,work};
     });
-    return {observed_at:new Date(clock).toISOString(),management_enabled:false,reason:'Production provider adapters remain observe-only until tool barrier, containment, complete job exclusion and human-approved provider handoff evidence are verified.',workers};
+    return {observed_at:new Date(clock).toISOString(),management_enabled:false,reason:'Unattended provider management remains disabled. Cooperative attended probes use separate human-confirmed enrollment and do not establish enforced tool barriers, containment, complete job exclusion or full configuration continuity.',workers};
   });
 }
