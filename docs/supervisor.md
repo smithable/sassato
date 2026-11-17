@@ -8,7 +8,8 @@ Existing [provider probes](provider-capabilities.md) do not prove production han
 
 ### Current source implementation
 
-The CLI exposes observation, nonce ping and acknowledgment commands. Schema 10
+The CLI exposes observation, nonce ping and acknowledgment commands, plus the
+separate cooperative attended probe described in the [operator runbook](attended-supervisor.md). Schema 10
 adds durable generation fences, controller/worker transitions, pings and managed
 waiter reservations. Legacy writes from an enrolled role require its current
 generation and token inside the same writer transaction; unmanaged roles keep
@@ -19,7 +20,8 @@ release, recovery acknowledgment, drain, atomic brief/checkpoint readiness,
 retirement request, explicit fixture exit observation, generation advance and
 same-role replacement. It also bounds pre-release retries and rechecks locks,
 STOP, task versions, configuration, checkout/cwd identity and dirty manifests on
-resumption and controller recovery. No lifecycle signaling path is implemented.
+resumption and controller recovery. This fixture API has no lifecycle signaling path;
+the attended implementation separately uses verified pidfd retirement.
 The deterministic child fixture voluntarily exits when requested by its test.
 Fixture descendant observations are explicitly synthetic and are never recorded
 as real-provider containment proof. No existing terminal is enrolled or adopted.
@@ -40,7 +42,9 @@ lease and positive busy checks. This covers that job entry point only: external
 gates, merges, releases, detached tools and failure containment still need their
 own verified coverage before automatic replacement could be enabled.
 
-Production providers remain observe-only and `management_enabled` is always false.
+Existing provider sessions remain observe-only. The compatibility status field
+`management_enabled` remains false for unattended management; explicitly enrolled
+attended probes have their separate human-confirmed lifecycle.
 There is no CLI to configure fixture enrollment or enable unattended replacement.
 Real adapter tool-start barriers, complete running/background tool inventory,
 effective configuration continuity, owned descendant containment and the required
@@ -55,9 +59,9 @@ the Store mutation path. No CLI flag exposes privileged lifecycle write modes.
 ## Release 1: cooperative, attended replacement
 
 This section defines the first real-provider release and takes precedence over
-release-2 requirements below. It is an implementation target, not a claim that the
-current source supports it. `sassato supervise --attended --role ROLE` is the
-planned entry point. A human starts and watches it in a terminal; it never runs
+release-2 requirements below. The source implements `sassato supervise --attended --role ROLE`
+as its entry point; real-provider acceptance and installation remain separate
+human actions. A human starts and watches it in a terminal; it never runs
 unattended or adopts an existing session. Ordinary commands remain standalone.
 Persist an explicit attended-only enrollment for the selected human-created role;
 `--attended` requires a terminal and cannot enable the unattended management flag.

@@ -4,6 +4,7 @@ import os
 import select
 import signal
 import sqlite3
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -38,6 +39,9 @@ def observe(pid, identity):
 
 def signal_guards(fd):
     guards = json.loads(os.environ['SASSATO_ATTENDED_SIGNAL_GUARDS'])
+    busy = subprocess.run([guards['node'], guards['busy_helper']], env={**os.environ, 'SASSATO_ATTENDED_BUSY_CHECKS': json.dumps(guards['busy_checks'])}, capture_output=True, text=True, check=False)
+    if busy.returncode != 0:
+        raise RuntimeError('External busy guards changed or failed immediately before signal')
     if guards['stop_file'] is None:
         raise RuntimeError('An explicit stop-file guard is required')
     if os.path.lexists(guards['stop_file']):

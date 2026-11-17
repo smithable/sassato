@@ -46,6 +46,10 @@ def holder():
     tail = bytearray()
     with open(Path(directory) / "terminal.log", "ab", buffering=0) as log:
         while True:
+            reaped, status = os.waitpid(child, os.WNOHANG)
+            if reaped:
+                (Path(directory) / "holder-result.json").write_text(json.dumps({"child": child, "wait_status": status, "reaped": True}))
+                break
             readable, _, _ = select.select([master, listener] + ([client] if client else []), [], [], 0.2)
             if listener in readable:
                 connection, _ = listener.accept()
@@ -89,7 +93,9 @@ def holder():
                 except OSError:
                     client.close()
                     client = None
-    os.waitpid(child, 0)
+    if not reaped:
+        _, status = os.waitpid(child, 0)
+        (Path(directory) / "holder-result.json").write_text(json.dumps({"child": child, "wait_status": status, "reaped": True}))
     if client:
         client.close()
     listener.close()
@@ -124,6 +130,8 @@ def attach():
 if __name__ == "__main__":
     if sys.argv[1] == "holder":
         holder()
+    elif sys.argv[1] == "flush":
+        termios.tcflush(0, termios.TCIFLUSH)
     elif sys.argv[1] == "attach":
         attach()
     else:

@@ -53,7 +53,7 @@ export function enrollAttended(s:Store,role:string,input:unknown):Row {
     check(!s.get("SELECT id FROM checkout_bindings WHERE released_at IS NULL AND (role=? OR checkout_id=?)",role,p.checkout),'Existing checkout reservation blocks enrollment',4);
     check(!s.all('SELECT * FROM sessions WHERE role=?',role).some(row=>!row.pid || !row.process_start || !['ended','stale'].includes(sessionState(row))),'Live or unknown sessions cannot be enrolled',4);
     check(!s.get("SELECT id FROM events WHERE workspace_id=? AND entity='attended-enrollment' AND entity_id=?",s.ws,role),'Enrollment is immutable; use a new disposable role',4);
-    const policy={...p,role,controller_id:randomUUID(),repository_id:checkout.repository_id,cwd,mode:kind,created_by:s.requireActor()};
+    const settings=workspaceSettings(s);const policy={...p,busy_checks:settings.busy_checks,stop_file:settings.stop_file,role,controller_id:randomUUID(),repository_id:checkout.repository_id,cwd,mode:kind,created_by:s.requireActor()};
     s.event('attended-enrollment',role,'configured',policy);return policy;
   });
 }
@@ -81,7 +81,8 @@ export function attendedSnapshot(s:Store,role:string,p:Row,configuration:Row):Ro
   check(tasks.length<=100,'Too many assigned tasks for bounded handover');
   const progress=getNotificationProgress(s,role);check(progress,'Handled notification cursor is required',4);
   check(digest(identity)===digest(inspectCheckout(s,p.checkout,p.cwd)) && digest(manifest)===digest(dirtyManifest(identity.checkout_root)),'Checkout changed while capturing readiness',4);
-  return {evidence_kind:kind,checkout_id:p.checkout,working_dir:p.cwd,identity,cwd_device:String(cwd.dev),cwd_inode:String(cwd.ino),manifest,manifest_digest:digest(manifest),task_versions:tasks,notification_progress:progress,configuration,configuration_digest:digest(configuration),task_id:p.task};
+  const snapshot={evidence_kind:kind,checkout_id:p.checkout,working_dir:p.cwd,identity,cwd_device:String(cwd.dev),cwd_inode:String(cwd.ino),manifest,manifest_digest:digest(manifest),task_versions:tasks,notification_progress:progress,configuration,configuration_digest:digest(configuration),task_id:p.task};
+  check(Buffer.byteLength(JSON.stringify(snapshot))<=32768,'Complete attended launch snapshot exceeds 32768 bytes');return snapshot;
 }
 function snapshotEqual(s:Store,role:string,p:Row,snapshot:Row):void {
   const current=attendedSnapshot(s,role,p,snapshot.configuration);const expected=Object.fromEntries(Object.keys(current).map(key=>[key,snapshot[key]]));
@@ -101,14 +102,14 @@ function latest(s:Store,w:Row):Row {
   const t=s.get('SELECT * FROM managed_transitions WHERE worker_id=? AND generation=? ORDER BY rowid DESC LIMIT 1',w.id,w.generation);check(t,'Generation has no durable transition',4);return t;
 }
 function stopped(s:Store,p:Row):boolean {return !!activeStop(s,[p.role,p.controller_role]);}
-function permitted(s:Store,p:Row):void {check(!stopped(s,p),'STOP prevents attended lifecycle work',4);}
+function permitted(s:Store,p:Row):void {check(!stopped(s,p),'STOP prevents attended lifecycle work',4);const settings=workspaceSettings(s);check(settings.stop_file===p.stop_file && digest(settings.busy_checks)===digest(p.busy_checks),'Enrolled STOP/busy guard configuration changed',4);}
 function settled(s:Store,role:string):void {
   check(!s.get("SELECT id FROM jobs WHERE role=? AND (status IN ('waiting','running') OR (orphans IS NOT NULL AND orphans!='[]')) LIMIT 1",role),'Running or unknown jobs block handover',4);
   for(const waiter of s.all('SELECT * FROM supervisor_waiters WHERE role=? AND ended_at IS NULL',role))check(positivelyGone(waiter.pid,waiter.process_start),'A live or unknown waiter blocks handover',4);
 }
 export function processObservation(w:Row,retire=false):Row {
   check(w.pid && w.process_start,'Process identity is missing; do not signal or launch',4);
-  const result=spawnSync('python3',['-B',processHelper,retire?'retire':'observe',String(w.pid),w.process_start],{env:{...process.env,SASSATO_ATTENDED_SIGNAL_GUARDS:retire?JSON.stringify(w.signal_guards):''},encoding:'utf8',timeout:retire?33000:5000,maxBuffer:1_048_576,shell:false});
+  const result=spawnSync('python3',['-B',processHelper,retire?'retire':'observe',String(w.pid),w.process_start],{env:{...process.env,SASSATO_ATTENDED_SIGNAL_GUARDS:retire?JSON.stringify(w.signal_guards):''},encoding:'utf8',timeout:retire?50000:5000,maxBuffer:1_048_576,shell:false});
   check(!result.error && result.status===0,`Attended process observation failed: ${result.stdout.trim()||'unknown identity/membership'}`,4);
   return JSON.parse(result.stdout);
 }
@@ -125,6 +126,7 @@ export function reconcileAttended(s:Store,externalId:string):Row {
   const w=worker(s,s.requireActor()),t=latest(s,w),p=enrollment(s,w.role),snapshot=JSON.parse(w.context);ownCaller(w);permitted(s,p);
   check(w.state==='reconciling' && t.state==='reconciling' && t.bootstrap_released_at,'Bootstrap is not released for reconciliation',4);
   check(externalId!==JSON.parse(t.payload).previous_external_id,'A distinct conversation identity is required',4);text(externalId,'provider conversation identity',200);
+  check(!s.get('SELECT id FROM sessions WHERE provider=? AND external_id=? AND (pid IS NULL OR pid!=? OR process_start IS NULL OR process_start!=?)',w.provider,externalId,w.pid,w.process_start),'Conversation identity was already used by another process/generation',4);
   snapshotEqual(s,w.role,p,snapshot);
   // Read recovery inputs without consuming receipts or advancing progress.
   const initial=context(s),mail=inbox(s,{peek:true,limit:100});
@@ -151,7 +153,8 @@ export function readyAttended(s:Store,report:unknown,expected:number):Row {
     permitted(s,p);check(worker(s,w.role).state==='running','Generation changed',4);reservationEqual(s,w.role,snapshot);settled(s,w.role);
     const brief=randomUUID(),transition=randomUUID(),at=now();
     s.run('INSERT INTO task_briefs VALUES(?,?,?,?,?,?,?,?)',brief,s.ws,id(p.task,'T'),w.role,binding.id,JSON.stringify(body),digest(body),at);
-    const payload={operation:'attended-handoff',context:snapshot,launch_id:JSON.parse(w.context).launch_id,terminal:JSON.parse(w.context).terminal,completion:w.generation===2};
+    const pending=s.event('task-handoff',p.task,'pending',{to:w.generation===2?null:w.role,summary:reported.next_action,brief_id:brief,brief_digest:digest(body),task_version:expected,binding_id:binding.id,worker_id:w.id,generation:w.generation,successor_generation:w.generation===2?null:2,mode:kind});
+    const payload={pending_handoff_event:`E${pending}`,operation:'attended-handoff',context:snapshot,launch_id:JSON.parse(w.context).launch_id,terminal:JSON.parse(w.context).terminal,completion:w.generation===2};
     s.run('INSERT INTO managed_transitions(id,worker_id,generation,idempotency_key,state,expected_task_versions,brief_id,created_at,updated_at,payload) VALUES(?,?,?,?,?,?,?,?,?,?)',transition,w.id,w.generation,`ready-${w.generation}`,'ready',JSON.stringify(snapshot.task_versions),brief,at,at,JSON.stringify(payload));
     const old=getWip(s);const wip=setWip(s,{current:reported.objective,next:reported.next_action,notes:`Cooperative attended generation ${w.generation} ready. Complete immutable brief ${brief}. All tools/waiters/background work declared settled. Start nothing; remain silent awaiting retirement.`,expected_version:old.version});
     const checkpoint={format:CHECKPOINT_FORMAT,wip,fingerprint:checkpointFingerprint(s,w.role),evidence:{version:1,observed:{repository:{status:'available',observed_at:at,directory:p.cwd,root:snapshot.identity.checkout_root,git_dir:snapshot.identity.git_dir,common_dir:snapshot.identity.git_common_dir,branch:snapshot.identity.branch,head:snapshot.identity.head,dirty:snapshot.manifest.length>0,reason:null},tasks:observeTasks(s,w.role),notification_progress:snapshot.notification_progress},reported:{version:1,validation:reported.validation,artifacts:reported.artifacts,jobs:reported.jobs.map(job=>({id:job.id,description:job.evidence,state:job.state,disposition:'finish'}))}}};
@@ -185,9 +188,11 @@ function guarded(s:Store,p:Row,w:Row):Row {
   return {transition:t.id,brief_id:t.brief_id,generation:w.generation,pid:w.pid,process_start:w.process_start,pgid:w.pid,checkout:p.cwd,head:brief.observed.identity.head,dirty:brief.observed.manifest,successor:w.generation===2?'final stop':`generation ${w.generation+1}`,observation:stableObservation};
 }
 function prepareRuntime(s:Store,p:Row,generation:number):string {
-  const directory=join(dirname(s.path),`.sat-${p.controller_id.slice(0,12)}-${generation}`);check(Buffer.byteLength(join(directory,'terminal.sock'))<104,'Database parent path is too long for an attended Unix terminal socket',4);mkdirSync(directory,{mode:0o700});
+  const directory=join(dirname(s.path),`.sat-${p.controller_id.slice(0,12)}-${generation}`);check(Buffer.byteLength(join(directory,'terminal.sock'))<104,'Database parent path is too long for an attended Unix terminal socket',4);return directory;
+}
+function createRuntime(directory:string):void {
+  mkdirSync(directory,{mode:0o700});
   for(const cli of ['sassato','sas']){const target=join(directory,cli);check(!existsSync(target),'Runtime already exists; reconcile uncertain startup instead of spawning again',4);symlinkSync(fileURLToPath(new URL('../bin/sassato.js',import.meta.url)),target);}
-  return directory;
 }
 function intent(s:Store,p:Row,snapshot:Row,previous?:Row):{w:Row;t:Row;token:string;launch:string} {
   const generation=previous?previous.generation+1:1;check(generation<=2,'The attended probe has exactly two generations');
@@ -203,7 +208,7 @@ function intent(s:Store,p:Row,snapshot:Row,previous?:Row):{w:Row;t:Row;token:str
       s.run('INSERT INTO managed_workers(id,workspace_id,role,controller_id,generation,token_hash,state,provider,configuration_digest,updated_at,context,checkout_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',workerId,s.ws,p.role,p.controller_id,generation,workerTokenHash(token),'starting',snapshot.configuration.provider,snapshot.configuration_digest,now(),JSON.stringify({...snapshot,launch_id:launchId,terminal}),p.checkout);
     }else s.run("UPDATE managed_workers SET generation=?,token_hash=?,state='starting',pid=NULL,process_start=NULL,configuration_digest=?,context=?,updated_at=? WHERE id=?",generation,workerTokenHash(token),snapshot.configuration_digest,JSON.stringify({...snapshot,launch_id:launchId,terminal}),now(),workerId);
     const prior=previous?latest(s,previous):null;
-    if(prior)s.run("UPDATE managed_transitions SET state='complete',updated_at=? WHERE id=?",now(),prior.id);
+    if(prior){s.run("UPDATE managed_transitions SET state='complete',updated_at=? WHERE id=?",now(),prior.id);s.event('task-handoff',p.task,'finalized',{pending_event:JSON.parse(prior.payload).pending_handoff_event,brief_id:prior.brief_id,binding_id:previous!.binding_id,retired_generation:previous!.generation,successor_generation:generation,to:p.role,mode:kind});}
     const payload={operation:'attended-launch',context:snapshot,terminal,launch_id:launchId,bootstrap_deadline:new Date(Date.now()+120000).toISOString(),previous_brief:prior?.brief_id??null,previous_external_id:previous?.external_id??null};
     s.run('INSERT INTO managed_transitions(id,worker_id,generation,idempotency_key,state,expected_task_versions,launch_token_hash,created_at,updated_at,payload) VALUES(?,?,?,?,?,?,?,?,?,?)',transitionId,workerId,generation,launchId,'starting',JSON.stringify(snapshot.task_versions),workerTokenHash(launch),now(),now(),JSON.stringify(payload));
     s.event('managed-transition',transitionId,'attended-launch-intent',{generation,role:p.role,launch_id:launchId,evidence_kind:kind});
@@ -215,10 +220,11 @@ export function attendedPrompt(s:Store,w:Row):string {
   return `You are a disposable cooperative attended supervisor probe, generation ${w.generation}. Never alter provider/host configuration, hooks or permissions. Settle ALL tools, nested/background/detached jobs and waiter before readiness. Process-group checks do not prove escaped work absent. No existing sessions are yours. Keep native compaction enabled. First read sassato supervise assignment ${a}, context, checkpoint, inbox --peek and live task ${p.task}, then verify Git/dirty files. Call sassato supervise reconcile --session-id YOUR_ACTUAL_NEW_CONVERSATION_ID ${a}; this is a new conversation, never resume another. Read the previous brief using brief show ${p.task} if present. Preserve the safely handled notification cursor and reconcile its unhandled mail once (legitimate redelivery is possible). At safe tool boundaries inspect and acknowledge generation-bound supervisor pings through sassato supervise ack NONCE --generation GENERATION, after reconciling context. A missed ping never permits termination. Task: generation1 writes exactly 'line one\\n' to attended-probe.txt and commits ONLY that file; also create uncommitted attended-sentinel.txt with 'keep these bytes\\n'. Generation2 MUST verify and preserve sentinel bytes, verify line one, append 'line two\\n' and commit ONLY attended-probe.txt. Commits include Signed-off-by: Johan Ekenlycka <johan@smithable.ai> and Co-Authored-By: Claude <noreply@anthropic.com>. Do not amend/reset/stash/switch/delete. Do not commit the sentinel. Save a complete JSON BriefInput report (version1, objective, acceptance[], decisions[{decision,source}], open_issues[], validation[{command,result}], artifacts[], next_action, configuration{digest: assignment.configuration_digest,provenance:['recorded attended configuration subset']}, jobs[]). Put this temporary report outside the scratch Git checkout; record its path as an artifact. Use sassato supervise ready --file REPORT --expect CURRENT_TASK_VERSION ${a} as your LAST tool call. After it succeeds remain silent, start no new tool, waiter or background work, and do not end your session or launch another. Never relax a failed guard. If STOP, checkpoint/stopped as instructed by live context and remain idle.`;
 }
 async function launchIntent(s:Store,p:Row,i:ReturnType<typeof intent>,lease:SupervisorLease):Promise<void> {
-  await idle(s,p,lease);snapshotEqual(s,p.role,p,JSON.parse(i.t.payload).context);
+  // Final idle/snapshot observations precede intent creation in the caller.
   check(i.t.state==='starting' && !i.t.bootstrap_pid,'Uncertain or already registered launch may not spawn again',4);
   permitted(s,p);lease.assertHeld();
-  const terminal=JSON.parse(i.t.payload).terminal;
+  const terminal=JSON.parse(i.t.payload).terminal;createRuntime(terminal);
+  permitted(s,p);lease.assertHeld();
   const child=spawn('python3',['-B',ptyHelper,'holder',terminal,process.execPath,bootstrap],{detached:true,stdio:'ignore',shell:false,env:{...process.env,PATH:[terminal,dirname(process.execPath),process.env.PATH??''].join(':'),SASSATO_DB:s.path,SASSATO_WORKSPACE:s.workspace,SASSATO_ROLE:p.role,SASSATO_WORKER_GENERATION:String(i.w.generation),SASSATO_WORKER_TOKEN:i.token,SASSATO_ATTENDED_LAUNCH_TOKEN:i.launch,SASSATO_ATTENDED_TRANSITION:i.t.id}});
   await new Promise<void>((resolve,reject)=>{child.once('spawn',()=>resolve());child.once('error',reject);});child.unref();
   const holderStart=child.pid?processIdentity(child.pid):null;check(child.pid && holderStart,'Spawned PTY holder identity is unavailable; no retry',4);
@@ -270,6 +276,7 @@ export async function runAttended(human:Store,role:string):Promise<Row> {
       const cfg=attendedConfiguration(s,p.role),snapshot=attendedSnapshot(s,p.role,p,cfg);
       check(s.task(p.task).owner===p.role && s.task(p.task).status==='doing','Assignment changed',4);
       maintenance=acquireSupervisorLock(p.maintenance_lock,'exclusive');await idle(s,p,maintenance);
+      snapshotEqual(s,p.role,p,snapshot);
       const i=intent(s,p,snapshot);await launchIntent(s,p,i,maintenance);maintenance.close();maintenance=undefined;
     }
     console.log(`Cooperative attended probe ${p.role}. Unattended management remains OFF. Open a SECOND terminal: sassato supervise attach --role ${p.role} --as ${human.requireActor()} --workspace ${human.workspace} --db ${s.path}`);
@@ -288,15 +295,21 @@ export async function runAttended(human:Store,role:string):Promise<Row> {
       check(['ready','retiring','exited'].includes(w.state),'Blocked/unknown attended state; reconcile without relaunch',4);
       const proposal=guarded(s,p,w);
       if(!proposal.observation.exited){
+        process.stdin.pause();while(process.stdin.read()!==null){/* Discard input buffered before this proposal. */}
+        const flushed=spawnSync('python3',['-B',ptyHelper,'flush'],{stdio:['inherit','ignore','pipe'],timeout:2000,shell:false});check(!flushed.error && flushed.status===0,'Could not flush stale confirmation input',4);
         console.log(JSON.stringify({retirement:proposal},null,2));
         const terminal=createInterface({input:process.stdin,output:process.stdout});
         let answer:string;try{answer=await terminal.question('Press Enter to retire this exact generation (anything else cancels): ');}finally{terminal.close();}
         check(answer==='','Retirement was not approved',4);
         check(process.stdin.isTTY && process.stdout.isTTY,'Confirmation terminal was lost',4);
         maintenance=acquireSupervisorLock(p.maintenance_lock,'exclusive');await idle(s,p,maintenance);
-        const after=guarded(s,p,worker(s,p.role));check(digest(proposal)===digest(after),'Observation changed after Enter; fresh reconciliation/approval required',4);
+        const after=guarded(s,p,worker(s,p.role));
+        const exitedFromPriorRequest=w.state==='retiring' && after.observation.exited;
+        check(exitedFromPriorRequest?digest({...proposal,observation:null})===digest({...after,observation:null}):digest(proposal)===digest(after),'Observation changed after Enter; fresh reconciliation/approval required',4);
+        if(!exitedFromPriorRequest){
         s.tx(()=>{permitted(s,p);s.run("UPDATE managed_workers SET state='retiring',updated_at=? WHERE id=?",now(),w!.id);s.run("UPDATE managed_transitions SET state='retiring',updated_at=? WHERE id=?",now(),t.id);s.event('managed-transition',t.id,'attended-retirement-requested',{generation:w!.generation,pid:w!.pid,process_start:w!.process_start});});
-        permitted(s,p);maintenance.assertHeld();const exit=processObservation({...w,signal_guards:{db:s.path,workspace:s.ws,roles:[p.role,p.controller_role],stop_file:workspaceSettings(s).stop_file,worker_id:w.id,generation:w.generation,task_versions:snapshotOf(w).task_versions,notification_progress:snapshotOf(w).notification_progress}},true);check(exit.exited,'Whole observed group did not exit',4);
+        permitted(s,p);maintenance.assertHeld();const exit=processObservation({...w,signal_guards:{db:s.path,workspace:s.ws,roles:[p.role,p.controller_role],stop_file:workspaceSettings(s).stop_file,worker_id:w.id,generation:w.generation,task_versions:snapshotOf(w).task_versions,notification_progress:snapshotOf(w).notification_progress,node:process.execPath,busy_helper:fileURLToPath(new URL('./attended-checks.js',import.meta.url)),busy_checks:p.busy_checks}},true);check(exit.exited,'Whole observed group did not exit',4);
+        }
       }else {
         check(['retiring','exited'].includes(w.state),'Worker exited before a recorded retirement request; no successor',4);
         maintenance=acquireSupervisorLock(p.maintenance_lock,'exclusive');await idle(s,p,maintenance);
@@ -317,11 +330,13 @@ export async function runAttended(human:Store,role:string):Promise<Row> {
           const task=s.task(p.task);check(task.owner===p.role && task.status==='doing','Task disposition changed',4);
           s.run("UPDATE tasks SET status='done',version=version+1,completed_at=?,updated_at=?,lease_until=NULL WHERE workspace_id=? AND id=?",now(),now(),s.ws,id(p.task,'T'));
           s.event('task',p.task,'attended-completed',{brief_id:t.brief_id,generation:2,owner:p.role});
+          s.event('task-handoff',p.task,'finalized',{pending_event:JSON.parse(t.payload).pending_handoff_event,brief_id:t.brief_id,binding_id:w!.binding_id,retired_generation:2,successor_generation:null,to:null,reason:'completed',mode:kind});
           s.event('managed-transition',t.id,'attended-stopped',{reason:'completed',generation:2,brief_id:t.brief_id,binding_released:w!.binding_id});
         });
         maintenance!.close();maintenance=undefined;console.log('Generation 2 exited; probe completed. No generation 3; unattended mode stays OFF.');
         return {role:p.role,state:'stopped',reason:'completed',generation:2,unattended_enabled:false};
       }
+      await idle(s,p,maintenance!);snapshotEqual(s,p.role,p,snapshotOf(w));
       const i=intent(s,p,snapshotOf(w),w);await launchIntent(s,p,i,maintenance!);maintenance!.close();maintenance=undefined;
       console.log('Generation 2 released; attach from the separate provider terminal.');
     }

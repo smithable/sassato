@@ -121,7 +121,7 @@ checks = [
 ]
 (root / 'busy-checks.json').write_text(json.dumps(checks))
 sas('workspace','set','--stop-file',str(pathlib.Path.home() / 'repos/stop'),
-    '--busy-checks',str(root / 'busy-checks.json'))
+    '--busy-checks',json.dumps(checks))
 checkout = sas('checkout','register','--dir',repo)
 task = sas('add','Disposable attended two-step task','--for',role,'--owner',role)
 sas('take',task['id'],actor=role)

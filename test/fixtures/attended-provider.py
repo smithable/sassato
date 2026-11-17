@@ -10,6 +10,16 @@ import uuid
 from pathlib import Path
 
 if '--version' in sys.argv:
+    if os.environ.get('ATTENDED_FIXTURE_LATE_BUSY'):
+        import sqlite3
+        root = Path(os.environ['ATTENDED_FIXTURE_DB']).parent
+        with sqlite3.connect(os.environ['ATTENDED_FIXTURE_DB']) as connection:
+            if connection.execute("SELECT 1 FROM managed_workers WHERE state='ready'").fetchone():
+                counter = root / 'version-ready-count'
+                count = int(counter.read_text()) + 1 if counter.exists() else 1
+                counter.write_text(str(count))
+                if count >= 2:
+                    (root / 'late-busy').write_text('fixture busy')
     print('attended fixture 1')
     sys.exit(0)
 
@@ -30,7 +40,10 @@ try:
     generation = assignment['generation']
     cli('context')
     cli('inbox', '--peek')
-    cli('supervise', 'reconcile', '--session-id', str(uuid.uuid4()))
+    conversation = Path(os.environ['SASSATO_DB']).parent / 'fixture-conversation-id'
+    external = conversation.read_text() if generation == 2 and os.environ.get('ATTENDED_FIXTURE_REUSE_ID') else str(uuid.uuid4())
+    conversation.write_text(external)
+    cli('supervise', 'reconcile', '--session-id', external)
     # Replay pending mail using the saved cursor; do not invent a newer one.
     pending = cli('inbox')
     for message in pending:

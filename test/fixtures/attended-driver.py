@@ -46,6 +46,8 @@ def valid(pid, identity):
 
 try:
     child = start()
+    if scenario == 'pre-enter':
+        os.write(master, b'\n')
     deadline = time.monotonic() + 35
     acknowledged_prompts = 0
     while time.monotonic() < deadline:
@@ -68,11 +70,14 @@ try:
                 crashed = True
                 restarted = before == 1
                 continue
-            if scenario == 'no-confirmation':
+            if scenario in ('no-confirmation', 'pre-enter'):
                 time.sleep(0.3)
                 assert rows('SELECT state FROM managed_workers')[0]['state'] == 'ready'
                 child.terminate()
                 break
+            if scenario == 'eof':
+                os.write(master, b'\x04')
+                continue
             if scenario == 'cancel':
                 os.write(master, b'no\n')
                 continue
