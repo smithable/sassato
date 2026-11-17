@@ -121,3 +121,22 @@ test('supervisor pings bypass an overflowing urgent-mail page and still require 
   as(f.s,'b',()=>acknowledgeSupervisorPing(f.s,ping.nonce,0));
   const next=await wait(f,result.cursor);assert.equal(next.reason,'digest');assert.equal(next.digest.flush,'capacity');
 });
+
+test('an earlier replayed answer cannot hide a later supervisor ping behind urgent mail',async t=>{
+  const f=fixture(t),task=as(f.s,'b',()=>addTask(f.s,{title:'Earlier decision'})),q=as(f.s,'b',()=>askHuman(f.s,task.id,{question:'Proceed?'})),since=f.cursor();
+  Array.from({length:DIGEST_LIMIT+1},(_,i)=>mail(f,'Unacknowledged '+i,{urgent:true}));as(f.s,'human',()=>answerQuestion(f.s,q.id,'Yes'));
+  const ping=as(f.s,'human',()=>requestSupervisorPing(f.s,'b'));
+  const first=await wait(f,since,{settle:120,settleMax:600});assert.equal(first.reason,'supervisor-ping');assert.equal(first.nonce,ping.nonce);assert.equal(first.cursor,since);
+  assert.ok(first.digest.entries.some(e=>e.id===q.id));assert.ok(first.digest.entries.some(e=>e.summary.includes(ping.nonce)));
+  as(f.s,'b',()=>acknowledgeSupervisorPing(f.s,ping.nonce,0));
+  const next=await wait(f,first.cursor,{settle:120,settleMax:600});assert.equal(next.reason,'answer');assert.equal(next.question,q.id);
+  const newer=as(f.s,'human',()=>requestSupervisorPing(f.s,'b',Date.now()+61_000));
+  assert.equal((await wait(f,next.cursor,{settle:120,settleMax:600})).nonce,newer.nonce,'mail need not be ACKed to reach another ping');
+});
+test('a malformed older answer audit entry cannot mask the next valid answer',async t=>{
+  const f=fixture(t),one=as(f.s,'b',()=>addTask(f.s,{title:'Old decision'})),two=as(f.s,'b',()=>addTask(f.s,{title:'New decision'}));
+  const q1=as(f.s,'b',()=>askHuman(f.s,one.id,{question:'First?'})),q2=as(f.s,'b',()=>askHuman(f.s,two.id,{question:'Second?'})),since=f.cursor();
+  f.s.run("INSERT INTO events(workspace_id,entity,entity_id,actor,action,detail,created_at) VALUES(?,'question',?,'human','answered','{invalid',?)",f.s.ws,q1.id,new Date().toISOString());
+  as(f.s,'human',()=>{answerQuestion(f.s,q1.id,'Yes');answerQuestion(f.s,q2.id,'Yes');});
+  const result=await wait(f,since,{settle:120,settleMax:600});assert.equal(result.reason,'answer');assert.equal(result.question,q1.id);
+});

@@ -151,25 +151,28 @@ function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
   return undefined;
 }
 /** Immediate workflow signals may be behind a full mail page. Deliver them without crossing skipped events. */
-function priorityWorkflow(s:Store,actor:string,cursor:number):{wake:WaitResult;event:Row}|undefined {
+function priorityWorkflow(s:Store,actor:string,cursor:number):{wake:WaitResult;event:Row}[] {
   const answer=s.get(`SELECT e.* FROM questions q JOIN tasks t ON t.workspace_id=q.workspace_id AND t.id=q.task_id
     JOIN events e ON e.workspace_id=q.workspace_id AND e.entity='question' AND e.entity_id='H'||q.id AND e.action='answered'
-    WHERE q.workspace_id=? AND q.status='answered' AND (q.asked_by=? OR t.owner=?) AND e.id>? AND e.actor!=? ORDER BY e.id LIMIT 1`,s.ws,actor,actor,cursor,actor);
+    WHERE q.workspace_id=? AND q.status='answered' AND (q.asked_by=? OR t.owner=?) AND e.id>? AND e.actor!=? AND json_valid(e.detail) ORDER BY e.id LIMIT 1`,s.ws,actor,actor,cursor,actor);
   const ping=s.get(`SELECT e.* FROM supervisor_pings p LEFT JOIN managed_workers w ON w.workspace_id=p.workspace_id AND w.role=p.role
     JOIN events e ON e.workspace_id=p.workspace_id AND e.entity='supervisor-ping' AND e.entity_id=p.role AND e.action='requested'
       AND CASE WHEN json_valid(e.detail) THEN json_extract(e.detail,'$.nonce')=p.nonce ELSE 0 END
     WHERE p.workspace_id=? AND p.role=? AND p.acknowledged_at IS NULL AND p.generation=coalesce(w.generation,0)
       AND p.ping_epoch=coalesce(w.ping_epoch,0) AND (w.id IS NULL OR w.state IN ('running','draining')) AND e.id>? ORDER BY e.id LIMIT 1`,s.ws,actor,cursor);
-  for(const event of [answer,ping].filter((event):event is Row=>Boolean(event)).sort((a,b)=>a.id-b.id)) {
-    const wake=workflow(s,actor,event);if(wake)return {wake,event};
+  // Pings have explicit nonce ACKs; a replayed answer must never hide a later ping.
+  const result:{wake:WaitResult;event:Row}[]=[];
+  for(const event of [ping,answer].filter((event):event is Row=>Boolean(event))) {
+    const wake=workflow(s,actor,event);if(wake)result.push({wake,event});
   }
-  return undefined;
+  return result;
 }
 function entryFor(s:Store,wake:WaitResult,event?:Row):DigestEntry {
   const source=wake.message?messageSent(s,wake.message.id):event;
   const kind=wake.message?.reply?'reply-needed':wake.reason;
   const id=wake.message?.id??wake.question??wake.blocker??wake.task??String(event?.entity_id??'work');
   let summary=wake.message?.summary,task=wake.task;
+  if(!summary&&wake.reason==='supervisor-ping')summary=`generation ${wake.generation}; nonce ${wake.nonce}; deadline ${wake.ping_deadline}`;
   if(!summary&&wake.question) {const row=s.get('SELECT question,answer,task_id FROM questions WHERE workspace_id=? AND id=?',s.ws,Number(wake.question.slice(1)));summary=row?`${row.question}: ${row.answer??''}`:wake.question;task??=row?`T${row.task_id}`:undefined;}
   if(!summary&&wake.task)summary=s.get('SELECT title FROM tasks WHERE workspace_id=? AND id=?',s.ws,Number(wake.task.slice(1)))?.title;
   if(!summary)summary=(wake.tasks??[]).join(', ')||wake.reason;
@@ -235,13 +238,14 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
   const idle=integer(options.idleMinutes??0,'idle minutes',0,10_080)*60_000;
   let idleSince=performance.now(),idleFrom=latest;
   for(;;) {
+    priority=undefined;
     if(stopFile&&existsSync(stopFile))return digest('immediate',{reason:'stop',role:actor,cursor,stop:{file:stopFile}});
     let more=false;
     const result=s.snapshot(():WaitResult|undefined=>{
       const stop=s.get('SELECT id,acknowledged_at FROM stop_requests WHERE workspace_id=? AND role=? AND cleared_at IS NULL',s.ws,actor);
       if(stop)return digest('immediate',{reason:'stop',role:actor,cursor,stop:{id:`R${stop.id}`,acknowledged:!!stop.acknowledged_at}});
-      const immediate=settle?priorityWorkflow(s,actor,cursor):undefined;priority=immediate?.wake;
-      if(immediate)add(entryFor(s,immediate.wake,immediate.event));
+      const immediate=settle?priorityWorkflow(s,actor,cursor):[];priority=immediate[0]?.wake;
+      for(const signal of immediate)add(entryFor(s,signal.wake,signal.event));
       const messages=s.all(`SELECT m.id,m.sender,substr(m.body,1,2000) AS body,length(m.body)>2000 AS truncated,m.reply,m.task_id,${MESSAGE_NOW_SQL} AS wake_now
         FROM receipts r JOIN messages m ON m.workspace_id=r.workspace_id AND m.id=r.message_id
         WHERE r.workspace_id=? AND r.recipient=? AND r.state IN ('unread','read') AND m.urgent=1 AND m.sender!=?
@@ -261,11 +265,11 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
         if(!settle){cursor=event.id;if(wake)return wake;continue;}
         const entry=wake?entryFor(s,wake,event):entries.size?extraDuringDigest(s,actor,event):undefined;
         if(entry&&!add(entry)) {
-          if(wake&&['answer','supervisor-ping'].includes(wake.reason))return digest('immediate',wake);
+          if(wake&&['answer','supervisor-ping'].includes(wake.reason))return digest('immediate',priority??wake);
           return priority?digest('immediate',priority):digest('capacity'); // Never cross an omitted relevant event.
         }
         cursor=event.id;
-        if(wake&&['answer','supervisor-ping'].includes(wake.reason))return digest('immediate',wake);
+        if(wake&&['answer','supervisor-ping'].includes(wake.reason))return digest('immediate',priority??wake);
       }
       return priority?digest('immediate',priority):undefined;
     });
