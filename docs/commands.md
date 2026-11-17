@@ -592,4 +592,5 @@ Each queue shows up to six records and points to detailed commands if more remai
 identity and worker generation match; a stale observation is not evidence of a live
 waiter. Unmanaged waits have no managed observation and appear unregistered.
 `status --json` retains workspace totals and adds the structured role summary.
+Without a role, `status` keeps its previous workspace summary and JSON shape.
 Both views are read-only and leave receipts and notification progress unchanged.

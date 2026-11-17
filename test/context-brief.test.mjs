@@ -40,10 +40,10 @@ test('state changes remain visible after handoff away and unchanged snapshots do
  const view=delta(s,since);assert.equal(view.sections.tasks[0].owner,'b');assert.equal(view.sections.tasks[0].id,task.id);assert.equal(delta(s,view.cursor).sections.tasks,undefined);
 });
 test('all brief lines are bounded Unicode lines with public IDs; STOP always appears',t=>{
- const {s,cursor}=setup(t);const since=cursor(),mail=as(s,'b',()=>send(s,['a'],'😀'.repeat(1000)+'\nInjected line'));
+ const {s,cursor}=setup(t);const since=cursor(),mail=as(s,'b',()=>send(s,['a'],'😀'.repeat(1000)+'\nInjected line\u009bFAKE\u202eREORDER'));
  as(s,'human',()=>requestStop(s,['a']));
  for(const view of [context(s,{brief:true}),context(s,{brief:true,since,lineLength:120})]){
-  const text=renderContext(view);assert.ok(text.split('\n').every(line=>Array.from(line).length<=(view.line_length??200)));assert.match(text,/STOP R\d+/);assert.ok(text.includes(mail.id));assert.ok(!text.includes('\ufffd'));
+  const text=renderContext(view);assert.ok(text.split('\n').every(line=>Array.from(line).length<=(view.line_length??200)));assert.match(text,/STOP R\d+/);assert.ok(text.includes(mail.id));assert.ok(!text.includes('\ufffd'));assert.ok(!/[\u0080-\u009f\u202a-\u202e\u2066-\u2069]/.test(text));
  }
  assert.throws(()=>context(s,{brief:true,lineLength:1}),/line length/);
 });
@@ -51,9 +51,10 @@ test('role status shows own tasks, waits, replies, saved cursor and verified wai
  const {s,cursor}=setup(t),mine=addTask(s,{title:'Mine'});takeTask(s,mine.id);const theirs=as(s,'b',()=>addTask(s,{title:'Blocked b',owner:'b'}));
  const blocker=as(s,'b',()=>blockTask(s,theirs.id,{kind:'agent',waitingOn:'a',body:'Need your answer'}));const mail=as(s,'b',()=>send(s,['a'],'Review this',{needsReply:true}));
  saveNotificationProgress(s,{cursor:cursor(),expected_version:0});
- s.run('INSERT INTO supervisor_waiters VALUES(?,?,?,?,?,?,?,?,NULL)','fixture-waiter',s.ws,'a',process.pid,processIdentity(process.pid),0,cursor(),new Date().toISOString());
+ as(s,'human',()=>{const at=new Date().toISOString();s.run('INSERT INTO managed_controllers VALUES(?,?,?,?,?,?,?)','controller',s.ws,'human','fixture.lock',null,null,at);s.run('INSERT INTO managed_workers(id,workspace_id,role,controller_id,binding_id,generation,token_hash,state,provider,external_id,pid,process_start,configuration_digest,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)','worker',s.ws,'a','controller',null,1,'0'.repeat(64),'running','claude',null,null,null,'0'.repeat(64),at);});
+ as(s,'human',()=>s.run('INSERT INTO supervisor_waiters VALUES(?,?,?,?,?,?,?,?,NULL)','fixture-waiter',s.ws,'a',process.pid,processIdentity(process.pid),1,cursor(),new Date().toISOString()));
  const before=cursor(),view=status(s),text=renderStatus(view);assert.equal(view.waiter.armed,true);assert.ok(text.includes(mine.id));assert.ok(text.includes(blocker.id));assert.ok(text.includes(mail.id));assert.ok(!view.own_tasks.some(r=>r.id===theirs.id));assert.equal(cursor(),before);
- s.run("UPDATE supervisor_waiters SET process_start='wrong' WHERE id='fixture-waiter'");assert.equal(status(s).waiter.armed,false);assert.match(renderStatus(status(s)),/stale\/unconfirmed/);
+ as(s,'human',()=>s.run("UPDATE supervisor_waiters SET process_start='wrong' WHERE id='fixture-waiter'"));assert.equal(status(s).waiter.armed,false);assert.match(renderStatus(status(s)),/stale\/unconfirmed/);
  assert.ok(text.split('\n').length<=24);assert.ok(text.split('\n').every(line=>Array.from(line).length<=200));
 });
 test('status remains one screen with overflowing queues and IDs for detailed lookups',t=>{
@@ -65,4 +66,9 @@ test('CLI brief delta and status accept line limits while JSON remains structure
  const run=(...args)=>spawnSync(process.execPath,[resolve('bin/sassato.js'),...args,'--db',path,'--workspace','team','--as','a'],{encoding:'utf8'});
  const brief=run('context','--brief','--since',String(since),'--line-length','100');assert.equal(brief.status,0,brief.stderr);assert.match(brief.stdout,/changes since/);assert.ok(brief.stdout.trim().split('\n').every(line=>Array.from(line).length<=100));
  const status=run('status');assert.equal(status.status,0,status.stderr);assert.match(status.stdout,/waiter unregistered/);assert.equal(JSON.parse(run('status','--json').stdout).role,'a');assert.equal(run('context','--brief','--line-length','20').status,2);
+});
+
+test('anonymous status preserves workspace totals and does not require an identity',t=>{
+ const {s,path}=setup(t);addTask(s,{title:'Visible workspace total'});const reader=new Store(path,undefined,{readonly:true});reader.use('team');try{const view=status(reader);assert.equal(view.role,undefined);assert.ok(view.tasks.length);assert.equal(JSON.parse(renderStatus(view)).workspace,'team');}finally{reader.close();}
+ const result=spawnSync(process.execPath,[resolve('bin/sassato.js'),'status','--json','--db',path,'--workspace','team'],{encoding:'utf8',env:{...process.env,SASSATO_ROLE:''}});assert.equal(result.status,0,result.stderr);assert.equal(JSON.parse(result.stdout).workspace,'team');
 });

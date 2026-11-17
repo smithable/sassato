@@ -4,7 +4,7 @@ import { check,integer } from './errors.js';
 
 /** One physical line, bounded by Unicode code points including its lookup ID. */
 export function contextLine(value:unknown,max=200):string {
-  return Array.from(String(value??'').replace(/[\u0000-\u001f\u007f]/g,' ').replace(/\s+/g,' ').trim()).slice(0,max).join('');
+  return Array.from(String(value??'').replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g,' ').replace(/\s+/g,' ').trim()).slice(0,max).join('');
 }
 function changedTask(s:Store,actor:string,event:Row):Row|undefined {
   if(!/^T\d+$/.test(event.entity_id))return undefined;

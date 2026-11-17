@@ -340,7 +340,7 @@ export function renderContext(data: ContextData): string {
     const values = Object.entries(row).filter(([,value])=>value !== null && value !== '' && value !== false).map(([key,value])=>key === 'id' ? value : `${key}=${value}`).join(' · ');
     lines.push(`${section}: ${clip(values,300)}`);
   }
-  if (data.truncated) lines.push(data.delta?`More changes; continue: sas context --brief --since ${data.cursor}`:'More items exist; use tasks, inbox, blockers, humans or facts for details.');
+  if (data.truncated) lines.push(data.delta?`More changes; continue: sas context --brief --since ${data.cursor} --workspace ${data.workspace} --as ${data.role}`:'More items exist; use tasks, inbox, blockers, humans or facts for details.');
   lines.push(data.brief?'Full records: sas show ID. Context does not mark mail read; ack finishes mail.':'Context does not mark mail read. Keep this cursor for --since; use inbox to read, ack to finish.');
   if(data.brief)return lines.map(line=>contextLine(line,data.line_length??200)).join('\n');
   let result = lines.slice(0,39).join('\n');
