@@ -23,7 +23,10 @@ Linux/WSL, Node 24.13+ with `process.execve`, Python 3 with Linux pidfds, Git an
 `flock` are required. Provider executables must already be installed and signed in.
 
 In the operator's terminal, set these to the actual existing database, human role
-and approved merge commit. Do not use an unreviewed branch or overwrite a backup:
+and approved merge commit. Retain the previous installed release's package tarball
+for rollback and set `PREVIOUS_PACKAGE` to its absolute path; do not use a package
+with only a matching version number. Do not use an unreviewed branch or overwrite
+a backup:
 
 ```bash
 export PROBE_DB="$HOME/.local/share/sassato/sassato.db"
@@ -31,6 +34,9 @@ export LIVE_HUMAN='your-existing-human-role'
 export APPROVED_MERGE='the-reviewed-40-character-merge-commit'
 export EVIDENCE="$HOME/repos/.session-scripts/supervisor-test/$(date +%Y-%m-%d-%H%M%S)-install"
 mkdir -m 700 -p "$EVIDENCE"
+export PREVIOUS_PACKAGE='/absolute/path/to/the-previous-installed-release.tgz'
+test -f "$PREVIOUS_PACKAGE"
+sassato --version --json > "$EVIDENCE/before-install-version.json"
 sassato backup "$EVIDENCE/before-install.db" --db "$PROBE_DB" --workspace smithable --as "$LIVE_HUMAN"
 sassato stop --all --db "$PROBE_DB" --workspace smithable --as "$LIVE_HUMAN"
 sassato stop-status --db "$PROBE_DB" --workspace smithable --as "$LIVE_HUMAN"
@@ -50,13 +56,69 @@ npm run build
 npm pack --pack-destination "$EVIDENCE"
 npm install --global "$EVIDENCE"/sassato-*.tgz
 sassato --version --json
+sassato migrate --db "$PROBE_DB"
+sassato doctor --db "$PROBE_DB" --workspace smithable --as "$LIVE_HUMAN" --json
 ```
 
-Save the version/build output. Perform the planned WSL restart from the Windows
-terminal (`wsl --shutdown`) only after jobs have stopped. Reopen the operator and
+Save the version/build, migration and doctor output. Confirm doctor reports
+`"ok": true` and `"schema": 10` for `PROBE_DB` before continuing. The version
+command reports the CLI schema; doctor reads the database schema. Perform the
+planned WSL restart from the Windows terminal (`wsl --shutdown`) only after jobs have stopped. Reopen the operator and
 assistant terminals. The human alone reconciles and clears their own prior STOP
 requests when ready; never clear someone else's request to make a probe pass.
 Do not launch ordinary workers during the controlled trial window.
+
+When ordinary sessions restart after the trial window, their first coordination
+step is the digest waiter, after reading checkpoint/context/inbox and their saved
+notification cursor: `sassato wait --since CURSOR --as ROLE --workspace smithable`.
+It batches urgent/needs-reply mail and workflow events after 120 seconds of quiet,
+600 seconds at most. STOP, human answers and `--now` mail wake it immediately;
+reserve `--now` for an outage, broken main or a stop that cannot wait. Handle each
+digest entry, acknowledge handled mail, save the returned cursor with its expected
+progress version and re-arm one waiter. Never advance to the latest context cursor
+or re-arm during STOP.
+
+### Roll back the installation
+
+The old CLI cannot open the migrated database. Going back requires both the exact
+previous CLI package and `before-install.db`; reinstalling the old CLI alone is
+insufficient. Restoring loses coordination changes made since that backup, so the
+human must reconcile those changes before resuming workers. Keep all sessions and
+jobs stopped, close every other database client, and preserve the shared STOP file.
+While the new CLI is still installed, stop and inspect:
+
+```bash
+sassato stop --all --db "$PROBE_DB" --workspace smithable --as "$LIVE_HUMAN"
+sassato stop-status --db "$PROBE_DB" --workspace smithable --as "$LIVE_HUMAN"
+```
+
+Wait for all workers/jobs to settle. In the operator terminal, reinstall the old
+CLI, preserve the migrated database and any SQLite sidecars in a fresh directory,
+then restore to the now-absent original path (restore refuses to overwrite a file):
+
+```bash
+npm install --global "$PREVIOUS_PACKAGE"
+sassato --version --json
+export ROLLBACK_EVIDENCE="$EVIDENCE/rollback-$(date +%Y-%m-%d-%H%M%S)"
+mkdir -m 700 "$ROLLBACK_EVIDENCE"
+python3 - <<'PY_ROLLBACK'
+import os, pathlib
+source = pathlib.Path(os.environ['PROBE_DB'])
+target = pathlib.Path(os.environ['ROLLBACK_EVIDENCE'])
+for suffix in ('', '-wal', '-shm'):
+    path = pathlib.Path(str(source) + suffix)
+    if path.exists():
+        path.rename(target / path.name)
+PY_ROLLBACK
+sassato restore "$EVIDENCE/before-install.db" --db "$PROBE_DB"
+sassato doctor --db "$PROBE_DB" --workspace smithable --as "$LIVE_HUMAN" --json
+```
+
+Verify the CLI build matches `before-install-version.json`, doctor reports `ok`
+and the previous schema, and the expected workspace records are present. If any
+step fails, keep workers stopped and preserve all evidence; do not migrate the
+restored database with the newer CLI. Only the human reconciles prior STOP
+requests and authorizes workers to resume.
 
 ## 2. Prepare one disposable trial
 
