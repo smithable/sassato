@@ -23,6 +23,7 @@ import { positivelyGone,requestSupervisorPing } from './supervisor-monitor.js';
 import { validateBriefInput } from './task-briefs.js';
 import { CHECKPOINT_FORMAT,checkpointFingerprint } from './checkpoints.js';
 import { observeTasks,MAX_CHECKPOINT_BYTES } from './recovery-evidence.js';
+import { assertNoOrdinaryLauncher } from './launch-admission.js';
 
 const processHelper=fileURLToPath(new URL('../bin/attended-process.py',import.meta.url));
 const ptyHelper=fileURLToPath(new URL('../bin/attended-pty.py',import.meta.url));
@@ -199,6 +200,7 @@ function intent(s:Store,p:Row,snapshot:Row,previous?:Row):{w:Row;t:Row;token:str
   const terminal=prepareRuntime(s,p,generation),token=randomBytes(32).toString('hex'),launch=randomBytes(32).toString('hex'),workerId=previous?.id??randomUUID(),transitionId=randomUUID(),launchId=randomUUID();
   s.tx(()=>{
     permitted(s,p);reservationEqual(s,p.role,snapshot);
+    assertNoOrdinaryLauncher(s,p.role);
     const current=s.get('SELECT * FROM managed_workers WHERE role=?',p.role);
     check(previous?current?.state==='exited' && current.generation===previous.generation:!current,'Existing generation/uncertain launch blocks spawning',4);
     if(!previous){

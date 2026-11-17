@@ -26,6 +26,12 @@ The deterministic child fixture voluntarily exits when requested by its test.
 Fixture descendant observations are explicitly synthetic and are never recorded
 as real-provider containment proof. No existing terminal is enrolled or adopted.
 Initial launch intent atomically reserves its physical checkout before spawning.
+Ordinary native admission and terminal dispatch reject a managed role reservation
+inside the same SQLite writer authority used by managed intent creation. A
+terminal parent reserves before dispatch; its one native child adopts that
+reservation without releasing it, and retains it until provider exit. Managed
+intent rejects pending ordinary launchers across workspaces, including unknown
+locks; canonical database paths make symlink aliases share those reservations.
 That reservation blocks competing managed launches and ordinary checkout binds,
 including while launch identity is uncertain or its unreleased intent is cancelled.
 Replaying an existing launch intent returns its durable identity with

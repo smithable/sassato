@@ -204,7 +204,11 @@ STOP, the human runs `sassato stop "$PROBE_ROLE" --db "$PROBE_DB" --workspace
 supervisor-probe --as operator`. An unreleased bootstrap exits without launching
 the provider. A released worker cooperatively checkpoints/stops; no successor is
 launched. A retirement timeout or unknown identity needs human reconciliation.
-Do not retry by reenrolling a tombstoned role.
+Do not retry by reenrolling a tombstoned role. Ordinary `sassato launch` also
+refuses any managed generation reservation, including uncertain and completed
+probe generations. Pending ordinary native/terminal launchers block a managed
+start even before session registration. Do not remove their lock to force the
+trial; reconcile the launcher first. Use a fresh disposable role for a new trial.
 
 Use fresh disposable roles/checkouts for additional trials. In the **crash trial**,
 terminate the recorded controller after generation 1 becomes ready and before

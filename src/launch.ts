@@ -9,6 +9,7 @@ import { processIdentity, registerSession, sessionState } from './coordination.j
 import { validateRoleOptions } from './role-options.js';
 import { assertWorkAllowed } from './control.js';
 import { workspaceSettings } from './workspace-settings.js';
+import { assertOrdinaryLaunchAllowed,launchLockPath,launchDirectory } from './launch-admission.js';
 
 export interface LaunchOptions {
   fresh?: boolean; resume?: boolean; all?: boolean; noPrompt?: boolean; dryRun?: boolean; newWindow?: boolean;
@@ -48,6 +49,7 @@ export function planLaunch(store:Store, selected:string[], options:LaunchOptions
     const role=name(selectedRole),config=store.role(role);
     check(config.kind==='agent','Human roles cannot launch an agent');
     assertWorkAllowed(store,role);
+    assertOrdinaryLaunchAllowed(store,role);
     check(config.provider==='claude'||config.provider==='codex',`Configure a claude or codex provider for ${role}`);
     check(typeof config.working_dir==='string'&&existsSync(config.working_dir),`Configure an existing working directory for ${role}`);
     const cwd=realpathSync(config.working_dir),provider=config.provider as 'claude'|'codex';
@@ -153,25 +155,40 @@ function runtimeEnvironment(store:Store,role:string,parentPath:string):{director
   catch(error){rmSync(directory,{recursive:true,force:true});throw error;}
   return {directory,env:{...process.env,PATH:[directory,dirname(process.execPath),parentPath].join(':'),SASSATO_DB:store.path,SASSATO_WORKSPACE:store.workspace,SASSATO_ROLE:role}};
 }
-function lockPath(store:Store,role:string):string {return join(`${store.path}.launch`,store.workspace,`${name(role)}.lock`);}
-function acquire(store:Store,role:string):()=>void {
-  const path=lockPath(store,role),token=randomUUID();
+const lockPath=launchLockPath;
+function acquire(store:Store,role:string,options:{dispatch?:StartupRequest;adopt?:StartupRequest}={}):()=>void {
+  const path=lockPath(store,role),token=options.adopt?.token??options.dispatch?.token??randomUUID(),identity=processIdentity(process.pid);
   // Serialize both acquiring and explicitly removing locks with SQLite's same writer lock.
   // Otherwise two stale-unlock calls could remove a new launcher's replacement lock.
   store.tx(()=>{
     assertWorkAllowed(store,role);
+    assertOrdinaryLaunchAllowed(store,role);
+    check(statSync(store.path).nlink===1,'Hard-linked coordination databases are unsupported for launch admission',4);
+    if(options.adopt) {
+      checkStartup(options.adopt);
+      const request=JSON.parse(readFileSync(join(options.adopt.directory,'request.json'),'utf8'));
+      const lock=JSON.parse(readFileSync(path,'utf8'));
+      check(lock.token===token && lock.phase==='dispatch' && lock.pid===request.parent_pid && lock.identity===request.parent_identity,
+        'Terminal launch reservation is missing, changed or already adopted',4);
+      // Transfer to exactly one native child without removing the reservation.
+      const temporary=`${path}.${randomUUID()}.tmp`,fd=openSync(temporary,'wx',0o600);
+      try{writeFileSync(fd,JSON.stringify({pid:process.pid,identity,token,phase:'native',created_at:lock.created_at}));fsyncSync(fd);}finally{closeSync(fd);}
+      renameSync(temporary,path);return;
+    }
     mkdirSync(dirname(path),{recursive:true,mode:0o700});
     let fd:number;
     try {fd=openSync(path,'wx',0o600);} catch(error) {
       if((error as NodeJS.ErrnoException).code==='EEXIST') throw new Error(`Launch lock exists for ${role}. Another launcher may be active. Use launch-unlock only after checking it has stopped.`);
       throw error;
     }
-    try {writeFileSync(fd,JSON.stringify({pid:process.pid,identity:processIdentity(process.pid),token,created_at:now()}));fsyncSync(fd);} finally {closeSync(fd);}
+    try {writeFileSync(fd,JSON.stringify({pid:process.pid,identity,token,phase:options.dispatch?'dispatch':'native',created_at:now()}));fsyncSync(fd);} finally {closeSync(fd);}
   });
   return ()=>store.tx(()=>{
     if(!existsSync(path))return;
     const lock=JSON.parse(readFileSync(path,'utf8'));
     check(lock.token===token,'Launch lock was externally replaced; leaving the replacement intact',4);
+    if(options.dispatch && (lock.pid!==process.pid || lock.identity!==identity))return;
+    check(lock.pid===process.pid && lock.identity===identity,'Only the current launcher can release its reservation',4);
     unlinkSync(path);
   });
 }
@@ -204,7 +221,7 @@ async function terminateUnconfirmed(child:ReturnType<typeof spawn>,exited:Promis
 async function runNative(store:Store,plan:LaunchPlan,options:LaunchOptions,runtime?:LaunchRuntime):Promise<void> {
   check(store.path!==':memory:','Launching requires a persistent database');
   check(process.platform==='linux','Verified native launch currently requires Linux/WSL. On other systems, launch the provider manually and run sassato context.',3);
-  const release=acquire(store,plan.role);
+  const release=acquire(store,plan.role,{adopt:runtime?.startup});
   let environment:ReturnType<typeof runtimeEnvironment>|undefined;
   try {
     check(!plan.stopFile||!existsSync(plan.stopFile),`Stop signal exists at ${plan.stopFile}; leave it intact until the operator clears it`,4);
@@ -218,6 +235,7 @@ async function runNative(store:Store,plan:LaunchPlan,options:LaunchOptions,runti
     verifyExecutable(fresh.executable,environment.env);
     const child=store.tx(()=>{
       assertWorkAllowed(store,fresh.role);
+      assertOrdinaryLaunchAllowed(store,fresh.role);
       if(runtime?.startup)checkStartup(runtime.startup);
       return spawn(fresh.executable,fresh.args,{cwd:fresh.cwd,stdio:'inherit',shell:false,env:environment!.env});
     });
@@ -286,17 +304,20 @@ async function launchInternal(store:Store,roles:string[],options:LaunchOptions,r
       check(process.platform==='linux'&&!!process.env.WSL_DISTRO_NAME,'Windows Terminal launch must run inside WSL',3);
       plan.executable=resolveExecutable(plan.provider,true);
       const startup=startupRequest(store,plan.role);
+      let release:(()=>void)|undefined;
       try {
+        // Reserve before dispatch, not only when the terminal's native child starts.
+        release=acquire(store,plan.role,{dispatch:startup});
         // Transport a resolved provider and the caller's PATH through an encoded payload.
         // wsl.exe --exec need not load a login shell and no path becomes shell source.
         const childRuntime:LaunchRuntime={provider:plan.provider,executable:plan.executable,path:process.env.PATH??'',startup};
         const args=windowsTerminalArgs(store,plan,options,childRuntime);
-        const child=store.tx(()=>{assertWorkAllowed(store,plan.role);return spawn('wt.exe',args,{stdio:'ignore',shell:false});});
+        const child=store.tx(()=>{assertWorkAllowed(store,plan.role);assertOrdinaryLaunchAllowed(store,plan.role);checkStartup(startup);return spawn('wt.exe',args,{stdio:'ignore',shell:false});});
         await new Promise<void>((res,rej)=>{child.once('spawn',()=>res());child.once('error',rej);});
         child.unref();
         const response=await awaitStartup(store,plan.role,startup,child);
         plan.status=response.status as 'started'|'already-running';plan.runtimeSessionId=response.session_id;plan.pid=response.pid;
-      } finally {rmSync(startup.directory,{recursive:true,force:true});}
+      } finally {try{release?.();}finally{rmSync(startup.directory,{recursive:true,force:true});}}
     }
   }
   return plans;
@@ -310,7 +331,7 @@ if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)&&p
     check(candidate&&(candidate.provider==='claude'||candidate.provider==='codex')&&isAbsolute(candidate.executable),'Missing resolved provider in terminal launch payload');
     check(typeof candidate.path==='string'&&candidate.path.length<=32_000&&!candidate.path.includes('\0'),'Invalid launch PATH');
     const startup=candidate.startup;
-    check(startup&&uuid.test(startup.token)&&dirname(resolve(startup.directory))===resolve(`${db}.launch`,workspace)&&basename(startup.directory).startsWith(`.startup-${role}-`),'Invalid startup acknowledgement path');
+    check(startup&&uuid.test(startup.token)&&dirname(resolve(startup.directory))===launchDirectory(db,workspace)&&basename(startup.directory).startsWith(`.startup-${role}-`),'Invalid startup acknowledgement path');
     runtime=candidate;checkStartup(startup);process.env.PATH=runtime.path;
     store=new Store(db,name(payload.actor));store.use(workspace);
     await launchInternal(store,[role],nativeOptions({...payload.options,dryRun:false}),runtime);

@@ -10,6 +10,14 @@ import uuid
 from pathlib import Path
 
 if '--version' in sys.argv:
+    version_barrier = os.environ.get('ATTENDED_FIXTURE_VERSION_BARRIER')
+    if version_barrier:
+        Path(version_barrier + '.ready').write_text('ordinary version check paused')
+        deadline = time.monotonic() + 15
+        while not Path(version_barrier).exists():
+            if time.monotonic() > deadline:
+                raise RuntimeError('Fixture version barrier elapsed')
+            time.sleep(0.01)
     if os.environ.get('ATTENDED_FIXTURE_LATE_BUSY'):
         import sqlite3
         root = Path(os.environ['ATTENDED_FIXTURE_DB']).parent
@@ -21,6 +29,18 @@ if '--version' in sys.argv:
                 if count >= 2:
                     (root / 'late-busy').write_text('fixture busy')
     print('attended fixture 1')
+    sys.exit(0)
+
+
+ordinary_marker = os.environ.get('ATTENDED_FIXTURE_ORDINARY_MARKER')
+if ordinary_marker:
+    Path(ordinary_marker).write_text(str(os.getpid()))
+    finish = os.environ.get('ATTENDED_FIXTURE_ORDINARY_FINISH')
+    deadline = time.monotonic() + 15
+    while finish and not Path(finish).exists():
+        if time.monotonic() > deadline:
+            raise RuntimeError('Fixture ordinary provider finish elapsed')
+        time.sleep(0.01)
     sys.exit(0)
 
 
