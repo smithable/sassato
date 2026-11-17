@@ -1,3 +1,4 @@
+import { DIGEST_LIMIT, DigestWindow, digestText, digestGroup, messageSent, MESSAGE_NOW_SQL, type DigestEntry, type WaitDigest } from './wait-digest.js';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -7,15 +8,16 @@ import { workspaceSettings } from './workspace-settings.js';
 import { getNotificationProgress } from './notification-progress.js';
 
 export interface WaitResult {
-  reason:'urgent'|'reply-needed'|'own-work'|'open-work'|'stop'|'timeout'|'answer'|'blocker-resolved'|'blocker-assigned'|'dependency-dropped'|'task-assigned'|'task-ready'|'review-submitted'|'review-approved'|'review-rejected'|'supervisor-ping';
+  reason:'digest'|'urgent'|'reply-needed'|'own-work'|'open-work'|'stop'|'timeout'|'answer'|'blocker-resolved'|'blocker-assigned'|'dependency-dropped'|'task-assigned'|'task-ready'|'review-submitted'|'review-approved'|'review-rejected'|'supervisor-ping';
   role:string; cursor:number; message?:Row; stop?:Row;
   question?:string; blocker?:string; task?:string; tasks?:string[];
   /** Task version recorded by the workflow event, not a substitute for reading current work. */
   version?:number;
   nonce?:string;generation?:number;ping_deadline?:string;
   managed_observation?:string;
+  digest?:WaitDigest;
 }
-export interface WaitOptions { timeout?:number; stopFile?:string; since?:number; idleMinutes?:number }
+export interface WaitOptions { timeout?:number; stopFile?:string; since?:number; idleMinutes?:number; settle?:number; settleMax?:number }
 const maximum=(s:Store):number=>Number(s.get('SELECT coalesce(max(id),0) n FROM events WHERE workspace_id=?',s.ws)!.n);
 function available(s:Store,actor:string,condition:string,params:Param[],includeDoing=false):string[] {
   // These are the same gates as tasks --available, applied to event candidates only, except that a
@@ -148,9 +150,34 @@ function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
   if(tasks.length)return {...base,reason,task:tasks[0],tasks};
   return undefined;
 }
+function entryFor(s:Store,wake:WaitResult,event?:Row):DigestEntry {
+  const source=wake.message?messageSent(s,wake.message.id):event;
+  const kind=wake.message?.reply?'reply-needed':wake.reason;
+  const id=wake.message?.id??wake.question??wake.blocker??wake.task??String(event?.entity_id??'work');
+  let summary=wake.message?.summary,task=wake.task;
+  if(!summary&&wake.question) {const row=s.get('SELECT question,answer,task_id FROM questions WHERE workspace_id=? AND id=?',s.ws,Number(wake.question.slice(1)));summary=row?`${row.question}: ${row.answer??''}`:wake.question;task??=row?`T${row.task_id}`:undefined;}
+  if(!summary&&wake.task)summary=s.get('SELECT title FROM tasks WHERE workspace_id=? AND id=?',s.ws,Number(wake.task.slice(1)))?.title;
+  if(!summary)summary=(wake.tasks??[]).join(', ')||wake.reason;
+  return {id,...(source?{event_id:`E${source.id}`}:{}) ,from:String(wake.message?.sender??source?.actor??wake.role),kind,...(task?{task}:{}),summary:digestText(summary),group:digestGroup(kind)};
+}
+/** Once a wake is collecting, include relevant ordinary mail and completed work too. */
+function extraDuringDigest(s:Store,actor:string,event:Row):DigestEntry|undefined {
+  if(event.actor===actor)return undefined;
+  if(event.entity==='message'&&event.action==='sent') {
+    const row=s.get("SELECT m.id,m.sender,m.body,m.task_id FROM receipts r JOIN messages m ON m.workspace_id=r.workspace_id AND m.id=r.message_id WHERE r.workspace_id=? AND r.recipient=? AND r.state!='done' AND m.id=?",s.ws,actor,Number(String(event.entity_id).slice(1)));
+    if(row)return {id:`M${row.id}`,event_id:`E${event.id}`,from:row.sender,kind:'mail',...(row.task_id?{task:`T${row.task_id}`}:{}) ,summary:digestText(row.body),group:'other'};
+  }
+  if(event.entity==='task'&&event.action==='completed') {
+    const row=s.get('SELECT title FROM tasks WHERE workspace_id=? AND id=? AND (owner=? OR creator=?)',s.ws,Number(String(event.entity_id).slice(1)),actor,actor);
+    if(row)return {id:event.entity_id,event_id:`E${event.id}`,from:event.actor,kind:'task-finished',task:event.entity_id,summary:digestText(row.title),group:'finished'};
+  }
+  return undefined;
+}
 /** Read-only, non-consuming waiter. Save progress only after handling the returned notification. */
 export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitResult> {
   const actor=s.requireActor(),timeout=integer(options.timeout??0,'timeout seconds',0,2_147_483);
+  const settle=integer(options.settle??(s.role(actor).kind==='human'?0:120),'settle seconds',0,3600),settleMax=integer(options.settleMax??600,'settle maximum seconds',1,3600);
+  const window=new DigestWindow(settle,settleMax),entries=new Map<string,DigestEntry>();
   const configuredStopFile=options.stopFile??workspaceSettings(s).stop_file;
   const stopFile=configuredStopFile===null?null:resolve(configuredStopFile);
   const initial=s.snapshot(()=>{
@@ -176,6 +203,14 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
   });
   const latest=initial.latest;
   let cursor=initial.cursor;
+  const add=(entry:DigestEntry):boolean=>{
+    const key=entry.id.startsWith('M')?entry.id:entry.event_id??`${entry.id}:${entry.kind}`;
+    if(entries.has(key))return true;
+    if(entries.size>=DIGEST_LIMIT)return false;
+    entries.set(key,entry);window.add(performance.now());return true;
+  };
+  const digest=(flush:WaitDigest['flush'],immediate?:WaitResult):WaitResult=>({...(immediate??{reason:'digest' as const,role:actor}),cursor,
+    ...(entries.size?{digest:{entries:[...entries.values()],total:entries.size,flush,settle,settle_max:settleMax}}:{})});
   check(cursor<=latest,`Event cursor ${cursor} is ahead of this workspace's latest event ${latest}; use a cursor from this workspace`,4);
   if(initial.stopped)return {reason:'stop',role:actor,cursor,stop:initial.stopped};
   const deadline=timeout?performance.now()+timeout*1000:Infinity;
@@ -185,16 +220,36 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
   const idle=integer(options.idleMinutes??0,'idle minutes',0,10_080)*60_000;
   let idleSince=performance.now(),idleFrom=latest;
   for(;;) {
-    if(stopFile&&existsSync(stopFile))return {reason:'stop',role:actor,cursor,stop:{file:stopFile}};
+    if(stopFile&&existsSync(stopFile))return digest('immediate',{reason:'stop',role:actor,cursor,stop:{file:stopFile}});
     let more=false;
     const result=s.snapshot(():WaitResult|undefined=>{
       const stop=s.get('SELECT id,acknowledged_at FROM stop_requests WHERE workspace_id=? AND role=? AND cleared_at IS NULL',s.ws,actor);
-      if(stop)return {reason:'stop',role:actor,cursor,stop:{id:`R${stop.id}`,acknowledged:!!stop.acknowledged_at}};
-      const message=s.get("SELECT m.id,m.sender,substr(m.body,1,2000) AS body,length(m.body)>2000 AS truncated FROM receipts r JOIN messages m ON m.workspace_id=r.workspace_id AND m.id=r.message_id WHERE r.workspace_id=? AND r.recipient=? AND r.state IN ('unread','read') AND m.urgent=1 AND m.sender!=? ORDER BY m.id LIMIT 1",s.ws,actor,actor);
-      if(message)return {reason:'urgent',role:actor,cursor,message:{id:`M${message.id}`,sender:message.sender,summary:String(message.body).replace(/[\x00-\x1f\x7f]/g,' ').replace(/\s+/g,' ').trim(),truncated:!!message.truncated,...(message.truncated?{inbox_command:`sassato inbox --peek --as ${actor} --workspace ${s.workspace}`}:{})}};
+      if(stop)return digest('immediate',{reason:'stop',role:actor,cursor,stop:{id:`R${stop.id}`,acknowledged:!!stop.acknowledged_at}});
+      const messages=s.all(`SELECT m.id,m.sender,substr(m.body,1,2000) AS body,length(m.body)>2000 AS truncated,m.reply,m.task_id,${MESSAGE_NOW_SQL} AS wake_now
+        FROM receipts r JOIN messages m ON m.workspace_id=r.workspace_id AND m.id=r.message_id
+        WHERE r.workspace_id=? AND r.recipient=? AND r.state IN ('unread','read') AND m.urgent=1 AND m.sender!=?
+        ORDER BY wake_now DESC,m.id LIMIT ?`,s.ws,actor,actor,DIGEST_LIMIT+1);
+      for(const message of messages) {
+        const wake:WaitResult={reason:'urgent',role:actor,cursor,...(message.task_id?{task:`T${message.task_id}`}:{}) ,message:{id:`M${message.id}`,sender:message.sender,summary:String(message.body).replace(/[\x00-\x1f\x7f]/g,' ').replace(/\s+/g,' ').trim(),truncated:!!message.truncated,reply:!!message.reply,now:!!message.wake_now,...(message.truncated?{inbox_command:`sassato inbox --peek --as ${actor} --workspace ${s.workspace}`}:{})}};
+        if(!settle)return wake;
+        const included=add(entryFor(s,wake));
+        if(message.wake_now)return digest('immediate',wake);
+        if(!included)return digest('capacity');
+      }
+      if(entries.size&&window.reason(performance.now())==='max')return digest('max');
       const events=s.all('SELECT id,entity,entity_id,actor,action,detail FROM events WHERE workspace_id=? AND id>? ORDER BY id LIMIT 200',s.ws,cursor);
       more=events.length===200;
-      for(const event of events){const wake=workflow(s,actor,event);cursor=event.id;if(wake)return wake;}
+      for(const event of events) {
+        const wake=workflow(s,actor,event);
+        if(!settle){cursor=event.id;if(wake)return wake;continue;}
+        const entry=wake?entryFor(s,wake,event):entries.size?extraDuringDigest(s,actor,event):undefined;
+        if(entry&&!add(entry)) {
+          if(wake&&['answer','supervisor-ping'].includes(wake.reason))return digest('immediate',wake);
+          return digest('capacity'); // Never cross an omitted relevant event.
+        }
+        cursor=event.id;
+        if(wake&&['answer','supervisor-ping'].includes(wake.reason))return digest('immediate',wake);
+      }
       return undefined;
     });
     if(result)return result;
@@ -214,13 +269,19 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
           ORDER BY t.priority DESC,t.id LIMIT 20`,s.ws,actor,actor,s.role(actor).kind==='human'?1:0).map(r=>`T${r.id}`);
         return open.length?{reason:'open-work' as const,tasks:open}:undefined;
       });
-      if(own)return {reason:own.reason,role:actor,cursor,task:own.tasks[0],tasks:own.tasks};
+      if(own) {
+        const wake:WaitResult={reason:own.reason,role:actor,cursor,task:own.tasks[0],tasks:own.tasks};
+        if(!settle)return wake;
+        if(!add(entryFor(s,wake)))return digest('capacity');
+      }
       idleSince=performance.now();
     }
-    const remaining=deadline-performance.now();
-    if(remaining<=0)return {reason:'timeout',role:actor,cursor};
+    const at=performance.now(),flush=window.reason(at);
+    if(entries.size&&flush)return digest(flush);
+    const remaining=deadline-at;
+    if(remaining<=0)return entries.size?digest('deadline'):{reason:'timeout',role:actor,cursor};
     // A bounded snapshot permits writers and checkpoints between batches and sleeps.
-    await new Promise(resolve=>setTimeout(resolve,more?0:Math.min(500,remaining)));
+    await new Promise(resolve=>setTimeout(resolve,more?0:Math.min(500,remaining,window.deadline()-performance.now())));
   }
 }
 /** Backwards-compatible name; now also wakes for relevant workflow events. */

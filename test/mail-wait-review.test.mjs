@@ -27,7 +27,7 @@ function submit(f,task){return as(f.s,f.s.task(task.id).owner,()=>submitTask(f.s
 function review(f,task,approve,reviewer='b') {
   return as(f.s,reviewer,()=>reviewTask(f.s,task.id,{approve,note:approve?'Reviewed current version':'Revise the edge case',expected_version:showTask(f.s,task.id).version}));
 }
-function wait(f,role,since,extra={}) {f.reader.actor=role;return waitForWork(f.reader,{since,timeout:1,stopFile:f.stopFile,...extra});}
+function wait(f,role,since,extra={}) {f.reader.actor=role;return waitForWork(f.reader,{settle:0,since,timeout:1,stopFile:f.stopFile,...extra});}
 
 test('dropping and reopening supersedes a prior rejection held by a late waiter',async t=>{
   const f=fixture(t),task=work(f);submit(f,task);const since=f.cursor();review(f,task,false);

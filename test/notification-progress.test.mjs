@@ -21,7 +21,7 @@ function fixture(t) {
 }
 function as(s,role,fn) {const old=s.actor;s.actor=role;try{return fn();}finally{s.actor=old;}}
 function task(s,title) {return as(s,'human',()=>addTask(s,{title,forRole:'builder'}));}
-const wait=(f,options={})=>waitForWork(f.reader(),{timeout:1,stopFile:f.stopFile,...options});
+const wait=(f,options={})=>waitForWork(f.reader(),{settle:0,timeout:1,stopFile:f.stopFile,...options});
 
 test('progress uses role-owned versioned audit state and idempotent compare-and-set writes',t=>{
   const f=fixture(t),s=f.s;

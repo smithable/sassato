@@ -1,3 +1,4 @@
+import { messageIsNow } from './wait-digest.js';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename } from 'node:path';
 import { Store, type Row } from './storage.js';
@@ -18,7 +19,7 @@ function date(value: string, label: string): string {
   return normalized;
 }
 function limit(value: number | undefined, fallback = 20): number { return integer(value ?? fallback, 'limit', 1, 100); }
-function publicMessage(row: Row): Row { return { ...row, urgent:Boolean(row.urgent), reply:Boolean(row.reply), id: `M${row.id}`, task_id: row.task_id === null ? null : `T${row.task_id}` }; }
+function publicMessage(row: Row, immediate=false): Row { return { ...row, now:immediate, urgent:Boolean(row.urgent), reply:Boolean(row.reply), id: `M${row.id}`, task_id: row.task_id === null ? null : `T${row.task_id}` }; }
 function publicFact(row: Row): Row { return { ...row, id: `F${row.id}` }; }
 function externalId(value: string | undefined): string | null {
   if (value === undefined) return null;
@@ -157,18 +158,18 @@ export function endSession(s: Store, external?: string): Row {
   });
 }
 
-export function send(s: Store, recipients: string[] | 'all', body: string, options: { task?: string; urgent?: boolean; needsReply?: boolean } = {}): Row {
+export function send(s: Store, recipients: string[] | 'all', body: string, options: { task?: string; urgent?: boolean; needsReply?: boolean; now?: boolean } = {}): Row {
   const actor = s.requireActor(), content = text(body,'message');
   return s.tx(() => {
     const targets = [...new Set(recipients === 'all' ? roles(s).map(r => r.name as string).filter(r => r !== actor) : recipients.map(name))];
     check(targets.length > 0 && targets.length <= 100,'Choose 1–100 message recipients');
     targets.forEach(role => s.role(role));
     const task = options.task ? s.task(options.task).id : null, at = now();
-    const n = s.run('INSERT INTO messages(workspace_id,sender,body,task_id,created_at,urgent,reply) VALUES(?,?,?,?,?,?,?)',s.ws,actor,content,task,at,options.urgent?1:0,options.needsReply?1:0).lastInsertRowid;
+    const n = s.run('INSERT INTO messages(workspace_id,sender,body,task_id,created_at,urgent,reply) VALUES(?,?,?,?,?,?,?)',s.ws,actor,content,task,at,options.urgent||options.now?1:0,options.needsReply?1:0).lastInsertRowid;
     for (const recipient of targets) s.run('INSERT INTO receipts(workspace_id,message_id,recipient) VALUES(?,?,?)',s.ws,n,recipient);
     s.index('message',`M${n}`,`${actor} → ${targets.join(', ')}`,content,{role:actor,updated_at:at});
-    s.event('message',`M${n}`,'sent',{ recipients: targets, task: options.task ?? null, urgent:!!options.urgent, reply:!!options.needsReply });
-    return { id:`M${n}`,sender:actor,recipients:targets,urgent:!!options.urgent,reply:!!options.needsReply,body:content,task_id:options.task ?? null,created_at:at };
+    s.event('message',`M${n}`,'sent',{ recipients: targets, task: options.task ?? null, urgent:!!(options.urgent||options.now), reply:!!options.needsReply, now:!!options.now });
+    return { id:`M${n}`,sender:actor,recipients:targets,urgent:!!(options.urgent||options.now),reply:!!options.needsReply,now:!!options.now,body:content,task_id:options.task ?? null,created_at:at };
   });
 }
 export interface InboxOptions { peek?: boolean; state?: 'unread' | 'read' | 'done' | 'pending' | 'all'; limit?: number }
@@ -184,27 +185,32 @@ export function inbox(s: Store, options: InboxOptions = {}): Row[] {
       s.run("UPDATE receipts SET state='read',read_at=? WHERE workspace_id=? AND message_id=? AND recipient=? AND state='unread'",row.read_at,s.ws,row.id,actor);
       s.event('message',`M${row.id}`,'read',{ recipient: actor });
     }
-    return rows.map(publicMessage);
+    return rows.map(row=>publicMessage(row,messageIsNow(s,`M${row.id}`)));
   };
   return options.peek ? read() : s.tx(read);
 }
 export function outbox(s: Store, options: { limit?: number } = {}): Row[] {
   const actor = s.requireActor();
-  return s.snapshot(() => s.all('SELECT * FROM messages WHERE workspace_id=? AND sender=? ORDER BY id DESC LIMIT ?',s.ws,actor,limit(options.limit)).map(row => ({ ...publicMessage(row),receipts:s.all('SELECT recipient,state,read_at,done_at FROM receipts WHERE workspace_id=? AND message_id=? ORDER BY recipient',s.ws,row.id) })));
+  return s.snapshot(() => s.all('SELECT * FROM messages WHERE workspace_id=? AND sender=? ORDER BY id DESC LIMIT ?',s.ws,actor,limit(options.limit)).map(row => ({ ...publicMessage(row,messageIsNow(s,`M${row.id}`)),receipts:s.all('SELECT recipient,state,read_at,done_at FROM receipts WHERE workspace_id=? AND message_id=? ORDER BY recipient',s.ws,row.id) })));
 }
-export function acknowledge(s: Store, messageId: string): Row {
-  const actor = s.requireActor(), n = id(messageId,'M');
-  return s.tx(() => {
-    const row = s.get('SELECT * FROM receipts WHERE workspace_id=? AND message_id=? AND recipient=?',s.ws,n,actor);
-    check(row,'Message is not addressed to this role',3);
-    if (row.state !== 'done') {
-      const at = now();
-      s.run("UPDATE receipts SET state='done',read_at=coalesce(read_at,?),done_at=? WHERE workspace_id=? AND message_id=? AND recipient=?",at,at,s.ws,n,actor);
-      s.event('message',messageId,'done',{ recipient:actor });
+/** Validate the entire batch before mutating any receipt; retries are idempotent. */
+export function acknowledgeMany(s:Store,messageIds:string[]):Row[] {
+  const actor=s.requireActor();check(messageIds.length>0&&messageIds.length<=100,'Choose 1–100 message ids');
+  const messages=[...new Set(messageIds)].map(messageId=>({messageId,n:id(messageId,'M')}));
+  return s.tx(()=>{
+    const rows:Row[]=messages.map(({messageId,n})=>{
+      const row=s.get('SELECT * FROM receipts WHERE workspace_id=? AND message_id=? AND recipient=?',s.ws,n,actor);
+      check(row,`Message ${messageId} is not addressed to this role`,3);return {...row,message_id:messageId,n};
+    });
+    for(const row of rows)if(row.state!=='done') {
+      const at=now();
+      s.run("UPDATE receipts SET state='done',read_at=coalesce(read_at,?),done_at=? WHERE workspace_id=? AND message_id=? AND recipient=?",at,at,s.ws,row.n,actor);
+      s.event('message',row.message_id,'done',{recipient:actor});
     }
-    return { ...s.get('SELECT * FROM receipts WHERE workspace_id=? AND message_id=? AND recipient=?',s.ws,n,actor),message_id:messageId };
+    return rows.map(row=>({...s.get('SELECT * FROM receipts WHERE workspace_id=? AND message_id=? AND recipient=?',s.ws,row.n,actor),message_id:row.message_id}));
   });
 }
+export function acknowledge(s:Store,messageId:string):Row {return acknowledgeMany(s,[messageId])[0];}
 
 export interface FactInput { body: string; source: string; checked_at?: string; expected_version?: number }
 export function setFact(s: Store, key: string, input: FactInput): Row {
