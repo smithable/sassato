@@ -55,6 +55,7 @@ Decisions:  ask-human T1 QUESTION [--for HUMAN] [--options 'one|two'] [--recomme
 Mail:       send ROLE[,ROLE]|all TEXT [--re T1] [--urgent | --now]
             wait [--since EVENT_CURSOR] [--timeout SECONDS] [--settle SECONDS] [--settle-max SECONDS]
             ack M1 [M2 ...] (up to 100; atomic)
+            agents settle 120s, maximum 600s; --settle 0 returns the first wake
             inbox [--peek] [--state unread|read|done] | sent (or outbox) | ack M1
 Knowledge:  fact set KEY TEXT --source LOCATION [--expect VERSION]
             fact get KEY | fact history KEY | facts
@@ -132,6 +133,7 @@ function checkpointEvidence(path: string | undefined): unknown {
   } finally {closeSync(fd);}
 }
 function humanOutput(value: unknown, command?: string): string {
+  if(Array.isArray(value)&&command==='ack')return `Acknowledged ${value.map((row:Row)=>row.message_id).join(', ')}.`;
   if(Array.isArray(value)&&(command==='sent'||command==='outbox')) {
     return value.length?value.map((message:Row)=>`${message.id}: ${String(message.body).replace(/\s+/g,' ').slice(0,240)}\n  ${message.receipts.map((r:Row)=>`${r.recipient}: ${r.state==='done'?'acked':r.state}`).join(', ')}`).join('\n'):'No sent messages.';
   }
@@ -205,7 +207,7 @@ function humanOutput(value: unknown, command?: string): string {
       if (!row || typeof row !== 'object') return String(row);
       const r = row as Row;
       if (r.kind === 'question' || r.question) return `${r.id} ${r.task_id ?? ''} ${r.question}\n${r.options?.length ? `  Options: ${r.options.map((o: string,i: number)=>`${i+1}. ${o}`).join(' | ')}\n` : ''}${r.recommendation ? `  Recommend: ${r.recommendation}\n` : ''}${r.command ? `  Command: ${r.command}\n` : ''}`;
-      if (r.title || r.body || r.snippet) return [r.id,r.urgent?'URGENT':null,r.status ?? r.state,r.owner ?? r.sender ?? r.role,r.title ?? r.key, String(r.snippet ?? r.body ?? '').replace(/\s+/g,' ').slice(0,220), r.answered_in ? `answered in ${r.answered_in}` : null].filter(v=>v!==null&&v!==undefined&&v!=='').join(' · ');
+      if (r.title || r.body || r.snippet) return [r.id,r.now?'NOW':r.urgent?'URGENT':null,r.status ?? r.state,r.owner ?? r.sender ?? r.role,r.title ?? r.key, String(r.snippet ?? r.body ?? '').replace(/\s+/g,' ').slice(0,220), r.answered_in ? `answered in ${r.answered_in}` : null].filter(v=>v!==null&&v!==undefined&&v!=='').join(' · ');
       return JSON.stringify(r);
     }).join('\n');
   }

@@ -45,5 +45,5 @@ export function formatDigest(digest:WaitDigest,cursor:number):string {
 }
 
 /** Indexed by the public message id; legacy/imported sends without the flag are false. */
-export const MESSAGE_NOW_SQL=`coalesce((SELECT CASE WHEN json_valid(e.detail) THEN json_extract(e.detail,'$.now')=1 ELSE 0 END
+export const MESSAGE_NOW_SQL=`coalesce((SELECT CASE WHEN json_valid(e.detail) THEN json_type(e.detail,'$.now')='true' ELSE 0 END
   FROM events e WHERE e.workspace_id=m.workspace_id AND e.entity='message' AND e.entity_id='M'||m.id AND e.action='sent' ORDER BY e.id LIMIT 1),0)`;
