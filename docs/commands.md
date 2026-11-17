@@ -565,3 +565,32 @@ and `immediate: true` for answers/now/STOP. It uses the runtime quiet/max policy
 reports first-event versus batched wake counts and delay. It does not read databases
 or claim that event counts equal actual provider turns. Keep private traces outside
 the repository; document the historical audience projection and omitted event kinds.
+
+### Brief context changes and role status
+
+`context --brief --since CURSOR` lists new addressed mail, relevant task state changes,
+new or corrected facts (by key), and answers to questions asked by the role or on its
+current tasks. It does not repeat WIP, session snapshots, old mail or unchanged facts.
+An unchanged-fact count points to `sas facts`. An active STOP is always shown.
+
+The delta reads at most 2,000 audit events per call and returns up to 20 distinct
+records (`--limit 1..100`). Repeated changes to a record share one line showing its
+current state. The returned cursor stops before an omitted notification; when more
+changes remain, repeat `context --brief --since RETURNED_CURSOR`. This can repeat a
+record across pages and never acknowledges mail or saves notification progress.
+Keep using your handled wait cursor for notification progress.
+
+`context --brief` without `--since` keeps the bounded snapshot view for a fresh start.
+Every brief line is at most 200 Unicode characters, with control characters flattened
+and a public record ID for `sas show ID`. `--line-length 80..500` changes that limit.
+Non-brief context and its existing JSON snapshot retain their snapshot behavior.
+
+`status --as ROLE` prints one screen with the role's active tasks, open blockers
+waiting on it, mail awaiting its reply, saved notification cursor and waiter state.
+Each queue shows up to six records and points to detailed commands if more remain.
+`--line-length` also applies here. A waiter is armed only when its registered process
+identity and worker generation match; a stale observation is not evidence of a live
+waiter. Unmanaged waits have no managed observation and appear unregistered.
+`status --json` retains workspace totals and adds the structured role summary.
+Without a role, `status` keeps its previous workspace summary and JSON shape.
+Both views are read-only and leave receipts and notification progress unchanged.
