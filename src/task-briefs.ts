@@ -6,6 +6,7 @@ import { dirtyManifest } from './dirty-manifest.js';
 import { getNotificationProgress } from './notification-progress.js';
 import { assertWorkAllowed } from './control.js';
 import { assertPhysicalIdentity } from './repository-identity.js';
+import { CaptureBudget } from './capture-budget.js';
 
 export interface BriefInput {
   version:1; objective:string; acceptance:string[]; decisions:{decision:string;source:string}[];
@@ -46,11 +47,13 @@ export function validateBriefInput(value:unknown):BriefInput {
 const digest=(value:unknown):string=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function captureAndSaveBrief(s:Store,taskId:string,input:unknown,expectedVersion:number,intent?:{to:string;summary:string}):Row {
   const reported=validateBriefInput(input),actor=s.requireActor(),binding=currentBinding(s,taskId);
-  const identity=inspectCheckout(s,binding.checkout_id,binding.working_dir),manifest=dirtyManifest(identity.checkout_root);
+  const budget=new CaptureBudget();
+  const identity=inspectCheckout(s,binding.checkout_id,binding.working_dir,budget),manifest=dirtyManifest(identity.checkout_root,budget);
   const roleConfig=s.role(actor),roleConfigDigest=digest(roleConfig);
-  const fresh=inspectCheckout(s,binding.checkout_id,binding.working_dir);
-  check(JSON.stringify(identity)===JSON.stringify(fresh) && digest(manifest)===digest(dirtyManifest(identity.checkout_root)),'Git or dirty files changed during brief capture; retry',4);
+  const fresh=inspectCheckout(s,binding.checkout_id,binding.working_dir,budget);
+  check(JSON.stringify(identity)===JSON.stringify(fresh) && digest(manifest)===digest(dirtyManifest(identity.checkout_root,budget)),'Git or dirty files changed during brief capture; retry',4);
   return s.tx(()=>{
+    budget.check();
     assertWorkAllowed(s,actor);
     const task=s.task(taskId);
     check(task.owner===actor && ['doing','review'].includes(task.status),'Only the active task owner may save a brief',3);

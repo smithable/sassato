@@ -93,6 +93,10 @@ prompts. Configuration is validated before creating a database.
 `--open-work-roles a,b,c` names the roles woken when a task with no owner and no
 `--for` role becomes ready (`all`, the default, wakes every eligible role); a role left out still
 sees such tasks in `tasks --available` and is woken for work owned by or routed to it.
+An empty list (`--open-work-roles ''`) deliberately disables only unrouted open-work
+wakes, including idle reminders; it does not disable owned or explicitly routed work,
+mail, answers or STOP. Role names are strict lowercase identifiers: whitespace or
+uppercase aliases are rejected, not silently normalized.
 Use `none` to clear the default human or stop file. `role set NAME --kind human` adds a
 human; only an existing human can create/promote roles. Agent model/permission settings
 inherit provider defaults unless explicitly configured.
@@ -606,3 +610,8 @@ guards. `supervise --attended --role ROLE` requires a human terminal;
 freezes further CLI writes; it proves no enforced tool barrier. The two-generation
 probe requires fresh human Enter before each owned retirement and never enables
 unattended management. See the [operator runbook](attended-supervisor.md).
+
+For example, an agent's `wait --timeout 10` can return a collected digest with
+`flush: deadline` even though its default quiet window is 120 seconds. Treat exit 5
+as an **empty** timeout; a short timeout never discards notifications already
+collected. `--settle 0` explicitly selects immediate notification behavior.

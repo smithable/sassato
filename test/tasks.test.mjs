@@ -24,6 +24,18 @@ function as(s, actor, fn) { const before = s.actor; s.actor = actor; try { retur
 function expectCode(fn, code) { assert.throws(fn, e => e.code === code); }
 function count(s, table) { return s.get(`SELECT count(*) AS n FROM ${table}`).n; }
 
+test('only an exact finalized pending handoff stops blocking subsequent unbound releases',t=>{
+  const {s}=fixture(t),task=tasks.addTask(s,{title:'Reusable work'});tasks.takeTask(s,task.id);
+  const pending=s.event('task-handoff',task.id,'pending',{brief_id:'fixture'});
+  assert.throws(()=>tasks.releaseTask(s,task.id,'Still pending'),/Bound work/);
+  s.event('task-handoff',task.id,'finalized',{pending_event:`E${pending+100}`});
+  assert.throws(()=>tasks.releaseTask(s,task.id,'Wrong request finalized'),/Bound work/);
+  s.event('task-handoff',task.id,'finalized',{pending_event:`E${pending}`});
+  assert.equal(tasks.releaseTask(s,task.id,'Verified finalization').status,'open');
+  tasks.takeTask(s,task.id);s.event('task-handoff',task.id,'pending',{brief_id:'next'});
+  assert.throws(()=>tasks.releaseTask(s,task.id,'New request still pending'),/Bound work/);
+});
+
 // Separate process contention is covered by the CLI concurrency suite.
 test('claim is exclusive, leased, owner-only, and stale claims are never stolen', t => {
   const { s } = fixture(t), task = tasks.addTask(s, { title: 'Implement coordinator' });

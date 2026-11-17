@@ -7,7 +7,25 @@ import { join, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { Store } from '../dist/storage.js';
 import { initWorkspace } from '../dist/admin.js';
-import { admit, enqueue, needOf, releaseStale, jobStats, REFUSED } from '../dist/jobs.js';
+import { admit, enqueue, needOf, releaseStale, jobStats, maintenancePolicy, REFUSED } from '../dist/jobs.js';
+
+test('maintenance uses current policies across workspaces, ignores obsolete corrupt rows and rejects malformed current locks',t=>{
+  const f=fixture(t),s=f.store('human');
+  s.event('unrelated','fixture','configured',{});
+  s.run('INSERT INTO events(workspace_id,entity,entity_id,actor,action,detail,created_at) VALUES(?,?,?,?,?,?,?)',s.ws,'attended-enrollment','a','human','configured','{broken',new Date().toISOString());
+  s.event('attended-enrollment','a','configured',{maintenance_lock:'/new-lock'});
+  s.event('attended-enrollment','b','configured',{maintenance_lock:'/second-role-lock'});
+  initWorkspace(s,'other',fixtureConfig);
+  s.event('supervisor-policy','policy','configured',{policy:{maintenance_lock:'/other-workspace-lock'}});
+  const policy=maintenancePolicy(s);
+  assert.deepEqual(policy.paths,['/new-lock','/other-workspace-lock','/second-role-lock']);
+  s.event('attended-enrollment','a','configured',{});
+  assert.throws(()=>maintenancePolicy(s),/absolute path/);
+  s.event('attended-enrollment','a','configured',{maintenance_lock:'/repaired'});
+  assert.notEqual(maintenancePolicy(s).version,policy.version);
+  s.run('INSERT INTO events(workspace_id,entity,entity_id,actor,action,detail,created_at) VALUES(?,?,?,?,?,?,?)',s.ws,'supervisor-policy','policy','human','configured','{broken',new Date().toISOString());
+  assert.throws(()=>maintenancePolicy(s),/malformed/);
+});
 
 const bin = resolve('bin/sassato.js');
 function fixture(t) {

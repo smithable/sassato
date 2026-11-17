@@ -19,6 +19,16 @@ export interface WaitResult {
 }
 export interface WaitOptions { timeout?:number; stopFile?:string; since?:number; idleMinutes?:number; settle?:number; settleMax?:number }
 const maximum=(s:Store):number=>Number(s.get('SELECT coalesce(max(id),0) n FROM events WHERE workspace_id=?',s.ws)!.n);
+export function idleOpenWork(s:Store,actor:string):string[] {
+  const roles=workspaceSettings(s).open_work_roles,takesOpen=roles===null||roles.includes(actor)?1:0;
+  return s.all(`SELECT t.id FROM tasks t WHERE t.workspace_id=? AND t.status='open'
+    AND (t.owner IS NULL OR t.owner=?) AND (t.for_role IS NULL OR t.for_role=?)
+    AND (t.owner IS NOT NULL OR t.for_role IS NOT NULL OR ?=1) AND (t.human_only=0 OR ?=1)
+    AND NOT EXISTS (SELECT 1 FROM blockers b WHERE b.workspace_id=t.workspace_id AND b.task_id=t.id AND b.status='open')
+    AND NOT EXISTS (SELECT 1 FROM questions q WHERE q.workspace_id=t.workspace_id AND q.task_id=t.id AND q.status='pending')
+    AND NOT EXISTS (SELECT 1 FROM dependencies d JOIN tasks p ON p.workspace_id=d.workspace_id AND p.id=d.depends_on WHERE d.workspace_id=t.workspace_id AND d.task_id=t.id AND p.status!='done')
+    ORDER BY t.priority DESC,t.id LIMIT 20`,s.ws,actor,actor,takesOpen,s.role(actor).kind==='human'?1:0).map(r=>`T${r.id}`);
+}
 function available(s:Store,actor:string,condition:string,params:Param[],includeDoing=false):string[] {
   // These are the same gates as tasks --available, applied to event candidates only, except that a
   // task neither owned nor routed wakes only the roles in open_work_roles (every role when unset).
@@ -282,12 +292,7 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
         if(doing.length)return {reason:'own-work' as const,tasks:doing};
         // Only what can be taken now: no open blocker (a pending human question is one), no
         // unfinished dependency, nothing human-only for an agent (the gates of tasks --available).
-        const open=s.all(`SELECT t.id FROM tasks t WHERE t.workspace_id=? AND t.status='open' AND (t.owner=? OR (t.owner IS NULL AND t.for_role=?))
-          AND (t.human_only=0 OR ?=1)
-          AND NOT EXISTS (SELECT 1 FROM blockers b WHERE b.workspace_id=t.workspace_id AND b.task_id=t.id AND b.status='open')
-          AND NOT EXISTS (SELECT 1 FROM questions q WHERE q.workspace_id=t.workspace_id AND q.task_id=t.id AND q.status='pending')
-          AND NOT EXISTS (SELECT 1 FROM dependencies d JOIN tasks p ON p.workspace_id=d.workspace_id AND p.id=d.depends_on WHERE d.workspace_id=t.workspace_id AND d.task_id=t.id AND p.status!='done')
-          ORDER BY t.priority DESC,t.id LIMIT 20`,s.ws,actor,actor,s.role(actor).kind==='human'?1:0).map(r=>`T${r.id}`);
+        const open=idleOpenWork(s,actor);
         return open.length?{reason:'open-work' as const,tasks:open}:undefined;
       });
       if(own) {

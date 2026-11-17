@@ -8,6 +8,7 @@ import { Store } from '../dist/storage.js';
 import { initWorkspace } from '../dist/admin.js';
 import { addTask,takeTask,noteTask } from '../dist/tasks.js';
 import { workerTokenHash } from '../dist/managed-generation.js';
+import { assertOrdinaryLaunchAllowed } from '../dist/launch-admission.js';
 
 const token='fixture-worker-'.repeat(4);
 function fixture(t) {
@@ -49,6 +50,8 @@ test('changing workspace or actor inside a transaction rechecks managed authorit
 });
 test('workspace switching cannot bypass a globally reserved role while unrelated roles remain compatible',t=>{
   const {admin,worker}=fixture(t);initWorkspace(admin,'other');
+  assert.throws(()=>assertOrdinaryLaunchAllowed(admin,'builder'),/reserved by a managed/);
+  assert.doesNotThrow(()=>assertOrdinaryLaunchAllowed(admin,'reviewer'));
   for(const connection of [worker('',''),worker('2'),worker()]){
     connection.use('other');assert.throws(()=>addTask(connection,{title:'Workspace bypass'}),/reserved in another workspace/);
   }

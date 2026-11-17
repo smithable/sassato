@@ -20,6 +20,6 @@ export interface IndexHit {path:string;line:number;name:string;kind:string;signa
 export interface IndexResult {
   schema:number;repository:string;checkout:string;commit:string;view:string;
   state:'current'|'overlay'|'missing'|'stale';fallback:boolean;reason?:string;
-  query:string;items:IndexHit[];total:number;truncated:boolean;
+  query:string;items:IndexHit[];total:number;total_is_lower_bound?:boolean;truncated:boolean;
   modules:{path:string;description:string}[];
 }

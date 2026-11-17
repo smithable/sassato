@@ -22,6 +22,17 @@ function as(s,actor,fn){const old=s.actor;s.actor=actor;try{return fn();}finally
 const mail=(f,body,options={})=>as(f.s,'a',()=>send(f.s,['b'],body,options));
 const wait=(f,since,options={})=>waitForWork(f.reader,{since,stopFile:f.stopFile,timeout:3,settle:1,settleMax:2,...options});
 function later(t,ms,fn){const timer=setTimeout(fn,ms);t.after(()=>clearTimeout(timer));}
+test('message aliases are rejected before atomic acknowledgement and canonical now lookup is exact',t=>{
+  const f=fixture(t),one=mail(f,'Immediate',{now:true}),before=f.cursor();
+  for(const alias of [one.id.toLowerCase(),'M0'+one.id.slice(1),' '+one.id]) {
+    as(f.s,'b',()=>assert.throws(()=>acknowledgeMany(f.s,[one.id,alias]),/Expected M/));
+    assert.equal(f.cursor(),before);
+    assert.throws(()=>showRecord(f.s,alias));
+  }
+  assert.equal(showRecord(f.s,one.id).now,true);
+  as(f.s,'b',()=>assert.equal(acknowledgeMany(f.s,[one.id,one.id]).length,1));
+  assert.equal(f.s.get("SELECT count(*) n FROM events WHERE entity='message' AND entity_id=? AND action='done'",one.id).n,1);
+});
 test('one bounded digest groups a burst without consuming receipts or saving progress',async t=>{
   const f=fixture(t),since=f.cursor();mail(f,'Please choose\n'+ 'word '.repeat(50),{urgent:true,needsReply:true});
   const task=as(f.s,'human',()=>addTask(f.s,{title:'Assigned work',owner:'b'}));
