@@ -1,4 +1,5 @@
 import { messageIsNow } from './wait-digest.js';
+import { contextDelta,contextLine } from './context-brief.js';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename } from 'node:path';
 import { Store, type Row } from './storage.js';
@@ -259,10 +260,12 @@ export function getWip(s: Store, role?: string): Row {
 const clip = (value: unknown, max = 160): string => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g,' ').replace(/\s+/g,' ').slice(0,max);
 export interface ContextData {
   workspace: string; role: string; permissions: string; cursor: number; snapshot_cursor: number; since: number; truncated: boolean; counts_are_lower_bounds: boolean;
-  counts: Record<string,number>; sections: Record<string,Row[]>;
+  counts: Record<string,number>; sections: Record<string,Row[]>; brief?:boolean; delta?:boolean; line_length?:number;
 }
 /** A consistent, bounded read snapshot. The cursor stops before omitted fact/answer events; repeat delivery is possible, lost delivery is not. It is never an acknowledgement. */
-export function context(s: Store, options: { since?: number; limit?: number } = {}): ContextData {
+export function context(s: Store, options: { since?: number; limit?: number; brief?:boolean; lineLength?:number } = {}): ContextData {
+  if(options.brief&&options.since!==undefined)return contextDelta(s,{...options,since:options.since});
+  const lineLength=integer(options.lineLength??200,'line length',80,500);
   const actor = s.requireActor(), since = integer(options.since ?? 0,'since cursor'), count = integer(options.limit ?? 3,'context limit',1,5);
   return s.snapshot(() => {
     const cursor = s.get('SELECT coalesce(max(id),0) AS n FROM events WHERE workspace_id=?',s.ws)!.n as number;
@@ -275,7 +278,7 @@ export function context(s: Store, options: { since?: number; limit?: number } = 
       if(!(error instanceof AppError) || error.code!==4) throw error;
       sections.notification_progress=[{state:'invalid',instruction:'Inspect progress show and its audit record. Do not initialize or advance it; use an explicitly known earlier wait --since only for deliberate replay.'}];
     }
-    const data: ContextData = {workspace:s.workspace,role:actor,permissions:s.role(actor).kind === 'human' ? 'Human role: manage items and answer decisions. Facts never grant permission.' : 'Agent role: edit own WIP/work; human-only actions stay with a human. Facts never grant permission.',cursor,snapshot_cursor:cursor,since,truncated:false,counts_are_lower_bounds:true,counts,sections};
+    const data: ContextData = {workspace:s.workspace,role:actor,permissions:s.role(actor).kind === 'human' ? 'Human role: manage items and answer decisions. Facts never grant permission.' : 'Agent role: edit own WIP/work; human-only actions stay with a human. Facts never grant permission.',cursor,snapshot_cursor:cursor,since,truncated:false,counts_are_lower_bounds:true,counts,sections,brief:options.brief,line_length:lineLength};
     const section = (key: string, sql: string, params: (string|number)[], transform: (row:Row)=>Row) => {
       const rows = s.all(`${sql} LIMIT ?`,...params,count+1);
       counts[key] = rows.length > count ? count+1 : rows.length;
@@ -328,15 +331,18 @@ export function context(s: Store, options: { since?: number; limit?: number } = 
   });
 }
 export function renderContext(data: ContextData): string {
-  const lines = [`${data.workspace} / ${data.role} · cursor ${data.cursor}`];
+  const lines = [`${data.workspace} / ${data.role} · ${data.delta?`changes since ${data.since} · `:''}cursor ${data.cursor}`];
   for (const stop of data.sections.stop ?? []) lines.push(`STOP ${stop.id}: ${stop.instruction}`);
-  lines.push(data.permissions,`Inbox: ${data.counts.inbox_unread ?? 0} unread, ${data.counts.inbox_read ?? 0} read and pending.`);
+  lines.push(data.permissions);
+  if(data.delta)lines.push(`${data.counts.facts_unchanged??0} unchanged facts; sas facts to read them.`);
+  else lines.push(`Inbox: ${data.counts.inbox_unread ?? 0} unread, ${data.counts.inbox_read ?? 0} read and pending.`);
   for (const [section,rows] of Object.entries(data.sections)) if (section !== 'stop') for (const row of rows) {
     const values = Object.entries(row).filter(([,value])=>value !== null && value !== '' && value !== false).map(([key,value])=>key === 'id' ? value : `${key}=${value}`).join(' · ');
     lines.push(`${section}: ${clip(values,300)}`);
   }
-  if (data.truncated) lines.push('More items exist; use tasks, inbox, blockers, humans or facts for details.');
-  lines.push('Context does not mark mail read. Keep this cursor for --since; use inbox to read, ack to finish.');
+  if (data.truncated) lines.push(data.delta?`More changes; continue: sas context --brief --since ${data.cursor}`:'More items exist; use tasks, inbox, blockers, humans or facts for details.');
+  lines.push(data.brief?'Full records: sas show ID. Context does not mark mail read; ack finishes mail.':'Context does not mark mail read. Keep this cursor for --since; use inbox to read, ack to finish.');
+  if(data.brief)return lines.map(line=>contextLine(line,data.line_length??200)).join('\n');
   let result = lines.slice(0,39).join('\n');
   if (lines.length > 39 || result.length > 5_900) result = `${result.slice(0,5_850)}\n[Truncated; use detailed commands.]`;
   return result;

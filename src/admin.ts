@@ -1,10 +1,13 @@
 import { messageIsNow } from './wait-digest.js';
+import { processIdentity } from './coordination.js';
+import { getNotificationProgress } from './notification-progress.js';
+import { contextLine } from './context-brief.js';
 import { backup, DatabaseSync } from 'node:sqlite';
 import { closeSync, existsSync, mkdirSync, openSync, realpathSync, statSync, unlinkSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { cpus, freemem, loadavg, totalmem, uptime } from 'node:os';
 import { Store, databasePath, SCHEMA_VERSION, type Row, type Param } from './storage.js';
-import { check, id, integer, name, now, safe, text } from './errors.js';
+import { AppError, check, id, integer, name, now, safe, text } from './errors.js';
 import { normalizeOption, ROLE_OPTION_KEYS, validateRoleOptions } from './role-options.js';
 import { loadConfig, workingDirectory } from './config.js';
 import { validateSettings } from './workspace-settings.js';
@@ -58,13 +61,34 @@ export function attachWorkspace(s: Store, path: string): Row {
   });
 }
 export function status(s: Store): Row {
-  return s.snapshot(() => ({workspace:s.workspace,
+  const actor=s.requireActor();
+  return s.snapshot(() => {
+    let progress:Row|null=null;try{progress=getNotificationProgress(s)??null;}catch(error){if(!(error instanceof AppError)||error.code!==4)throw error;progress={state:'invalid'};}
+    const waiter=s.get('SELECT * FROM supervisor_waiters WHERE workspace_id=? AND role=? AND ended_at IS NULL',s.ws,actor);
+    const worker=s.get('SELECT generation FROM managed_workers WHERE workspace_id=? AND role=?',s.ws,actor);
+    const own=s.all("SELECT id,title,status,version FROM tasks WHERE workspace_id=? AND owner=? AND status NOT IN ('done','dropped') ORDER BY priority DESC,id LIMIT 7",s.ws,actor);
+    const waiting=s.all("SELECT b.id,b.task_id,substr(b.body,1,200) AS text FROM blockers b JOIN tasks t ON t.workspace_id=b.workspace_id AND t.id=b.task_id WHERE b.workspace_id=? AND b.waiting_on=? AND b.status='open' AND t.status NOT IN ('done','dropped') ORDER BY b.id LIMIT 7",s.ws,actor);
+    const replies=s.all("SELECT m.id,m.sender,substr(m.body,1,200) AS text FROM messages m JOIN receipts r ON r.workspace_id=m.workspace_id AND r.message_id=m.id WHERE m.workspace_id=? AND r.recipient=? AND r.state!='done' AND m.reply=1 ORDER BY m.id LIMIT 7",s.ws,actor);
+    return {workspace:s.workspace,role:actor,own_tasks:own.slice(0,6).map(row=>({...row,id:`T${row.id}`,title:contextLine(row.title)})),waiting_on_role:waiting.slice(0,6).map(row=>({...row,id:`B${row.id}`,task_id:`T${row.task_id}`})),replies:replies.slice(0,6).map(row=>({...row,id:`M${row.id}`})),more:{tasks:own.length>6,waits:waiting.length>6,replies:replies.length>6},notification_progress:progress?{cursor:progress.cursor,version:progress.version,state:progress.state??'saved'}:{state:'absent'},waiter:{registered:Boolean(waiter),armed:Boolean(waiter&&waiter.generation===(worker?.generation??0)&&processIdentity(waiter.pid)===waiter.process_start)},
     stop_requests:s.all('SELECT id,role,requested_at,acknowledged_at FROM stop_requests WHERE workspace_id=? AND cleared_at IS NULL ORDER BY role',s.ws).map(row=>({...row,id:`R${row.id}`})),
     tasks:s.all('SELECT status,count(*) AS count FROM tasks WHERE workspace_id=? GROUP BY status',s.ws),
     open_blockers:s.get("SELECT count(*) AS n FROM blockers WHERE workspace_id=? AND status='open'",s.ws)!.n,
     pending_questions:s.get("SELECT count(*) AS n FROM questions WHERE workspace_id=? AND status='pending'",s.ws)!.n,
     stale_claims:s.get("SELECT count(*) AS n FROM tasks WHERE workspace_id=? AND lease_until<? AND status IN ('doing','blocked','review')",s.ws,now())!.n,
-    cursor:s.get('SELECT coalesce(max(id),0) AS n FROM events WHERE workspace_id=?',s.ws)!.n}));
+    cursor:s.get('SELECT coalesce(max(id),0) AS n FROM events WHERE workspace_id=?',s.ws)!.n};
+  });
+}
+export function renderStatus(data:Row,lineLength=200):string {
+  integer(lineLength,'line length',80,500);
+  const lines=[`${data.workspace} / ${data.role} · cursor ${data.notification_progress.cursor??data.notification_progress.state} · latest ${data.cursor} · waiter ${data.waiter.armed?'armed':data.waiter.registered?'stale/unconfirmed':'unregistered'}`];
+  for(const stop of data.stop_requests.filter((row:Row)=>row.role===data.role))lines.push(`STOP ${stop.id}: finish safely and checkpoint; inspect sas stop-status.`);
+  for(const row of data.own_tasks)lines.push(`${row.id} ${row.status} · ${row.title}`);
+  if(!data.own_tasks.length)lines.push('No own active tasks.');
+  for(const row of data.waiting_on_role)lines.push(`${row.id} ${row.task_id} waits on you · ${row.text}`);
+  for(const row of data.replies)lines.push(`${row.id} ${row.sender} awaits a reply · ${row.text}`);
+  if(Object.values(data.more).some(Boolean))lines.push('More items exist; sas tasks, sas blockers, sas inbox --peek.');
+  lines.push('Full records: sas show ID. Read only; no progress or receipts changed.');
+  return lines.map(line=>contextLine(line,lineLength)).join('\n');
 }
 export function search(s: Store, query: string, options: {type?: string;role?: string;status?: string;since?: string;limit?:number;phrase?:boolean;prefix?:boolean} = {}): Row[] {
   text(query,'query',1000);

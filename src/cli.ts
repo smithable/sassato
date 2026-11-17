@@ -79,7 +79,7 @@ Control:    stop [ROLE...] [--all] [--timeout SECONDS | --no-wait | --force]
 Jobs:       job run --kind KIND [--wait | --no-wait] [--job-version TEXT] [--load more|same|less]
             [--mem MB] -- COMMAND [ARGS...] (heavy work: waits for room, measured)
             job list | job stats
-Read:       context [--brief] [--since EVENT_CURSOR] | status
+Read:       context [--brief] [--since EVENT_CURSOR] [--line-length N] | status [--line-length N]
             search TEXT [--type task,message,fact,event] [--phrase|--prefix]
 Migration:  import --backlog FILE --wip FILE --actions DIR --sessions FILE
             --dry-run (preview), then same paths --confirm DIGEST [--repair]
@@ -95,7 +95,7 @@ select workspace when not explicit. Writes require --as; human actions require a
 Lists default to bounded results; --limit N. Context never consumes inbox receipts.
 Exit codes: 0 success/no matches; 1 storage/runtime; 2 input; 3 identity/access; 4 conflict; 5 mail-wait timeout.
 `;
-const strings = ['settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes'];
+const strings = ['line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes'];
 const booleans = ['now','json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','wait','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
 const globalFlags = ['db','workspace','as','json','help'];
 const allowed: Record<string,string[]> = {
@@ -107,7 +107,7 @@ const allowed: Record<string,string[]> = {
   'fact set':['source','checked-at','expect','answers'],'fact get':[],'fact history':[],facts:['limit'],
   'wip show':[],'wip set':['current','next','notes','expect'],sessions:[], 'session register':['provider','session-id','pid','replace'],'session heartbeat':['session-id'],'session end':['session-id'],usage:['until'],
   stop:['all','timeout','no-wait','force'],'stop-status':['quiet','stop-file'],stopped:[],'resume-work':['all'],
-  context:['brief','since','limit'],status:[],'job run':['kind','wait','no-wait','job-version','load','mem'],'job list':[],'job stats':[],search:['type','owner','status','since','limit','phrase','prefix'],
+  context:['brief','since','limit','line-length'],status:['line-length'],'job run':['kind','wait','no-wait','job-version','load','mem'],'job list':[],'job stats':[],search:['type','owner','status','since','limit','phrase','prefix'],
   'supervise status':[],'supervise ping':[],'supervise ack':['generation'],
   'checkout register':['dir'],'checkout list':[],'checkout show':[],'checkout bind':['dir','task','provider','session-id','mode'],'checkout resolve':['task'],'checkout release':[],'brief save':['file','expect'],'brief show':[],
   'checkpoint show':[], 'checkpoint save':['current','next','notes','expect','evidence'], 'progress show':[], 'progress save':['cursor','expect'],
@@ -356,7 +356,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'stopped': {const request=arg('stop request');empty();result=control.acknowledgeStop(s,request);break;}
         case 'resume-work': result=control.resumeWork(s,p.splice(0),{all:bool('all')});break;
         case 'usage': result=c.setUsage(s,rest('usage note'),str('until'));break;
-        case 'context': empty();result=c.context(s,{since:num('since'),limit:num('limit')});break;
+        case 'context': empty();result=c.context(s,{since:num('since'),limit:num('limit'),brief:bool('brief'),lineLength:num('line-length')});break;
         case 'supervise status': empty();result=supervisor.supervisorStatus(s);break;
         case 'supervise ping': {const role=arg('worker role');empty();result=supervisor.requestSupervisorPing(s,role);break;}
         case 'supervise ack': {const nonce=arg('ping nonce');empty();result=supervisor.acknowledgeSupervisorPing(s,nonce,integer(need('generation'),'worker generation'));break;}
@@ -385,7 +385,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'backup': {const path=arg('backup destination');empty();result=await a.backupDatabase(s,path);break;}
       }
     }
-    console.log(bool('json')?JSON.stringify(result):command==='context'?c.renderContext(result as c.ContextData):humanOutput(result,command));
+    console.log(bool('json')?JSON.stringify(result):command==='context'?c.renderContext(result as c.ContextData):command==='status'?a.renderStatus(result as Row,num('line-length')):humanOutput(result,command));
   } catch(error) {
     const code=error instanceof AppError?error.code:typeof (error as NodeJS.ErrnoException)?.code==='string'&&(error as NodeJS.ErrnoException).code!.startsWith('ERR_PARSE_ARGS')?2:1;
     const message=error instanceof Error?error.message:'Unexpected failure';
