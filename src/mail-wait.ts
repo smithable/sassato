@@ -150,6 +150,21 @@ function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
   if(tasks.length)return {...base,reason,task:tasks[0],tasks};
   return undefined;
 }
+/** Immediate workflow signals may be behind a full mail page. Deliver them without crossing skipped events. */
+function priorityWorkflow(s:Store,actor:string,cursor:number):{wake:WaitResult;event:Row}|undefined {
+  const answer=s.get(`SELECT e.* FROM questions q JOIN tasks t ON t.workspace_id=q.workspace_id AND t.id=q.task_id
+    JOIN events e ON e.workspace_id=q.workspace_id AND e.entity='question' AND e.entity_id='H'||q.id AND e.action='answered'
+    WHERE q.workspace_id=? AND q.status='answered' AND (q.asked_by=? OR t.owner=?) AND e.id>? AND e.actor!=? ORDER BY e.id LIMIT 1`,s.ws,actor,actor,cursor,actor);
+  const ping=s.get(`SELECT e.* FROM supervisor_pings p LEFT JOIN managed_workers w ON w.workspace_id=p.workspace_id AND w.role=p.role
+    JOIN events e ON e.workspace_id=p.workspace_id AND e.entity='supervisor-ping' AND e.entity_id=p.role AND e.action='requested'
+      AND CASE WHEN json_valid(e.detail) THEN json_extract(e.detail,'$.nonce')=p.nonce ELSE 0 END
+    WHERE p.workspace_id=? AND p.role=? AND p.acknowledged_at IS NULL AND p.generation=coalesce(w.generation,0)
+      AND p.ping_epoch=coalesce(w.ping_epoch,0) AND (w.id IS NULL OR w.state IN ('running','draining')) AND e.id>? ORDER BY e.id LIMIT 1`,s.ws,actor,cursor);
+  for(const event of [answer,ping].filter((event):event is Row=>Boolean(event)).sort((a,b)=>a.id-b.id)) {
+    const wake=workflow(s,actor,event);if(wake)return {wake,event};
+  }
+  return undefined;
+}
 function entryFor(s:Store,wake:WaitResult,event?:Row):DigestEntry {
   const source=wake.message?messageSent(s,wake.message.id):event;
   const kind=wake.message?.reply?'reply-needed':wake.reason;
@@ -202,15 +217,15 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
     return {latest,cursor,stopped};
   });
   const latest=initial.latest;
-  let cursor=initial.cursor;
+  let cursor=initial.cursor,omitted=false;let priority:WaitResult|undefined;
   const add=(entry:DigestEntry):boolean=>{
     const key=entry.id.startsWith('M')?entry.id:entry.event_id??`${entry.id}:${entry.kind}`;
     if(entries.has(key))return true;
-    if(entries.size>=DIGEST_LIMIT)return false;
+    if(entries.size>=DIGEST_LIMIT){omitted=true;return false;}
     entries.set(key,entry);window.add(performance.now());return true;
   };
   const digest=(flush:WaitDigest['flush'],immediate?:WaitResult):WaitResult=>({...(immediate??{reason:'digest' as const,role:actor}),cursor,
-    ...(entries.size?{digest:{entries:[...entries.values()],total:entries.size,flush,settle,settle_max:settleMax}}:{})});
+    ...(entries.size?{digest:{entries:[...entries.values()],total:entries.size,flush,settle,settle_max:settleMax,has_more:omitted||Boolean(priority&&priority.cursor>cursor)}}:{})});
   check(cursor<=latest,`Event cursor ${cursor} is ahead of this workspace's latest event ${latest}; use a cursor from this workspace`,4);
   if(initial.stopped)return {reason:'stop',role:actor,cursor,stop:initial.stopped};
   const deadline=timeout?performance.now()+timeout*1000:Infinity;
@@ -225,6 +240,8 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
     const result=s.snapshot(():WaitResult|undefined=>{
       const stop=s.get('SELECT id,acknowledged_at FROM stop_requests WHERE workspace_id=? AND role=? AND cleared_at IS NULL',s.ws,actor);
       if(stop)return digest('immediate',{reason:'stop',role:actor,cursor,stop:{id:`R${stop.id}`,acknowledged:!!stop.acknowledged_at}});
+      const immediate=settle?priorityWorkflow(s,actor,cursor):undefined;priority=immediate?.wake;
+      if(immediate)add(entryFor(s,immediate.wake,immediate.event));
       const messages=s.all(`SELECT m.id,m.sender,substr(m.body,1,2000) AS body,length(m.body)>2000 AS truncated,m.reply,m.task_id,${MESSAGE_NOW_SQL} AS wake_now
         FROM receipts r JOIN messages m ON m.workspace_id=r.workspace_id AND m.id=r.message_id
         WHERE r.workspace_id=? AND r.recipient=? AND r.state IN ('unread','read') AND m.urgent=1 AND m.sender!=?
@@ -234,9 +251,9 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
         if(!settle)return wake;
         const included=add(entryFor(s,wake));
         if(message.wake_now)return digest('immediate',wake);
-        if(!included)return digest('capacity');
+        if(!included)return priority?digest('immediate',priority):digest('capacity');
       }
-      if(entries.size&&window.reason(performance.now())==='max')return digest('max');
+      if(entries.size&&window.reason(performance.now())==='max')return priority?digest('immediate',priority):digest('max');
       const events=s.all('SELECT id,entity,entity_id,actor,action,detail FROM events WHERE workspace_id=? AND id>? ORDER BY id LIMIT 200',s.ws,cursor);
       more=events.length===200;
       for(const event of events) {
@@ -245,12 +262,12 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
         const entry=wake?entryFor(s,wake,event):entries.size?extraDuringDigest(s,actor,event):undefined;
         if(entry&&!add(entry)) {
           if(wake&&['answer','supervisor-ping'].includes(wake.reason))return digest('immediate',wake);
-          return digest('capacity'); // Never cross an omitted relevant event.
+          return priority?digest('immediate',priority):digest('capacity'); // Never cross an omitted relevant event.
         }
         cursor=event.id;
         if(wake&&['answer','supervisor-ping'].includes(wake.reason))return digest('immediate',wake);
       }
-      return undefined;
+      return priority?digest('immediate',priority):undefined;
     });
     if(result)return result;
     if(idle&&performance.now()-idleSince>=idle) {

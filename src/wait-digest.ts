@@ -4,7 +4,7 @@ export const DIGEST_LIMIT=100;
 export const DIGEST_GROUPS=['needs-a-decision','review-requested','finished','other'] as const;
 export type DigestGroup=typeof DIGEST_GROUPS[number];
 export interface DigestEntry {id:string;event_id?:string;from:string;kind:string;task?:string;summary:string;group:DigestGroup;}
-export interface WaitDigest {entries:DigestEntry[];total:number;flush:'quiet'|'max'|'deadline'|'capacity'|'immediate';settle:number;settle_max:number;}
+export interface WaitDigest {entries:DigestEntry[];total:number;flush:'quiet'|'max'|'deadline'|'capacity'|'immediate';settle:number;settle_max:number;has_more:boolean;}
 export const digestText=(value:unknown):string=>Array.from(String(value??'').replace(/[\x00-\x1f\x7f]/g,' ').replace(/\s+/g,' ').trim()).slice(0,160).join('');
 /** Monotonic quiet/max policy shared by the runtime and timestamp replay. */
 export class DigestWindow {
@@ -39,7 +39,7 @@ export function formatDigest(digest:WaitDigest,cursor:number):string {
     lines.push(group+':');
     for(const entry of entries)lines.push(`${entry.event_id??entry.id} ${entry.id} · from ${entry.from} · ${entry.kind}${entry.task?' · '+entry.task:''} · ${entry.summary}`);
   }
-  if(digest.flush==='capacity')lines.push('Digest limit reached; handle these entries, save this cursor, then wait again for the remainder.');
+  if(digest.flush==='capacity'||digest.has_more)lines.push('More notifications remain; handle these entries, save this cursor, then wait again for the remainder.');
   lines.push('Read full records by id; receipts and notification progress are unchanged.');
   return lines.join('\n');
 }

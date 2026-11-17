@@ -8,6 +8,7 @@ import { Store } from '../dist/storage.js';
 import { initWorkspace,showRecord } from '../dist/admin.js';
 import { send,inbox,acknowledge,acknowledgeMany } from '../dist/coordination.js';
 import { addTask,takeTask,doneTask,submitTask,askHuman,answerQuestion } from '../dist/tasks.js';
+import { requestSupervisorPing,acknowledgeSupervisorPing } from '../dist/supervisor-monitor.js';
 import { requestStop } from '../dist/control.js';
 import { waitForWork } from '../dist/mail-wait.js';
 import { DIGEST_LIMIT,formatDigest } from '../dist/wait-digest.js';
@@ -102,4 +103,21 @@ test('CLI validates settle flags and supports now plus atomic multi-id ack',t=>{
   const first=run('send','b','Immediate','--now','--as','a');assert.equal(first.status,0,first.stderr);const one=JSON.parse(first.stdout);assert.equal(one.now,true);
   const two=mail(f,'Also acknowledge');assert.equal(run('ack',one.id,two.id,'--as','b').status,0);
   for(const args of [['--settle','-1'],['--settle-max','0']])assert.equal(run('wait','--since',String(f.cursor()),'--timeout','1','--as','b',...args).status,2);
+});
+
+test('human answers bypass an overflowing urgent-mail page while the continuation stays safe',async t=>{
+  const f=fixture(t),task=as(f.s,'b',()=>addTask(f.s,{title:'Backlogged decision'})),question=as(f.s,'b',()=>askHuman(f.s,task.id,{question:'Proceed?'})),since=f.cursor();
+  const mailItems=Array.from({length:DIGEST_LIMIT+1},(_,i)=>mail(f,'Backlog '+i,{urgent:true}));as(f.s,'human',()=>answerQuestion(f.s,question.id,'Yes'));
+  const first=await wait(f,since,{settle:120,settleMax:600});assert.equal(first.reason,'answer');assert.equal(first.question,question.id);assert.equal(first.cursor,since);assert.equal(first.digest.total,DIGEST_LIMIT);assert.equal(first.digest.has_more,true);
+  assert.ok(first.digest.entries.some(e=>e.id===question.id));
+  as(f.s,'b',()=>acknowledgeMany(f.s,first.digest.entries.filter(e=>e.id.startsWith('M')).map(e=>e.id)));
+  const next=await wait(f,first.cursor,{settle:120,settleMax:600});assert.equal(next.reason,'answer');assert.ok(next.cursor>first.cursor);assert.equal(next.digest.has_more,false);
+  assert.ok(next.digest.entries.some(e=>e.id===mailItems.at(-1).id));
+});
+test('supervisor pings bypass an overflowing urgent-mail page and still require explicit nonce acknowledgement',async t=>{
+  const f=fixture(t),since=f.cursor();Array.from({length:DIGEST_LIMIT+1},(_,i)=>mail(f,'Backlog '+i,{urgent:true}));
+  const ping=as(f.s,'human',()=>requestSupervisorPing(f.s,'b'));
+  const result=await wait(f,since,{settle:120,settleMax:600});assert.equal(result.reason,'supervisor-ping');assert.equal(result.nonce,ping.nonce);assert.equal(result.cursor,since);assert.equal(result.digest.has_more,true);
+  as(f.s,'b',()=>acknowledgeSupervisorPing(f.s,ping.nonce,0));
+  const next=await wait(f,result.cursor);assert.equal(next.reason,'digest');assert.equal(next.digest.flush,'capacity');
 });

@@ -491,8 +491,8 @@ Edits that clear approval while work remains in review request another review
 read the current task and supply that inspected version to `review --expect`. Notifications do not claim or
 review anything. Every result includes `cursor`; human output prints it too.
 Without `--since`, wait resumes from durable notification progress when present;
-otherwise it preserves the legacy behavior of starting at the latest event at
-invocation. Explicit `--since` always overrides progress. When progress is absent, retain the initial context `cursor`, inspect the full inbox
+otherwise it fails rather than inventing a new baseline. Explicit `--since` always
+overrides progress. When progress is absent, retain the initial context `cursor`, inspect the full inbox
 and relevant records (including truncated items), and reconcile pending work before
 initializing that captured cursor with `--expect 0`. Do not use `snapshot_cursor`
 or a later context cursor; leave progress absent if handling is incomplete.
@@ -503,7 +503,8 @@ progress unchanged so recovery replays the event. Never substitute a newer conte
 mail and STOP still return independently of progress. See [notification recovery](context-management.md#durable-notification-progress).
 
 Unacknowledged urgent messages remain eligible after reading until `ack M1` records
-handling. Wait output includes up to 2,000 characters and an identity-qualified inbox
+handling. Legacy single-event output (`--settle 0`) includes up to 2,000 characters
+and an identity-qualified inbox
 command when truncated. Without `--since` or saved notification progress, `wait`
 fails with an input error instead of silently skipping events. STOP still takes precedence.
 
@@ -538,7 +539,10 @@ collection starts, relevant ordinary mail and completed tasks created/owned by
 the role can join the digest, although they do not start an idle waiter themselves.
 
 The collector stops at 100 entries. If another relevant event would overflow it,
-the continuation cursor stays **before** that omitted event. Handle and acknowledge
+the continuation cursor stays **before** that omitted event. Immediate answers and
+supervisor pings bypass even a full urgent-mail page; the digest may repeat that
+signal until earlier work is handled and its safe cursor catches up. `has_more`
+marks continuation work in an immediate result. Handle and acknowledge
 the returned entries, save the returned cursor with `progress save --expect`, then
 wait again. Urgent mail remains eligible until acknowledged, even if its send event
 precedes the cursor; this makes an interrupted or repeated wait safe. The digest
