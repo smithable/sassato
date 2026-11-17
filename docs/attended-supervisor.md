@@ -26,9 +26,11 @@ In the operator's terminal, set these to the actual existing database, human rol
 and approved merge commit. Retain the previous installed release's package tarball
 for rollback and set `PREVIOUS_PACKAGE` to its absolute path; do not use a package
 with only a matching version number. Do not use an unreviewed branch or overwrite
-a backup:
+a backup. Run these installation/rollback blocks in a dedicated Bash shell with
+`set -e` so a failed command stops the procedure:
 
 ```bash
+set -e
 export PROBE_DB="$HOME/.local/share/sassato/sassato.db"
 export LIVE_HUMAN='your-existing-human-role'
 export APPROVED_MERGE='the-reviewed-40-character-merge-commit'
@@ -97,6 +99,7 @@ CLI, preserve the migrated database and any SQLite sidecars in a fresh directory
 then restore to the now-absent original path (restore refuses to overwrite a file):
 
 ```bash
+set -e
 npm install --global "$PREVIOUS_PACKAGE"
 sassato --version --json
 export ROLLBACK_EVIDENCE="$EVIDENCE/rollback-$(date +%Y-%m-%d-%H%M%S)"
@@ -105,7 +108,7 @@ python3 - <<'PY_ROLLBACK'
 import os, pathlib
 source = pathlib.Path(os.environ['PROBE_DB'])
 target = pathlib.Path(os.environ['ROLLBACK_EVIDENCE'])
-for suffix in ('', '-wal', '-shm'):
+for suffix in ('', '-wal', '-shm', '-journal'):
     path = pathlib.Path(str(source) + suffix)
     if path.exists():
         path.rename(target / path.name)
