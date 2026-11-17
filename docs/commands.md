@@ -401,6 +401,11 @@ window per role; it conflicts with --window and native terminal mode. Native int
 is supported. Native launch allows one role. Windows Terminal is opt-in and waits for verified provider startup; errors or startup timeout fail the command. `launch-unlock ROLE... --as alice` clears only demonstrably stale
 locks. See [provider and hook setup](integrations.md).
 
+Resume: a role resumes its registered provider session. A Codex session registers no ID, so for a Codex role launch
+resumes the newest saved Codex session (CODEX_HOME or ~/.codex, sessions/) that has the role's working directory and
+whose launch prompt names the role, searching the newest 200; so a plain `launch` of a Codex role now resumes where it
+used to start fresh. --fresh starts a new session; --resume fails when none is found.
+
 ## Output contract
 
 --json writes a single JSON value to stdout; errors are on stderr, with no success output.

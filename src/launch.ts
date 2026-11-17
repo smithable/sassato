@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { accessSync, closeSync, constants, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { accessSync, closeSync, constants, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from './storage.js';
@@ -14,6 +15,8 @@ import { assertOrdinaryLaunchAllowed,launchLockPath,launchDirectory } from './la
 export interface LaunchOptions {
   fresh?: boolean; resume?: boolean; all?: boolean; noPrompt?: boolean; dryRun?: boolean; newWindow?: boolean;
   terminal?: 'native'|'windows-terminal'; distro?: string; window?: string; stopFile?: string;
+  /** Where Codex keeps its saved sessions; CODEX_HOME or ~/.codex when not given (tests set it). */
+  codexHome?: string;
 }
 export interface LaunchPlan {
   role:string; provider:'claude'|'codex'; cwd:string; executable:string; args:string[];
@@ -56,7 +59,9 @@ export function planLaunch(store:Store, selected:string[], options:LaunchOptions
     const current=store.get('SELECT * FROM sessions WHERE workspace_id=? AND role=? ORDER BY (ended_at IS NULL) DESC,id DESC LIMIT 1',store.ws,role);
     const state=current?sessionState(current):'ended';
     check(state!=='unknown',`${role} has a session whose process cannot be verified. Check it, then explicitly end its registry entry before launching`,4);
-    const sessionId=!options.fresh&&current?.provider===provider&&current.external_id ? String(current.external_id):null;
+    const stored=!options.fresh&&current?.provider===provider&&current.external_id ? String(current.external_id):null;
+    // A Codex session never registers its own ID, so resume finds it in Codex's saved sessions instead.
+    const sessionId=stored??(!options.fresh&&provider==='codex'?savedCodexSession(store.workspace,role,cwd,options.codexHome):null);
     if(sessionId) check(uuid.test(sessionId),`Stored session ID for ${role} is invalid; use --fresh after checking the old session`,4);
     check(!options.resume||sessionId,`No usable saved ${provider} session for ${role}; use --fresh`,4);
     const args:string[]=[];
@@ -74,6 +79,41 @@ export function planLaunch(store:Store, selected:string[], options:LaunchOptions
     if(!options.noPrompt) args.push(bootstrapPrompt(store.workspace,role,provider));
     return {role,provider,cwd,executable:resolveExecutable(provider,false),args,mode:sessionId?'resume':'fresh',sessionId,status:state==='running'?'already-running':'ready',terminal,window:terminal==='windows-terminal'?(options.newWindow?'new':options.window??store.workspace):null,stopFile:stopPath(store,options),workspace:store.workspace};
   });
+}
+/**
+ * The newest saved Codex session that sassato launched for this role: Codex keeps each session as
+ * sessions/YYYY/MM/DD/rollout-<time>-<id>.jsonl under CODEX_HOME, starting with its metadata (id,
+ * working directory) and then the launch prompt as the first user message beginning "You are the".
+ * Roles may share a working directory, so the prompt's role decides, not the directory alone.
+ */
+export function savedCodexSession(workspace:string,role:string,cwd:string,home=process.env.CODEX_HOME??join(homedir(),'.codex')):string|null {
+  const marker=`You are the ${workspace} worker role ${role}. `,files:string[]=[];
+  const walk=(directory:string,depth:number):void=>{
+    let entries;try {entries=readdirSync(directory,{withFileTypes:true});} catch {return;}
+    for(const entry of entries) {
+      const path=join(directory,entry.name);
+      if(entry.isDirectory()&&depth<3)walk(path,depth+1);
+      else if(entry.isFile()&&/^rollout-.*\.jsonl$/.test(entry.name))files.push(path);
+    }
+  };
+  walk(join(home,'sessions'),0);
+  files.sort((a,b)=>basename(b).localeCompare(basename(a))); // the name starts with the session's start time
+  for(const file of files.slice(0,200)) { // the newest 200: a role with no match never reads much
+    let head:string;
+    // The first MB: the prompt comes about 120 KB in, after Codex's own instructions.
+    try {const fd=openSync(file,'r');try {const buffer=Buffer.alloc(1<<20);head=buffer.subarray(0,readSync(fd,buffer,0,buffer.length,0)).toString('utf8');} finally {closeSync(fd);}} catch {continue;}
+    let meta:{id?:unknown,cwd?:unknown}|null=null,prompt:string|null=null;
+    for(const line of head.split('\n')) {
+      let record;try {record=JSON.parse(line);} catch {continue;}
+      if(record?.type==='session_meta') meta=record.payload??null;
+      else if(record?.type==='response_item'&&record.payload?.type==='message'&&record.payload.role==='user') {
+        const content=record.payload.content,said=(Array.isArray(content)?content:[]).map((part:{text?:unknown})=>typeof part?.text==='string'?part.text:'').join('');
+        if(said.startsWith('You are the ')) {prompt=said;break;}
+      }
+    }
+    if(meta&&meta.cwd===cwd&&typeof meta.id==='string'&&uuid.test(meta.id)&&prompt?.startsWith(marker))return meta.id;
+  }
+  return null;
 }
 function bootstrapPrompt(workspace:string,role:string,provider:'claude'|'codex'):string {
   const identity=`--as ${role} --workspace ${workspace}`;
