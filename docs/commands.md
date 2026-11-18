@@ -631,7 +631,7 @@ collected. `--settle 0` explicitly selects immediate notification behavior.
 `sas wake` replaces the waiter's read-handle-save routine with one call. It is the background waiter:
 
 ```sh
-sas wake --since 123 --as builder                    # first wake after context
+sas wake --since 123 --idle-minutes 50 --as builder  # first wake after context
 sas wake --since 140 --ack M12,M13 --as builder      # the re-arm: acknowledge what was handled, wait again
 ```
 
@@ -653,14 +653,14 @@ In one call, `wake`:
    last line saying so. A wake whose output never reached the session saves nothing. If progress moved while
    it waited (another waiter or session), nothing is saved, that line says not to re-arm from this cursor,
    and the exit status is 4;
-5. ends with the exact re-arm command (with the same `--stop-file`, if one was given), and `--ack` for the
+5. ends with the exact re-arm command (with the same `--idle-minutes` and `--stop-file`, if given), and `--ack` for the
    urgent and needs-reply mail it showed.
 
 A wake with nothing new prints one line and the save line (`Nothing new for builder · cursor 140 · re-arm: …`,
 `Cursor 140 saved.`).
 A STOP saves nothing and offers no re-arm.
 
-Saving at wake time means the role attests that it **read** the entries, not that it finished them. Work
+Saving at wake time means the role attests that it **read** the entries, not that it finished them. After a restart, a role reads `sassato context`'s reviews, replies and blockers sections, because the cursor no longer marks what was handled. Work
 that cannot be finished at once goes on its task (a note or a block). Urgent mail keeps coming back until
 it is acknowledged.
 

@@ -140,3 +140,9 @@ test('nothing is saved until the caller commits, after printing', async t => {
   assert.equal(out.commit().saved, true);
   assert.equal(getNotificationProgress(f.b).cursor, out.result.cursor);
 });
+
+test('the re-arm keeps the idle wake it was given', async t => {
+  const f = fixture(t);
+  const out = await quick(f, { timeout: 1, idleMinutes: 50 });
+  assert.match(out.text, /re-arm: sassato wake --since \d+ --idle-minutes 50 --as b --workspace team/);
+});

@@ -74,7 +74,8 @@ export async function wake(s: Store, options: WakeOptions = {}): Promise<WakeOut
   const result = await waitWithManagedObservation(s, { ...options, since });
   const quote = (value: string) => /^[\w./~:@%+=,-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
   const stopFlag = options.stopFile ? ` --stop-file ${quote(options.stopFile)}` : '';
-  const rearm = (ack: string[]) => `sassato wake --since ${result.cursor} --as ${actor} --workspace ${s.workspace}${stopFlag}${ack.length ? ` --ack ${ack.join(',')}` : ''}`;
+  const idleFlag = options.idleMinutes ? ` --idle-minutes ${options.idleMinutes}` : '';
+  const rearm = (ack: string[]) => `sassato wake --since ${result.cursor}${idleFlag} --as ${actor} --workspace ${s.workspace}${stopFlag}${ack.length ? ` --ack ${ack.join(',')}` : ''}`;
   const lines: string[] = [];
   if (acknowledged.length) lines.push(`Acknowledged ${acknowledged.join(', ')}.`);
   if (result.reason === 'stop') {

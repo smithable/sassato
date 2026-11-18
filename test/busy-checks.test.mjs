@@ -116,13 +116,16 @@ test('a timed-out or cancelled final check never reuses an early idle observatio
 
 test('waiting retries only busy and unknown checks; another stop observes every check anew',async t=>{
   const {s,dir}=fixture(t),counts={idle:join(dir,'idle'),busy:join(dir,'busy'),unknown:join(dir,'unknown')};
-  const counted=(name,failures,code)=>command(name,`const fs=require('node:fs'),path=${JSON.stringify(counts[name])};let n=0;try{n=Number(fs.readFileSync(path,'utf8'))}catch{}fs.writeFileSync(path,String(++n));process.exit(n<=${failures}?${code}:1)`);
+  // Each check writes its count before exiting. With the helper's 500 ms timeout, a slow CI runner could time out a
+  // check after its write, which the stop rightly counts as unknown and runs again ([1,2,4], T977); this test is
+  // about which checks are retried, not timeouts, so its checks get room.
+  const counted=(name,failures,code)=>command(name,`const fs=require('node:fs'),path=${JSON.stringify(counts[name])};let n=0;try{n=Number(fs.readFileSync(path,'utf8'))}catch{}fs.writeFileSync(path,String(++n));process.exit(n<=${failures}?${code}:1)`,5000);
   setWorkspaceSettings(s,{busy_checks:[counted('idle',0,0),counted('busy',1,0),counted('unknown',2,2)]});
-  const cancellation=new AbortController(),timer=setTimeout(()=>cancellation.abort(),3000);
+  const cancellation=new AbortController(),timer=setTimeout(()=>cancellation.abort(),20_000);
   let report;try{report=await stop(s,[],{all:true,signal:cancellation.signal});}finally{clearTimeout(timer);}
   assert(report.complete);assert.equal(report.machine_quiet,true);assert(!report.timed_out);
   assert.deepEqual(Object.values(counts).map(path=>Number(readFileSync(path,'utf8'))),[1,2,3]);
-  const repeated=await stop(s,[],{all:true,timeout:2});assert(repeated.complete);
+  const repeated=await stop(s,[],{all:true,timeout:20});assert(repeated.complete);
   assert.deepEqual(Object.values(counts).map(path=>Number(readFileSync(path,'utf8'))),[2,3,4]);
 });
 

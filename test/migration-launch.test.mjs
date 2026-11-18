@@ -331,7 +331,7 @@ test('Claude bootstrap snapshots then arms one role-scoped background waiter bef
   const context='sassato context --json --as a --workspace test';
   assert.doesNotMatch(prompt,/context advise|Ask the human.*(?:compact|fresh)/i);
   assert.match(prompt,/After meaningful progress/);assert.match(prompt,/Keep native automatic compaction enabled/);
-  const waiter='sassato wake --since CURSOR --as a --workspace test';
+  const waiter='sassato wake --since CURSOR --idle-minutes 50 --as a --workspace test';
   assert(prompt.indexOf(context)>=0);assert(prompt.indexOf(context)<prompt.indexOf(waiter));
   assert.match(prompt,/sections.notification_progress\[0\].cursor as CURSOR/);
   assert.match(prompt,/preserving existing progress/);
@@ -349,6 +349,7 @@ test('Claude bootstrap snapshots then arms one role-scoped background waiter bef
   assert.match(prompt,/it has already saved the notification cursor, and it ends with the exact re-arm command/);
   assert.match(prompt,/one sassato checkpoint save --as a --workspace test\) in one command/);
   assert.match(prompt,/adding --ack for the urgent mail you handled/);
+  assert.match(prompt,/After a restart, read the reviews, replies and blockers sections of sassato context, because the cursor no longer marks what was handled/);
   assert.match(prompt,/BEFORE beginning work or going idle, start exactly one native Claude Code background tool-task/);
   assert.match(prompt,/If one waiter is already active, keep it/);
   assert.match(prompt,/Never use a foreground wait, shell &, nohup, or an outer shell loop/);
