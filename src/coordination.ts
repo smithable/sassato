@@ -98,12 +98,16 @@ function providerProcess(pid: number, provider: string): boolean {
       return executable === provider || (provider === 'codex' && executable === 'codex-cli');
     })) return true;
     // A native install runs as the file its launcher links to (Claude Code: ~/.local/bin/claude -> versions/2.1.327),
-    // so argv[0] is that file's name. Accept the process's executable when it is the launcher's own file, or a
-    // version-named file beside it (the launcher moved to a newer version while this process runs). Whole paths only.
+    // so argv[0] is that file's name. Accept the process's executable when it is the launcher's own file (same device
+    // and inode), or a version-named file beside it (the launcher moved to a newer version while this process runs). Whole paths only.
+    // The launcher must resolve to the provider's own file, never a shared runtime such as node.
     const launcher = launcherPath(provider);
-    if (launcher === null) return false;
-    const executable = readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/,'');
-    return executable === launcher || (dirname(executable) === dirname(launcher) && versionName.test(basename(launcher)) && versionName.test(basename(executable)));
+    if (launcher === null || !(basename(launcher) === provider || versionName.test(basename(launcher)))) return false;
+    const running = statSync(`/proc/${pid}/exe`), installed = statSync(launcher);
+    if (running.dev === installed.dev && running.ino === installed.ino) return true;
+    // A replaced or deleted file reads as '<path> (deleted)' and fails here: fail closed.
+    const executable = readlinkSync(`/proc/${pid}/exe`);
+    return versionName.test(basename(launcher)) && dirname(executable) === dirname(launcher) && versionName.test(basename(executable));
   } catch { return false; }
 }
 export function sessionState(row: Row): 'ended' | 'running' | 'stale' | 'unknown' {

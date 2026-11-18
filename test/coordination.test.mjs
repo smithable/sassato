@@ -286,19 +286,27 @@ test('a provider started through its launcher\'s resolved, versioned file verifi
   symlinkSync(join(versions,'2.1.327'),join(bin,'claude'));withPath(t,bin);
   assert.equal(c.registerSession(s,{provider:'claude',external_id:sessionId,pid:current.pid}).pid,current.pid);
   // After an update the launcher points at a newer version; the running older one still verifies.
-  const updated=await native(t,join(versions,'2.1.328'));
-  assert.equal(as(s,'b',()=>c.registerSession(s,{provider:'claude',external_id:sessionId,pid:updated.pid})).pid,updated.pid);
+  copyFileSync('/bin/sleep',join(versions,'2.1.328'));rmSync(join(bin,'claude'));symlinkSync(join(versions,'2.1.328'),join(bin,'claude'));
+  assert.equal(as(s,'b',()=>c.registerSession(s,{provider:'claude',external_id:sessionId,pid:current.pid})).pid,current.pid);
   // Same folder, not a version name: refused.
   const helper=await native(t,join(versions,'helper'));
   assert.throws(()=>c.registerSession(s,{provider:'claude',external_id:sessionId,pid:helper.pid}),/not a verifiable/);
-  // A 'claude' substring in the path or argv is not enough.
+  // A 'claude' substring in the path or argv is not enough (a live node process running claude-helper.mjs under claude/).
   mkdirSync(join(dir,'claude'));
-  const lookalike=await native(t,join(dir,'claude','claude-helper'),['60','myclaude']);
+  const lookalike=await provider(t,join(dir,'claude'),'-helper');
   assert.throws(()=>c.registerSession(s,{provider:'claude',external_id:sessionId,pid:lookalike.pid}),/not a verifiable/);
   // A version-named file outside the launcher's folder: refused.
   mkdirSync(join(dir,'other'));
   const elsewhere=await native(t,join(dir,'other','2.1.327'));
   assert.throws(()=>c.registerSession(s,{provider:'claude',external_id:sessionId,pid:elsewhere.pid}),/not a verifiable/);
+  // A launcher that resolves to a shared runtime (node) does not make every node process a provider.
+  rmSync(join(bin,'claude'));symlinkSync(process.execPath,join(bin,'claude'));
+  const script=await provider(t,dir,'-other');
+  assert.throws(()=>c.registerSession(s,{provider:'claude',external_id:sessionId,pid:script.pid}),/not a verifiable/);
+  rmSync(join(bin,'claude'));symlinkSync(join(versions,'2.1.328'),join(bin,'claude'));
+  // A replaced (deleted) file: refused.
+  const replaced=await native(t,join(versions,'2.1.329'));rmSync(join(versions,'2.1.329'));
+  assert.throws(()=>c.registerSession(s,{provider:'claude',external_id:sessionId,pid:replaced.pid}),/not a verifiable/);
   // A dead process: refused.
   current.kill();await once(current,'exit');
   assert.throws(()=>c.registerSession(s,{provider:'claude',external_id:sessionId,pid:current.pid}),/not a verifiable/);
