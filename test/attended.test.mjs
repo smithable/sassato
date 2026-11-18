@@ -102,9 +102,11 @@ test('live ancestry rejects recycled identities, reparenting, root exit and unre
   assert.equal(result.status,0,result.stdout+result.stderr);assert.equal(JSON.parse(result.stdout).passed,true);
 });
 
-for(const race of ['generation','worker-tuple','binding'])test(`changed ${race} during readiness capture cannot commit a brief`,t=>{
-  const f=fixture(t),result=f.drive('complete',{ATTENDED_FIXTURE_WORKER_RACE:race});
+for(const race of ['generation','worker-tuple','binding','session'])test(`changed ${race} after readiness capture cannot commit a brief`,t=>{
+  const f=fixture(t),result=f.drive('complete',{ATTENDED_FIXTURE_TX_RACE:race,ATTENDED_FIXTURE_TX_PRELOAD:resolve('test/fixtures/attended-tx-race.mjs')});
   assert.notEqual(result.code,0,result.output);assert.equal(result.approvals,0);
+  const expected={generation:/generation is missing or stale/,'worker-tuple':/Worker identity or generation changed/,binding:/Binding changed/,session:/Bound session changed before readiness/};
+  assert.match(result.output,expected[race]);
   assert.equal(f.s.get('SELECT count(*) n FROM task_briefs').n,0);
   assert.equal(f.s.get("SELECT count(*) n FROM events WHERE action='attended-ready'").n,0);
 });

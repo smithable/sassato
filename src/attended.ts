@@ -114,15 +114,17 @@ export function processObservation(w:Row,retire=false):Row {
   check(!result.error && result.status===0,`Attended process observation failed: ${result.stdout.trim()||'unknown identity/membership'}`,4);
   return JSON.parse(result.stdout);
 }
-function ownCaller(s:Store,w:Row):void {
+function sameWorker(s:Store,w:Row):void {
   s.authenticateManaged();
   check(digest(worker(s,w.role))===digest(w),'Worker identity or generation changed',4);
+}
+function ownCaller(s:Store,w:Row):void {
+  sameWorker(s,w);
   check(Number.isSafeInteger(w.pid) && w.pid>1 && typeof w.process_start==='string','Recorded worker identity is missing',4);
   const result=spawnSync('python3',['-B',fileURLToPath(new URL('../bin/attended-ancestry.py',import.meta.url)),String(process.pid),String(w.pid),w.process_start],{encoding:'utf8',timeout:2000,maxBuffer:16384,shell:false});
   check(!result.error && result.status===0,'Command must have a proven live ancestry to the owned provider',3);
   check(JSON.parse(result.stdout).authorized===true,'Caller ancestry authorization is missing',3);
-  s.authenticateManaged();
-  check(digest(worker(s,w.role))===digest(w),'Worker identity or generation changed',4);
+  sameWorker(s,w);
 }
 export function attendedAssignment(s:Store):Row {
   return s.snapshot(()=>{
@@ -143,7 +145,7 @@ export function reconcileAttended(s:Store,externalId:string):Row {
   // Read recovery inputs without consuming receipts or advancing progress.
   const initial=context(s),mail=inbox(s,{peek:true,limit:100});
   return s.tx(()=>{
-    permitted(s,p);reservationEqual(s,w.role,snapshot);ownCaller(s,w);
+    permitted(s,p);reservationEqual(s,w.role,snapshot);sameWorker(s,w);
     check(digest(latest(s,w))===digest(t),'Generation transition changed',4);
     const session=registerSession(s,{provider:w.provider,external_id:externalId,pid:w.pid,replace:true});
     let binding:Row;
@@ -162,14 +164,15 @@ export function readyAttended(s:Store,report:unknown,expected:number):Row {
   check(w.state==='running','Worker must be running before cooperative handover',4);settled(s,w.role);
   const snapshot=attendedSnapshot(s,w.role,p,JSON.parse(w.context).configuration),binding=currentBinding(s,p.task);
   check(binding.id===w.binding_id && binding.provider_session_id===w.external_id && binding.provider===w.provider && binding.checkout_id===w.checkout_id,'Worker binding identity changed',4);
-  const boundSession=s.get('SELECT pid,process_start,external_id FROM sessions WHERE id=?',binding.session_row_id);
-  check(boundSession && boundSession.pid===w.pid && boundSession.process_start===w.process_start && boundSession.external_id===w.external_id,'Bound session identity changed',4);
+  const boundSession=s.get('SELECT * FROM sessions WHERE id=?',binding.session_row_id);
+  check(boundSession && !boundSession.ended_at && boundSession.pid===w.pid && boundSession.process_start===w.process_start && boundSession.external_id===w.external_id,'Bound session identity changed',4);
   check(s.task(p.task).version===expected,'Task version changed',4);check(reported.configuration.digest===snapshot.configuration_digest,'Brief configuration digest differs',4);
   const body={version:1,reported,observed:{...snapshot,worker_generation:w.generation,binding_id:binding.id},readiness:'cooperative-attended; worker declares every tool/background job settled; no enforced barrier or escape containment'};
   check(Buffer.byteLength(JSON.stringify(body))<=32768,'Complete attended brief exceeds 32768 bytes');
   return s.tx(()=>{
-    permitted(s,p);reservationEqual(s,w.role,snapshot);settled(s,w.role);ownCaller(s,w);
+    permitted(s,p);reservationEqual(s,w.role,snapshot);settled(s,w.role);sameWorker(s,w);
     check(digest(currentBinding(s,p.task))===digest(binding) && binding.id===w.binding_id,'Binding changed',4);
+    check(digest(s.get('SELECT * FROM sessions WHERE id=?',binding.session_row_id))===digest(boundSession),'Bound session changed before readiness',4);
     const brief=randomUUID(),transition=randomUUID(),at=now();
     s.run('INSERT INTO task_briefs VALUES(?,?,?,?,?,?,?,?)',brief,s.ws,id(p.task,'T'),w.role,binding.id,JSON.stringify(body),digest(body),at);
     const pending=s.event('task-handoff',p.task,'pending',{to:w.generation===2?null:w.role,summary:reported.next_action,brief_id:brief,brief_digest:digest(body),task_version:expected,binding_id:binding.id,worker_id:w.id,generation:w.generation,successor_generation:w.generation===2?null:2,mode:kind});
