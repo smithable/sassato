@@ -128,7 +128,8 @@ def await_exit(fd, pid, identity, seconds=30):
     poll.register(fd, select.POLLIN)
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
-        if poll.poll(50):
+        # Only POLLIN on the pidfd reports the exit; an error or invalid event is no evidence.
+        if any(mask & select.POLLIN for _, mask in poll.poll(50)):
             # The pidfd says the leader has exited; while it is being reaped, reading its
             # stat can answer ESRCH. That is the exit we wait for, so look again (T959).
             try:
