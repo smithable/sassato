@@ -406,7 +406,9 @@ per-task histories. See [migration details](integrations.md).
 Actual launch needs an explicit human role, such as --as alice. --new-window selects Windows Terminal and opens one new
 window per role; it conflicts with --window and native terminal mode. Native interactive output cannot use --json; dry-run JSON
 is supported. Native launch allows one role. Windows Terminal is opt-in and waits for verified provider startup; errors or startup timeout fail the command. `launch-unlock ROLE... --as alice` clears only demonstrably stale
-locks. See [provider and hook setup](integrations.md).
+locks. A lock written before the machine last booted (a WSL restart ends every launcher) is cleared by the next
+launch itself and recorded as a `launch-lock` event; a lock whose launcher died in the current boot still needs
+`launch-unlock`, and launch says so. See [provider and hook setup](integrations.md).
 
 Resume: a role resumes its registered provider session. A Codex session registers no ID, so for a Codex role launch
 resumes the newest saved Codex session (CODEX_HOME or ~/.codex, sessions/) that has the role's working directory and
