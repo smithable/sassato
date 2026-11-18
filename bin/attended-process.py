@@ -123,6 +123,26 @@ def signal_guards(fd):
         signal.pidfd_send_signal(fd, signal.SIGTERM)
 
 
+def await_exit(fd, pid, identity, seconds=30):
+    poll = select.poll()
+    poll.register(fd, select.POLLIN)
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        # Only POLLIN on the pidfd reports the exit; an error or invalid event is no evidence.
+        if any(mask & select.POLLIN for _, mask in poll.poll(50)):
+            # The pidfd says the leader has exited; while it is being reaped, reading its
+            # stat can answer ESRCH. That is the exit we wait for, so look again (T959).
+            try:
+                after = observe(pid, identity)
+            except ProcessLookupError:
+                time.sleep(0.01)
+                continue
+            if after["exited"]:
+                return {**after, "pidfd_exit": True, "signal": "TERM"}
+        time.sleep(0.01)
+    raise RuntimeError("TERM deadline elapsed; no KILL and no successor")
+
+
 def main():
     action, raw_pid, identity = sys.argv[1:]
     pid = int(raw_pid)
@@ -142,16 +162,7 @@ def main():
         if [row["pid"] for row in pinned["live_members"]] != [pid]:
             raise RuntimeError("Process group changed before retirement")
         signal_guards(fd)
-        poll = select.poll()
-        poll.register(fd, select.POLLIN)
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            if poll.poll(50):
-                after = observe(pid, identity)
-                if after["exited"]:
-                    return {**after, "pidfd_exit": True, "signal": "TERM"}
-            time.sleep(0.01)
-        raise RuntimeError("TERM deadline elapsed; no KILL and no successor")
+        return await_exit(fd, pid, identity)
     finally:
         os.close(fd)
 

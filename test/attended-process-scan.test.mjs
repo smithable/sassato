@@ -110,3 +110,30 @@ test('a reader at another path blocks', () => {
 test('a second reader blocks', () => {
   assert.deepEqual(observed(withChildren([reader, reader])), { members: 2, helpers: 1, exited: false, exitedAfter: false });
 });
+
+// After TERM the pidfd reports the leader's exit; a stat read while it is reaped can answer
+// ESRCH. The wait looks again instead of failing the retirement (T959). Before the signal the
+// leader's ESRCH still raises (above).
+test('the post-TERM wait looks again when the exiting leader answers ESRCH', () => {
+  const result = spawnSync('python3', ['-c', `
+import importlib.util, os, json, subprocess, sys
+spec = importlib.util.spec_from_file_location("ap", ${JSON.stringify(helper)})
+ap = importlib.util.module_from_spec(spec); spec.loader.exec_module(ap)
+child = subprocess.Popen([sys.executable, "-c", "pass"])
+fd = os.pidfd_open(child.pid)
+child.wait()
+calls = []
+def observe(pid, identity):
+    calls.append(pid)
+    if len(calls) == 1:
+        raise ProcessLookupError(3, "No such process")
+    return {"leader": None, "live_members": [], "helpers": [], "exited": True}
+ap.observe = observe
+print(json.dumps({"result": ap.await_exit(fd, child.pid, "x:1", seconds=5), "calls": len(calls)}))
+`], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  const out = JSON.parse(result.stdout);
+  assert.equal(out.calls, 2);
+  assert.equal(out.result.exited, true);
+  assert.equal(out.result.pidfd_exit, true);
+});
