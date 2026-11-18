@@ -45,7 +45,10 @@ if ordinary_marker:
 
 
 def cli(*args):
-    result = subprocess.run(['sassato', *args, '--json'], text=True, capture_output=True)
+    env = dict(os.environ)
+    if os.environ.get('ATTENDED_FIXTURE_TX_RACE'):
+        env['NODE_OPTIONS'] = '--import=' + os.environ['ATTENDED_FIXTURE_TX_PRELOAD']
+    result = subprocess.run(['sassato', *args, '--json'], text=True, capture_output=True, env=env, start_new_session=bool(os.environ.get('ATTENDED_FIXTURE_TOOL_SESSION')))
     if result.returncode:
         raise RuntimeError(result.stderr + result.stdout)
     return json.loads(result.stdout)

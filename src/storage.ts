@@ -3,7 +3,7 @@ import { mkdirSync, existsSync, realpathSync, chmodSync } from 'node:fs';
 import { dirname, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { check, name, now, safe, id } from './errors.js';
-import { assertManagedWrite,type ManagedCredentials,type ManagedWriteMode } from './managed-generation.js';
+import { assertManagedIdentity,assertManagedWrite,type ManagedCredentials,type ManagedWriteMode } from './managed-generation.js';
 
 // SQLite rows deliberately stay flexible at this small adapter boundary.
 export type Row = Record<string, any>;
@@ -51,6 +51,7 @@ export class Store {
     } catch (error) { this.db.close(); throw error; }
   }
   close(): void { this.db.close(); }
+  authenticateManaged():void { assertManagedIdentity(this,this.credentials); }
   writableFork():Store {
     check(this.path!==':memory:','Runtime observation needs a file-backed coordination database',4);
     const fork=new Store(this.path,this.actor??undefined,{managedCredentials:this.credentials,managedWriteMode:this.managedWriteMode});
