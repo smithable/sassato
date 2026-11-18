@@ -174,6 +174,11 @@ for suffix in ('', '-wal', '-shm', '-journal'):
     if path.exists():
         path.rename(preserved / path.name)
 restored.rename(source)
+# Retain any checkpointed staging sidecars as evidence under their distinct names.
+for suffix in ('-wal', '-shm', '-journal'):
+    path = pathlib.Path(str(restored) + suffix)
+    if path.exists():
+        path.rename(preserved / path.name)
 print('Migrated database preserved at', preserved)
 PY_PLACE
 sassato doctor --db "$PROBE_DB" --workspace smithable --as "$LIVE_HUMAN" --json
@@ -196,7 +201,16 @@ Choose a new evidence directory for each normal/STOP/crash trial, and new dispos
 role/repository names for repeat trials (enrollment and generation tombstones are
 intentionally retained). The normal first roles are `probe-codex`, `probe-claude`.
 
+After the planned WSL restart, recover the installation paths in the new operator
+shell before preparing a trial. Use the actual retained installation directory:
+
 ```bash
+set -e
+export INSTALL_EVIDENCE='/absolute/path/to/the-retained-install-directory'
+PROBE_DB="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["PROBE_DB"])' "$INSTALL_EVIDENCE/install-state.json")"
+export PROBE_DB
+LIVE_HUMAN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["LIVE_HUMAN"])' "$INSTALL_EVIDENCE/install-state.json")"
+export LIVE_HUMAN
 export PROVIDER=codex
 export SOURCE_ROLE='your-existing-codex-role'
 export PROBE_ROLE="probe-$PROVIDER"
@@ -298,9 +312,18 @@ are saved atomically. It then remains silent with no waiter. If it asks for help
 use its separate terminal; never weaken a failed guard.
 
 At the first retirement prompt, **before pressing Enter**, enqueue a unique mail
-from a third human/assistant terminal and save its ID:
+from a third human/assistant terminal and save its ID. A new terminal does not
+inherit the operator shell's exports: first set this trial's actual evidence path
+and recover its database/role from the recorded `trial.json`. Use this recovery
+block in any replacement terminal too; never guess a fresh evidence directory:
 
 ```bash
+set -e
+export TRIAL_EVIDENCE='/absolute/path/to/this-trial-evidence-directory'
+PROBE_DB="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["database"])' "$TRIAL_EVIDENCE/trial.json")"
+export PROBE_DB
+PROBE_ROLE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["role"])' "$TRIAL_EVIDENCE/trial.json")"
+export PROBE_ROLE
 sassato send "$PROBE_ROLE" "attended-replay-$(date +%s)-$PROBE_ROLE" --urgent --db "$PROBE_DB" --workspace supervisor-probe --as operator --json > "$TRIAL_EVIDENCE/replay-message.json"
 sassato progress show --db "$PROBE_DB" --workspace supervisor-probe --as "$PROBE_ROLE" --json > "$TRIAL_EVIDENCE/ready-cursor.json"
 ```
