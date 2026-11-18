@@ -1,3 +1,4 @@
+import { wake as wakeCommand } from './wake.js';
 import { formatDigest } from './wait-digest.js';
 import { parseArgs } from 'node:util';
 import { readFileSync, openSync, fstatSync, readSync, closeSync, constants } from 'node:fs';
@@ -57,7 +58,9 @@ Mail:       send ROLE[,ROLE]|all TEXT [--re T1] [--urgent | --now]
             wait [--since EVENT_CURSOR] [--timeout SECONDS] [--settle SECONDS] [--settle-max SECONDS]
             ack M1 [M2 ...] (up to 100; atomic)
             agents settle 120s, maximum 600s; --settle 0 returns the first wake
-            inbox [--peek] [--state unread|read|done] | sent (or outbox) | ack M1
+            inbox [--peek] [--unread | --state unread|read|done] (newest first) | sent (or outbox) | ack M1
+            wake [--since CURSOR] [--ack M1,M2] [--idle-minutes N] [--timeout S]: wait, then print everything to act on
+              (STOP, each entry's full text, mail to acknowledge), save the cursor, and end with the re-arm command
 Knowledge:  fact set KEY TEXT --source LOCATION [--expect VERSION]
             fact get KEY | fact history KEY | facts
 WIP:        wip [show ROLE] | wip set --current TEXT --next TEXT --notes TEXT
@@ -100,15 +103,15 @@ select workspace when not explicit. Writes require --as; human actions require a
 Lists default to bounded results; --limit N. Context never consumes inbox receipts.
 Exit codes: 0 success/no matches; 1 storage/runtime; 2 input; 3 identity/access; 4 conflict; 5 mail-wait timeout.
 `;
-const strings = ['role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes'];
-const booleans = ['attended','now','json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','wait','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
+const strings = ['role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes','digest-skip','ack'];
+const booleans = ['unread','attended','now','json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','wait','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
 const globalFlags = ['db','workspace','as','json','help'];
 const allowed: Record<string,string[]> = {
   'index build':['repo','cache'],'index update':['repo','cache','diff'],'index find':['repo','cache','limit'],'index show':['repo','cache','limit'],
-  init:['config','humans','interactive','no-interactive','launch','dry-run','fresh','resume','no-prompt','terminal','distro','window','stop-file','new-window'], 'workspace attach':[], 'workspace settings':[], 'workspace set':['default-human','import-timezone','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','open-work-roles'],roles:[], 'role set':['provider','model','effort','permission-mode','sandbox','approval','dir','kind'],
+  init:['config','humans','interactive','no-interactive','launch','dry-run','fresh','resume','no-prompt','terminal','distro','window','stop-file','new-window'], 'workspace attach':[], 'workspace settings':[], 'workspace set':['default-human','import-timezone','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','open-work-roles','digest-skip'],roles:[], 'role set':['provider','model','effort','permission-mode','sandbox','approval','dir','kind'],
   add:['title','body','for','owner','priority','human-only','review-required'],tasks:['status','owner','for','available','limit','after'],show:['limit','before-event'],
   take:['hours'],renew:['hours'],note:[],update:['expect','title','body','priority','for','human-only','agent-allowed','review-required','no-review'],handoff:['brief-file','expect'],release:[],submit:['reviewer'],review:['approve','reject','note','expect'],done:['ref'],drop:[],reopen:[],after:[],unafter:[],block:['kind','waits-on','on'],blockers:['task','chain','limit','all'],resolve:[],
-  'ask-human':['for','options','recommend','command'],answer:['close','relayed-by'],withdraw:[],humans:['for','limit'],send:['re','urgent','needs-reply','now'],wait:['urgent','timeout','stop-file','since','idle-minutes','settle','settle-max'],inbox:['peek','state','limit'],outbox:['limit'],sent:['limit'],retitle:['owner','apply'],ack:[],
+  'ask-human':['for','options','recommend','command'],answer:['close','relayed-by'],withdraw:[],humans:['for','limit'],send:['re','urgent','needs-reply','now'],wait:['urgent','timeout','stop-file','since','idle-minutes','settle','settle-max'],inbox:['peek','state','limit','unread'],wake:['since','ack','timeout','stop-file','idle-minutes','settle','settle-max'],outbox:['limit'],sent:['limit'],retitle:['owner','apply'],ack:[],
   'fact set':['source','checked-at','expect','answers'],'fact get':[],'fact history':[],facts:['limit'],
   'wip show':[],'wip set':['current','next','notes','expect'],sessions:[], 'session register':['provider','session-id','pid','replace'],'session heartbeat':['session-id'],'session end':['session-id'],usage:['until'],
   stop:['all','timeout','no-wait','force'],'stop-status':['quiet','stop-file'],stopped:[],'resume-work':['all'],
@@ -302,6 +305,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           for(const [flag,key] of [['busy-checks','busy_checks'],['import-answer-markers','import_answer_markers'],['import-role-aliases','import_role_aliases'],['import-timezone-aliases','import_timezone_aliases']] as const) if(str(flag)!==undefined) {
             try {patch[key]=JSON.parse(str(flag)!);}catch {check(false,`--${flag} must be valid JSON`);}
           }
+          if(str('digest-skip')!==undefined)try{patch.digest_skip=JSON.parse(str('digest-skip')!);}catch{check(false,'--digest-skip must be valid JSON');}
           if(str('open-work-roles')!==undefined)patch.open_work_roles=str('open-work-roles')==='all'?null:str('open-work-roles')!.split(',').map(role=>role.trim()).filter(Boolean);
           result=setWorkspaceSettings(s,patch);break;
         }
@@ -330,7 +334,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'humans': empty();result=t.humanQueue(s,{limit:num('limit'),forRole:str('for')});break;
         case 'send': {const to=arg('recipient');result=c.send(s,to==='all'?'all':to.split(','),rest('message'),{task:str('re'),urgent:bool('urgent'),needsReply:bool('needs-reply'),now:bool('now')});break;}
         case 'wait': {empty();result=await waitWithManagedObservation(s,{timeout:num('timeout'),stopFile:str('stop-file'),since:num('since'),idleMinutes:num('idle-minutes'),settle:num('settle'),settleMax:num('settle-max')});if((result as WaitResult).reason==='timeout')process.exitCode=5;break;}
-        case 'inbox': empty();result=c.inbox(s,{peek:bool('peek'),state:str('state') as 'unread'|'read'|'done'|undefined,limit:num('limit')});break;
+        case 'inbox': empty();check(!(bool('unread')&&str('state')),'Give --unread or --state, not both');result=c.inbox(s,{peek:bool('peek'),state:(bool('unread')?'unread':str('state')) as 'unread'|'read'|'done'|undefined,limit:num('limit')});break;
+        case 'wake': {empty();const out=await wakeCommand(s,{timeout:num('timeout'),stopFile:str('stop-file'),since:num('since'),idleMinutes:num('idle-minutes'),settle:num('settle'),settleMax:num('settle-max'),ack:str('ack')?.split(',').map(x=>x.trim()).filter(Boolean)});if(bool('json')){const saved=out.commit?.();if(saved&&!saved.saved)process.exitCode=4;result={...out.result,saved:saved?.saved??false,acknowledged:out.acknowledged,text:out.text+(saved?'\n'+saved.line:'')};}else{console.log(out.text);const saved=out.commit?.();if(saved){console.log(saved.line);if(!saved.saved)process.exitCode=4;}return;}break;}
         case 'sent': case 'outbox': empty();result=c.outbox(s,{limit:num('limit')});break;
         case 'ack': {const messages=[arg('message'),...p.splice(0)];const rows=c.acknowledgeMany(s,messages);result=messages.length===1?rows[0]:rows;break;}
         case 'fact set': {const key=arg('key'),answers=str('answers');const set=()=>c.setFact(s,key,{body:rest('fact'),source:need('source'),checked_at:str('checked-at'),expected_version:num('expect')});
