@@ -2,7 +2,7 @@ import { type Store, type Row } from './storage.js';
 import { check, name, text } from './errors.js';
 import { validateBusyChecks, type BusyCheck } from './busy-checks.js';
 
-export interface WorkspaceSettings { default_human: string | null; import_timezone: string; stop_file: string | null; busy_checks:BusyCheck[]; import_answer_markers:string[]; import_role_aliases:Record<string,string>; import_timezone_aliases:Record<string,string>; open_work_roles:string[]|null; digest_skip:Record<string,string[]> }
+export interface WorkspaceSettings { default_human: string | null; import_timezone: string; stop_file: string | null; busy_checks:BusyCheck[]; import_answer_markers:string[]; import_role_aliases:Record<string,string>; import_timezone_aliases:Record<string,string>; open_work_roles:string[]|null; digest_skip:Record<string,string[]>; autocompact:Record<string,number> }
 function standardTimezone(zone:string):boolean {
   try {new Intl.DateTimeFormat('en',{timeZone:zone});return true;} catch {return false;}
 }
@@ -45,7 +45,15 @@ export function validateSettings(s: Store, input: Row): WorkspaceSettings {
     s.role(name(role));
     check(Array.isArray(kinds)&&kinds.length<=32&&kinds.every(k=>typeof k==='string'&&DIGEST_SKIPPABLE.includes(k)),`digest_skip.${role} must list kinds among: ${DIGEST_SKIPPABLE.join(', ')}`);
   }
-  return {digest_skip:Object.fromEntries(Object.entries(skip).map(([role,kinds])=>[role,[...new Set(kinds as string[])]])),open_work_roles:openWork===null?null:[...new Set((openWork as unknown[]).map(String))],default_human:human,import_timezone:validateTimezone(input.import_timezone ?? 'UTC'),stop_file:input.stop_file == null ? null : text(input.stop_file,'stop file',4096),busy_checks:validateBusyChecks(input.busy_checks??[]),import_answer_markers:markers.map(marker=>text(marker,'import answer marker',200)),import_role_aliases:roleAliases,import_timezone_aliases:timezoneAliases};
+  // autocompact (T980): per Claude role, the auto-compact window launch passes as --autocompact; unset means
+  // Claude Code's own default. Set by a human (role set ROLE --autocompact N|auto).
+  const compact=input.autocompact??{};
+  check(compact&&typeof compact==='object'&&!Array.isArray(compact)&&Object.keys(compact).length<=64,'autocompact must be an object of role names to token counts');
+  for(const [role,tokens] of Object.entries(compact)) {
+    check(s.role(name(role)).provider==='claude',`autocompact is for Claude roles; ${role} is not one`);
+    check(Number.isSafeInteger(tokens)&&(tokens as number)>=100_000&&(tokens as number)<=10_000_000,`autocompact.${role} must be a whole number of tokens from 100000 to 10000000`);
+  }
+  return {autocompact:{...compact} as Record<string,number>,digest_skip:Object.fromEntries(Object.entries(skip).map(([role,kinds])=>[role,[...new Set(kinds as string[])]])),open_work_roles:openWork===null?null:[...new Set((openWork as unknown[]).map(String))],default_human:human,import_timezone:validateTimezone(input.import_timezone ?? 'UTC'),stop_file:input.stop_file == null ? null : text(input.stop_file,'stop file',4096),busy_checks:validateBusyChecks(input.busy_checks??[]),import_answer_markers:markers.map(marker=>text(marker,'import answer marker',200)),import_role_aliases:roleAliases,import_timezone_aliases:timezoneAliases};
 }
 /** Digest entries a role may choose not to be woken by. Urgent mail, replies, answers, blockers, reviews and
  * stops are never skippable: they always need the role. */
@@ -54,18 +62,18 @@ export const DIGEST_SKIPPABLE=['own-work','open-work','task-finished','mail'];
 /** Workspace configuration is recorded in its existing append-only audit history. */
 export function workspaceSettings(s: Store): WorkspaceSettings {
   const event=s.get("SELECT actor,detail FROM events WHERE workspace_id=? AND entity='workspace' AND action IN ('created','settings-updated') ORDER BY id DESC LIMIT 1",s.ws);
-  if (!event) return {default_human:null,import_timezone:'UTC',stop_file:null,busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{}};
+  if (!event) return {default_human:null,import_timezone:'UTC',stop_file:null,busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{},autocompact:{}};
   const detail=JSON.parse(event.detail);
   if (detail.settings) {
     // Older builds allowed aliases such as EST/CET. Ignore those overrides on
     // read so standard meanings win and unrelated settings remain editable.
-    const settings={busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{},...detail.settings};
+    const settings={busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{},autocompact:{},...detail.settings};
     settings.import_timezone_aliases=Object.fromEntries(Object.entries(settings.import_timezone_aliases).filter(([key])=>!standardTimezone(key)));
     return settings;
   }
   // Preserve the recorded bootstrap human; unconfigured imports use generic UTC.
   const human=s.get("SELECT name FROM roles WHERE workspace_id=? AND name=? AND kind='human'",s.ws,event.actor)?.name ?? null;
-  return {default_human:human,import_timezone:'UTC',stop_file:null,busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{}};
+  return {default_human:human,import_timezone:'UTC',stop_file:null,busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{},autocompact:{}};
 }
 export function setWorkspaceSettings(s: Store, patch: Partial<WorkspaceSettings>): WorkspaceSettings {
   return s.tx(()=>{

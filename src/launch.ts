@@ -71,6 +71,9 @@ export function planLaunch(store:Store, selected:string[], options:LaunchOptions
     if(provider==='claude') {
       if(config.reasoning_effort) args.push('--effort',config.reasoning_effort);
       if(config.permission_mode) args.push('--permission-mode',config.permission_mode);
+      // The auto-compact window set for this role (workspace settings, T980); unset leaves Claude Code's default.
+      const compact=workspaceSettings(store).autocompact?.[role];
+      if(compact) args.push('--autocompact',String(compact));
     } else {
       if(config.reasoning_effort) args.push('--config',`model_reasoning_effort=${JSON.stringify(config.reasoning_effort)}`);
       if(config.sandbox_mode) args.push('--sandbox',config.sandbox_mode);
