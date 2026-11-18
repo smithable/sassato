@@ -307,8 +307,13 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
     const remaining=deadline-at;
     if(remaining<=0)return entries.size?digest('deadline'):{reason:'timeout',role:actor,cursor};
     // A bounded snapshot permits writers and checkpoints between batches and sleeps.
-    await new Promise(resolve=>setTimeout(resolve,more?0:Math.min(500,remaining,window.deadline()-performance.now())));
+    await new Promise(resolve=>setTimeout(resolve,nextPause(more,remaining,window.deadline()-performance.now())));
   }
+}
+/** How long the waiter sleeps before looking again: never negative, since a quiet window that
+ * ended between two clock reads would make Node warn (TimeoutNegativeWarning, T960). */
+export function nextPause(more:boolean,remaining:number,windowLeft:number):number {
+  return more?0:Math.max(0,Math.min(500,remaining,windowLeft));
 }
 /** Backwards-compatible name; now also wakes for relevant workflow events. */
 export const waitForUrgent=waitForWork;

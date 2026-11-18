@@ -151,3 +151,12 @@ test('a malformed older answer audit entry cannot mask the next valid answer',as
   as(f.s,'human',()=>{answerQuestion(f.s,q1.id,'Yes');answerQuestion(f.s,q2.id,'Yes');});
   const result=await wait(f,since,{settle:120,settleMax:600});assert.equal(result.reason,'answer');assert.equal(result.question,q1.id);
 });
+
+test('the pause between looks is never negative (T960)', async () => {
+  const { nextPause } = await import('../dist/mail-wait.js');
+  assert.equal(nextPause(false, 1000, -0.0017), 0);
+  assert.equal(nextPause(false, -5, 200), 0);
+  assert.equal(nextPause(false, 1000, 200), 200);
+  assert.equal(nextPause(false, 1000, 9000), 500);
+  assert.equal(nextPause(true, 1000, 200), 0);
+});
