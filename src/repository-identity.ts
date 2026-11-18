@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative, sep } from 'node:path';
 import { check, text } from './errors.js';
+import type { CaptureBudget } from './capture-budget.js';
 
 export interface RepositoryIdentity {
   checkout_root:string; working_dir:string; git_common_dir:string;
@@ -20,12 +21,14 @@ export function insideCheckout(root:string,path:string):boolean {
   return local==='' || !isAbsolute(local) && local!=='..' && !local.startsWith('..'+sep);
 }
 /** Identity probes never read file contents, run hooks, change refs or inspect provider history. */
-export function probeRepositoryIdentity(directory:string):RepositoryIdentity {
+export function probeRepositoryIdentity(directory:string,budget?:CaptureBudget):RepositoryIdentity {
+  budget?.check();
   text(directory,'working directory',4096);
   const working_dir=realpathSync(directory);physical(working_dir);
-  const env={...Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith('GIT_'))),GIT_OPTIONAL_LOCKS:'0',GIT_TERMINAL_PROMPT:'0'};
+  const env={...Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith('GIT_'))),GIT_OPTIONAL_LOCKS:'0',GIT_TERMINAL_PROMPT:'0',GIT_NO_LAZY_FETCH:'1',GIT_NO_REPLACE_OBJECTS:'1'};
   const run=(args:string[],optional=false):string|null=>{
-    const result=spawnSync('git',['-c','core.fsmonitor=false','-C',working_dir,...args],{encoding:'utf8',timeout:2000,maxBuffer:16384,env,shell:false});
+    const result=spawnSync('git',['-c','core.fsmonitor=false','-C',working_dir,...args],{encoding:'utf8',timeout:budget?.timeout(2000)??2000,maxBuffer:16384,env,shell:false});
+    budget?.check();
     check(!result.error && (result.status===0 || optional && result.status===1),'Repository identity unavailable; inspect missing or changed checkout before rebinding',4);
     if(result.status!==0)return null;
     return text(result.stdout.trimEnd(),'Git identity metadata',4096);

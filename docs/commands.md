@@ -93,6 +93,13 @@ prompts. Configuration is validated before creating a database.
 `--open-work-roles a,b,c` names the roles woken when a task with no owner and no
 `--for` role becomes ready (`all`, the default, wakes every eligible role); a role left out still
 sees such tasks in `tasks --available` and is woken for work owned by or routed to it.
+An empty list (`--open-work-roles ''`) deliberately disables only unrouted open-work
+wakes, including idle reminders. When unset, every role may see eligible unrouted
+open work in its idle reminder. A task routed to another role is excluded from
+the waiting role’s idle open-work reminder even when the waiting role owns it.
+The empty list does not disable eligible owned or explicitly routed work,
+mail, answers or STOP. Role names are strict lowercase identifiers: whitespace or
+uppercase aliases are rejected, not silently normalized.
 Use `none` to clear the default human or stop file. `role set NAME --kind human` adds a
 human; only an existing human can create/promote roles. Agent model/permission settings
 inherit provider defaults unless explicitly configured.
@@ -401,6 +408,11 @@ window per role; it conflicts with --window and native terminal mode. Native int
 is supported. Native launch allows one role. Windows Terminal is opt-in and waits for verified provider startup; errors or startup timeout fail the command. `launch-unlock ROLE... --as alice` clears only demonstrably stale
 locks. See [provider and hook setup](integrations.md).
 
+Resume: a role resumes its registered provider session. A Codex session registers no ID, so for a Codex role launch
+resumes the newest saved Codex session (CODEX_HOME or ~/.codex, sessions/) that has the role's working directory and
+whose launch prompt names the role, searching the newest 200; so a plain `launch` of a Codex role now resumes where it
+used to start fresh. --fresh starts a new session; --resume fails when none is found.
+
 ## Output contract
 
 --json writes a single JSON value to stdout; errors are on stderr, with no success output.
@@ -606,3 +618,8 @@ guards. `supervise --attended --role ROLE` requires a human terminal;
 freezes further CLI writes; it proves no enforced tool barrier. The two-generation
 probe requires fresh human Enter before each owned retirement and never enables
 unattended management. See the [operator runbook](attended-supervisor.md).
+
+For example, an agent's `wait --timeout 10` can return a collected digest with
+`flush: deadline` even though its default quiet window is 120 seconds. Treat exit 5
+as an **empty** timeout; a short timeout never discards notifications already
+collected. `--settle 0` explicitly selects immediate notification behavior.

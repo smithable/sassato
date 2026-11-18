@@ -106,3 +106,26 @@ at line 619, registration at line 714, Studio dispatch in
 string dispatch is a potential reference, requiring source inspection. The timer
 file query exceeded the output budget and said so; JSON or a narrower query is
 needed for its remaining locations.
+
+## Resource bounds and cache retention
+
+Queries retain at most twenty candidates per requested result before enrichment,
+with at most `limit + 1` references per selected name or import alias. Broad queries
+can therefore return a lower bound rather than an exhaustive count; JSON sets
+`total_is_lower_bound` and `truncated`, and text says “at least”. Narrow the name or
+path to explore another part of the repository. Related-test hints retain eight
+paths per target.
+
+The private navigation cache is disposable. On open and after indexing/querying,
+oldest recognized analysis and commit objects are evicted above 256 MiB or 2,000
+objects. Locks, latest hints, symlinks and unknown files are never eviction targets.
+An evicted exact-commit snapshot is reported as missing and queries fall back to
+current source; rebuilding recreates it. Retention is by object modification time,
+not an assertion that an old commit is no longer useful.
+
+Credential paths, including `.envrc`, `*.tfvars`, `*.tfvars.json`, `.pypirc`,
+`kubeconfig`, `.aws/` and `.kube/`, are excluded before index reads. A dirty-work
+brief instead refuses sensitive dirty paths: silently omitting them would make its
+handover proof incomplete. Move credentials outside the checkout before capture.
+Both dirty proofs and their identity probes share a 30-second deadline and a
+128-MiB total content-read budget; exhausting either saves no brief.

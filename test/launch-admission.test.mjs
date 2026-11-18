@@ -77,7 +77,7 @@ test('terminal dispatch reserves before native startup; attended loses and paren
   try{
     await until(()=>existsSync(gate+'.ready'),'terminal transport barrier');const path=launchLockPath(f.s,'builder'),reservation=JSON.parse(readFileSync(path,'utf8'));assert.equal(reservation.phase,'dispatch');assert.equal(f.s.get('SELECT count(*) n FROM sessions').n,0);
     const controller=await f.attended().done;const r=JSON.parse(controller.out);assert.notEqual(r.code,0,r.output);assert.match(r.output,/pending ordinary launcher/);assert.equal(f.s.get('SELECT count(*) n FROM managed_workers').n,0);
-    writeFileSync(gate,'dispatch');const launched=await ordinary.done;assert.equal(launched.code,0,launched.err);assert.equal(JSON.parse(launched.out)[0].status,'started');assert.ok(existsSync(f.marker));
+    writeFileSync(gate,'dispatch');const launched=await ordinary.done;assert.equal(launched.code,0,launched.err);assert.equal(JSON.parse(launched.out)[0].status,'started');await until(()=>existsSync(f.marker),'native provider marker after session registration');
     const adopted=JSON.parse(readFileSync(path,'utf8'));assert.equal(adopted.phase,'native');assert.notEqual(adopted.pid,ordinary.child.pid);assert.equal(adopted.token,reservation.token);
   }finally{writeFileSync(gate,'dispatch');writeFileSync(f.finish,'exit');await ordinary.done;}
   await until(()=>!existsSync(launchLockPath(f.s,'builder')),'native lease release');

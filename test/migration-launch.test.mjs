@@ -8,12 +8,13 @@ import { spawn } from 'node:child_process';
 import { Store } from '../dist/storage.js';
 import { now } from '../dist/errors.js';
 import { previewImport, applyImport, exportMarkdown } from '../dist/migration.js';
-import { planLaunch, launch, unlockLaunch, windowsTerminalArgs } from '../dist/launch.js';
+import { planLaunch, launch, unlockLaunch, windowsTerminalArgs, savedCodexSession } from '../dist/launch.js';
 import { registerSession, processIdentity } from '../dist/coordination.js';
 
 function fixture(t) {
   const dir=mkdtempSync(join(tmpdir(),'sassato-migration-'));
   const s=new Store(join(dir,'state.db'),'human',{create:true});
+  process.env.CODEX_HOME=join(dir,'codex-home'); // never this machine's own Codex sessions
   s.run('INSERT INTO workspaces(name,created_at) VALUES(?,?)','test',now());
   const ws=s.get('SELECT id FROM workspaces WHERE name=?','test').id;
   for(const role of ['human','a','b','c','lead']) s.run('INSERT INTO roles(workspace_id,name,kind,provider,working_dir) VALUES(?,?,?,?,?)',ws,role,role==='human'?'human':'agent',role==='c'?'codex':'claude',dir);
@@ -375,4 +376,31 @@ test('Windows Terminal without a worker acknowledgement times out and cleans its
   assert(Date.now()-started>=14000);assert(Date.now()-started<19000);assert(existsSync(fake.log));
   assert.equal(f.s.get('SELECT count(*) n FROM sessions').n,0);
   const base=join(`${f.s.path}.launch`,'test');assert(!readdirSync(base).some(name=>name.startsWith('.startup-')));
+});
+
+test('codex resume finds the role\'s newest saved Codex session when none is registered',t=>{
+  const f=fixture(t),home=join(f.dir,'codex-home'),day=join(home,'sessions','2026','11','17');mkdirSync(day,{recursive:true});
+  f.s.run("UPDATE roles SET provider='codex' WHERE workspace_id=? AND name='lead'",f.s.ws);
+  const rollout=(time,id,cwd,said)=>writeFileSync(join(day,`rollout-2026-11-17T${time}-${id}.jsonl`),[
+    {type:'session_meta',payload:{id,cwd}},
+    {type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'<environment_context>…</environment_context>'}]}},
+    {type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:said}]}},
+    {type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'You are the test worker role c. (quoted later, not the launch prompt)'}]}},
+  ].map(r=>JSON.stringify(r)).join('\n')+'\n');
+  const older='01a1eb98-0000-7000-8000-000000000001',newer='01a1eb98-0000-7000-8000-000000000002',lead='01a1eb98-0000-7000-8000-000000000003',elsewhere='01a1eb98-0000-7000-8000-000000000004';
+  rollout('10-00-00',older,f.dir,'You are the test worker role c. First run …');
+  rollout('11-00-00',newer,f.dir,'You are the test worker role c. First run …');
+  rollout('12-00-00',lead,f.dir,'You are the test worker role lead. First run …'); // newest, same folder, another role
+  rollout('13-00-00',elsewhere,'/elsewhere','You are the test worker role c. First run …'); // newest for c, another folder
+  writeFileSync(join(day,'rollout-2026-11-17T14-00-00-broken.jsonl'),'not json\n');
+  const plan=planLaunch(f.s,['c'],{resume:true,noPrompt:true})[0];
+  assert.equal(plan.mode,'resume');assert.equal(plan.sessionId,newer);assert.deepEqual(plan.args,['resume',newer]);
+  assert.equal(savedCodexSession('test','lead',f.dir,home),lead);
+  assert.equal(planLaunch(f.s,['c'],{fresh:true,noPrompt:true})[0].mode,'fresh');
+  assert.equal(savedCodexSession('test','b',f.dir,home),null);
+  assert.equal(savedCodexSession('test','c',f.dir,join(f.dir,'no-such-home')),null);
+  // a registered ID still wins over the files
+  const registered='12345678-1234-1234-1234-123456789abc';
+  f.s.run('INSERT INTO sessions(workspace_id,role,provider,external_id,started_at,last_seen_at,ended_at) VALUES(?,?,?,?,?,?,?)',f.s.ws,'c','codex',registered,now(),now(),now());
+  assert.equal(planLaunch(f.s,['c'],{resume:true,noPrompt:true})[0].sessionId,registered);
 });

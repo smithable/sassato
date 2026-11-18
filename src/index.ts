@@ -4,7 +4,7 @@ import { probeRepositoryIdentity, repositoryFingerprint, checkoutFingerprint, ty
 import { INDEX_SCHEMA, type IndexFile, type IndexHit, type IndexResult, type IndexSnapshot, type FileAnalysis } from './index-types.js';
 import { isCodePath, safeName } from './index-policy.js';
 import { digest, treeFiles, readBlobs, resolveCommit, moduleOf, worktreePaths, worktreeFile } from './index-git.js';
-import { advanceLatest, cachedAnalysis, indexCacheRoot, publish, readSnapshot, snapshotPath } from './index-cache.js';
+import { advanceLatest, cachedAnalysis, indexCacheRoot, pruneIndexCache, publish, readSnapshot, snapshotPath } from './index-cache.js';
 import { namedReferences, parserVersion } from './index-extract.js';
 
 export interface IndexOptions {repo?:string;cache?:string;limit?:number;registry?:{repository_id:string;checkout_id?:string};}
@@ -45,6 +45,7 @@ export function buildIndex(options:IndexOptions={},diff?:string) {
   const path=snapshotPath(cache,repository,commit),published=publish(path,built.snapshot);
   if(!published)check(readSnapshot(cache,repository,commit),'Existing immutable snapshot is invalid; inspect its cache file before rebuilding',4);
   const latest_advanced=advanceLatest(cache,built.snapshot,identity);
+  pruneIndexCache(cache);
   return {schema:INDEX_SCHEMA,parser:parserVersion,repository,checkout:checkoutFingerprint(identity),commit,...(options.registry??{}),files:built.snapshot.files.length,analyzed:built.analyzed,reused:built.reused,published,latest_advanced,...(!latest_advanced?{latest_notice:'Mainline pointer unchanged (non-mainline, non-forward, invalid pointer or occupied publish.lock); exact-commit snapshot is available. For an abandoned lock, inspect publish.lock/owner.json and verify its process is gone before removing it.'}:{}),path,...(from?{base:from}:{})};
 }
 interface View {identity:RepositoryIdentity;snapshot:IndexSnapshot;state:IndexResult['state'];fallback:boolean;reason?:string;view:string;}
@@ -70,6 +71,7 @@ function currentView(options:IndexOptions,query:string):View {
   }
   if([...committed.keys()].some(path=>!seen.has(path)))dirty=true;
   verifyIdentity(identity);
+  pruneIndexCache(cache);
   const view=digest(JSON.stringify([commit,files.map(file=>[file.path,file.hash])]));
   if(state==='current'&&dirty)state='overlay';
   return {identity,snapshot:{...snapshot,files},state,fallback:state==='missing'||state==='stale',...(reason?{reason}:{}),view};
@@ -87,60 +89,95 @@ function hit(file:IndexFile,name:string,line:number,kind:string,signature?:strin
 }
 function queryIndex(query:string,options:IndexOptions,show:boolean):IndexResult {
   check(safeName(query)&&query.trim()===query,'Index query must be a bounded name or repository-relative path');
+  const limit=integer(options.limit??30,'index limit',1,100),candidateLimit=limit*20;
   const view=currentView(options,query),files=view.snapshot.files,paths=new Set(files.map(file=>file.path)),items:IndexHit[]=[];
+  const normalized=query.replace(/^\.\//,'').replace(/\/$/,''),needle=normalized.toLowerCase();
+  let capped=false;
+  const compare=(a:IndexHit,b:IndexHit):number=>a.path.localeCompare(b.path,'en')||a.line-b.line||a.kind.localeCompare(b.kind,'en')||a.name.localeCompare(b.name,'en');
+  const definitions:{file:IndexFile;symbol:IndexFile['symbols'][number]}[]=[];
+  for(const file of files)for(const symbol of file.symbols)if(show?symbol.name===query:symbol.name.toLowerCase().includes(needle)) {
+    let low=0,high=definitions.length;
+    const candidate=hit(file,symbol.name,symbol.line,symbol.kind);
+    while(low<high){const middle=(low+high)>>>1,entry=definitions[middle];if(compare(hit(entry.file,entry.symbol.name,entry.symbol.line,entry.symbol.kind),candidate)<=0)low=middle+1;else high=middle;}
+    if(low>=candidateLimit){capped=true;continue;}
+    definitions.splice(low,0,{file,symbol});
+    if(definitions.length>candidateLimit){definitions.pop();capped=true;}
+  }
+  const names=new Set(definitions.map(({symbol})=>symbol.name));
+  const definitionKeys=new Set(definitions.map(({file,symbol})=>file.path+'\0'+symbol.name));
+  // Retain the earliest hits in display order, regardless of discovery order.
+  const candidateKeys=new Set<string>();
+  const add=(item:IndexHit):void=>{
+    const key=JSON.stringify(item);if(candidateKeys.has(key))return;
+    let low=0,high=items.length;
+    while(low<high){const middle=(low+high)>>>1;if(compare(items[middle],item)<=0)low=middle+1;else high=middle;}
+    if(low>=candidateLimit){capped=true;return;}
+    items.splice(low,0,item);candidateKeys.add(key);
+    if(items.length>candidateLimit){candidateKeys.delete(JSON.stringify(items.pop()!));capped=true;}
+  };
   const uses=new Map<string,{file:IndexFile;use:IndexFile['uses'][number]}[]>();
   const aliases=new Map<string,{file:IndexFile;use:IndexFile['uses'][number]}[]>();
   for(const file of files) {
     const local=new Map<string,IndexFile['uses']>();
+    const relevantImports=file.imports.flatMap(imported=>{
+      const target=resolveIndexImport(file.path,imported.specifier,paths);
+      return target?imported.bindings.filter(binding=>definitionKeys.has(target+'\0'+binding.imported)).map(binding=>({key:target+'\0'+binding.imported,local:binding.local})):[];
+    });
+    const localNames=new Set(relevantImports.map(binding=>binding.local));
     for(const use of file.uses) {
-      const all=uses.get(use.name)??[];all.push({file,use});uses.set(use.name,all);
-      const named=local.get(use.name)??[];named.push(use);local.set(use.name,named);
-    }
-    for(const imported of file.imports) {
-      const target=resolveIndexImport(file.path,imported.specifier,paths);if(!target)continue;
-      for(const binding of imported.bindings) {
-        const key=target+'\0'+binding.imported,entries=aliases.get(key)??[];
-        for(const use of local.get(binding.local)??[])entries.push({file,use});
-        aliases.set(key,entries);
+      if(names.has(use.name)) {
+        const all=uses.get(use.name)??[];
+        if(all.length<limit+1)all.push({file,use});else capped=true;
+        uses.set(use.name,all);
+      }
+      if(localNames.has(use.name)) {
+        const named=local.get(use.name)??[];
+        if(named.length<limit+1)named.push(use);else capped=true;
+        local.set(use.name,named);
       }
     }
+    for(const binding of relevantImports) {
+      const entries=aliases.get(binding.key)??[];
+      for(const use of local.get(binding.local)??[]) {
+        if(entries.length<limit+1)entries.push({file,use});else capped=true;
+      }
+      aliases.set(binding.key,entries);
+    }
   }
-  const normalized=query.replace(/^\.\//,'').replace(/\/$/,''),needle=normalized.toLowerCase();
   const matchedFiles=files.filter(file=>show?file.path===normalized||file.path.startsWith(normalized+'/'):file.path.toLowerCase().includes(needle));
-  const definitions=files.flatMap(file=>file.symbols.filter(symbol=>show?symbol.name===query:symbol.name.toLowerCase().includes(needle)).map(symbol=>({file,symbol})));
   for(const file of matchedFiles) {
-    items.push(hit(file,file.module,1,'file',undefined,file.reason??'module'));
-    for(const symbol of file.symbols)items.push(hit(file,symbol.name,symbol.line,symbol.kind,symbol.signature,symbol.exported?'export':'definition'));
-    for(const part of file.exports)if(!file.symbols.some(symbol=>symbol.name===part.name))items.push(hit(file,part.name,part.line,'export',undefined,part.from?`from ${part.from}`:'local export'));
-    for(const imported of file.imports)items.push(hit(file,imported.specifier,imported.line,'import',undefined,resolveIndexImport(file.path,imported.specifier,paths)??'external or unresolved'));
+    add(hit(file,file.module,1,'file',undefined,file.reason??'module'));
+    for(const symbol of file.symbols)add(hit(file,symbol.name,symbol.line,symbol.kind,symbol.signature,symbol.exported?'export':'definition'));
+    const declared=new Set(file.symbols.map(symbol=>symbol.name));
+    for(const part of file.exports)if(!declared.has(part.name))add(hit(file,part.name,part.line,'export',undefined,part.from?`from ${part.from}`:'local export'));
+    for(const imported of file.imports)add(hit(file,imported.specifier,imported.line,'import',undefined,resolveIndexImport(file.path,imported.specifier,paths)??'external or unresolved'));
   }
   for(const {file,symbol} of definitions) {
-    items.push(hit(file,symbol.name,symbol.line,symbol.kind,symbol.signature,`defined in module ${file.module}`));
+    add(hit(file,symbol.name,symbol.line,symbol.kind,symbol.signature,`defined in module ${file.module}`));
     for(const {file:user,use} of [...uses.get(symbol.name)??[],...aliases.get(file.path+'\0'+symbol.name)??[]])
-      if(!(user.path===file.path&&use.line===symbol.line))items.push(hit(user,symbol.name,use.line,'use',undefined,`${use.kind}; potential name reference`));
+      if(!(user.path===file.path&&use.line===symbol.line))add(hit(user,symbol.name,use.line,'use',undefined,`${use.kind}; potential name reference`));
   }
   const unique=new Map<string,IndexHit>();
   const tests=new Map<string,Set<string>>();
   for(const file of files.filter(file=>/(?:\.(?:test|spec)\.[cm]?[jt]sx?$|(?:^|\/)(?:test|tests|__tests__)\/)/.test(file.path)))for(const imported of file.imports) {
     const target=resolveIndexImport(file.path,imported.specifier,paths);if(!target)continue;
-    const linked=tests.get(target)??new Set<string>();linked.add(file.path);tests.set(target,linked);
+    const linked=tests.get(target)??new Set<string>();if(linked.size<8)linked.add(file.path);tests.set(target,linked);
   }
   for(const item of items)if(safeName(item.name)&&safeName(item.path)) {
     const related_tests=[...tests.get(item.path)??[]].sort().slice(0,8);
     const enriched=related_tests.length?{...item,related_tests}:item;unique.set(JSON.stringify(enriched),enriched);
   }
-  const sorted=[...unique.values()].sort((a,b)=>a.path.localeCompare(b.path,'en')||a.line-b.line||a.kind.localeCompare(b.kind,'en')||a.name.localeCompare(b.name,'en'));
-  const limit=integer(options.limit??30,'index limit',1,100);
+  const sorted=[...unique.values()].sort(compare);
   const moduleNames=[...new Set(sorted.slice(0,limit).map(item=>moduleOf(item.path)))].slice(0,10);
   const modules=moduleNames.map(path=>{const members=files.filter(file=>file.module===path);return {path,description:`${members.length} files; ${members.reduce((n,file)=>n+file.symbols.length,0)} definitions; ${members.reduce((n,file)=>n+file.exports.length,0)} exported names (navigation aid)`};});
-  return {schema:INDEX_SCHEMA,repository:view.snapshot.repository,checkout:checkoutFingerprint(view.identity),commit:view.snapshot.commit,view:view.view,state:view.state,fallback:view.fallback,...(view.reason?{reason:view.reason}:{}),...(options.registry??{}),query,items:sorted.slice(0,limit),total:sorted.length,truncated:sorted.length>limit,modules};
+  return {schema:INDEX_SCHEMA,repository:view.snapshot.repository,checkout:checkoutFingerprint(view.identity),commit:view.snapshot.commit,view:view.view,state:view.state,fallback:view.fallback,...(view.reason?{reason:view.reason}:{}),...(options.registry??{}),query,items:sorted.slice(0,limit),total:sorted.length,total_is_lower_bound:capped,truncated:capped||sorted.length>limit,modules};
 }
 export const findIndex=(query:string,options:IndexOptions={}):IndexResult=>queryIndex(query,options,false);
 export const showIndex=(query:string,options:IndexOptions={}):IndexResult=>queryIndex(query,options,true);
 export function formatIndex(result:IndexResult):string {
   const lines=[`index ${result.state} · repo ${result.repository.slice(0,12)} · HEAD ${result.commit.slice(0,12)} · view ${result.view.slice(0,12)}`,
     ...(result.reason?[result.reason]:[]),...result.modules.map(module=>`${module.path}/: ${module.description}`),...result.items.map(item=>`${item.path}:${item.line} ${item.kind} ${item.signature??item.name}${item.relation?` (${item.relation})`:''}${item.related_tests?` [tests: ${item.related_tests.join(', ')}]`:''}`),
-    ...(result.truncated?[`Showing ${result.items.length} of ${result.total}; narrow the query or use --limit (max 100).`]:[])];
+    ...(result.truncated?[`Showing ${result.items.length} of ${result.total_is_lower_bound?'at least ':''}${result.total}; narrow the query or use --limit (max 100).`]:[])];
   let output='';
   for(const line of lines) {
     if(output.length+line.length>5900)return output+'\nOutput bounded; narrow the query or use --json.';

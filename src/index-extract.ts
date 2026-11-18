@@ -51,10 +51,13 @@ export function analyzeSource(path:string,source:string):FileAnalysis {
     }
     if(ts.isImportDeclaration(node)&&ts.isStringLiteral(node.moduleSpecifier)&&safeName(node.moduleSpecifier.text)) {
       const bindings:{local:string;imported:string}[]=[],clause=node.importClause;
-      if(clause?.name)bindings.push({local:clause.name.text,imported:'default'});
+      if(clause?.name&&safeName(clause.name.text))bindings.push({local:clause.name.text,imported:'default'});
       if(clause?.namedBindings) {
-        if(ts.isNamespaceImport(clause.namedBindings))bindings.push({local:clause.namedBindings.name.text,imported:'*'});
-        else for(const part of clause.namedBindings.elements)bindings.push({local:part.name.text,imported:part.propertyName?.text??part.name.text});
+        if(ts.isNamespaceImport(clause.namedBindings)) {if(safeName(clause.namedBindings.name.text))bindings.push({local:clause.namedBindings.name.text,imported:'*'});}
+        else for(const part of clause.namedBindings.elements) {
+          const local=part.name.text,imported=part.propertyName?.text??local;
+          if(safeName(local)&&safeName(imported))bindings.push({local,imported});
+        }
       }
       result.imports.push({specifier:node.moduleSpecifier.text,line:line(node),bindings,reexport:false});
     }
@@ -62,7 +65,10 @@ export function analyzeSource(path:string,source:string):FileAnalysis {
       const from=node.moduleSpecifier&&ts.isStringLiteral(node.moduleSpecifier)?node.moduleSpecifier.text:undefined;
       if(from&&!safeName(from))return;
       if(from)result.imports.push({specifier:from,line:line(node),bindings:[],reexport:true});
-      if(node.exportClause&&ts.isNamedExports(node.exportClause))for(const part of node.exportClause.elements)result.exports.push({name:part.name.text,line:line(node),local:part.propertyName?.text??part.name.text,...(from?{from}:{})});
+      if(node.exportClause&&ts.isNamedExports(node.exportClause))for(const part of node.exportClause.elements) {
+        const name=part.name.text,local=part.propertyName?.text??name;
+        if(safeName(name)&&safeName(local))result.exports.push({name,line:line(node),local,...(from?{from}:{})});
+      }
       else if(from)result.exports.push({name:'*',line:line(node),from});
     }
     if(ts.isCallExpression(node)) {

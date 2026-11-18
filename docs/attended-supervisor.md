@@ -373,3 +373,26 @@ correct two-line file, unchanged dirty bytes, saved-cursor mail replay, two posi
 exit records and final reservation release. For STOP/crash trials also retain zero
 launch evidence or fresh approval/restart observations as applicable. An incomplete
 trial leaves that provider's attended acceptance open; unattended mode stays off.
+
+### Tool-command admission
+
+A provider tool shell may create a new session and process group. Assignment,
+reconciliation and readiness therefore authenticate the current generation token
+and prove a live ancestry chain from the invoking CLI to the exact recorded launch
+root. The Linux helper pins the root, caller and each intervening process with
+pidfds, verifies the boot/start identities and parent edges after pinning, and
+rechecks the complete bounded chain and pidfd liveness. Missing or changing evidence
+refuses admission. A copied token, matching UID or process group is insufficient.
+
+Assignment authenticates against one database read snapshot. Mutations compare the
+complete captured worker row inside the write transaction, check reservation and
+binding guards, and obtain a fresh ancestry decision after their writes immediately
+before returning to commit. A failed final check rolls the transaction back.
+Authorization is decided at the final successful ancestry validation and pidfd poll;
+earlier proof is never reused at that boundary. This is admission evidence, not an
+atomic process-tree snapshot: pidfds do not freeze parent edges or keep the root
+alive. A process may exit or reparent after the decision and an already admitted
+command may then commit. There is no guarantee of containment or of rejecting every
+exit concurrent with commit. A stricter lifetime-bound guarantee requires a broker
+or an enforced lifecycle design. Retirement signaling and cooperative tool/job
+settlement remain unchanged; this does not enable unattended mode.

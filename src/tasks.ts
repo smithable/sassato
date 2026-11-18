@@ -18,7 +18,11 @@ function writable(s: Store, row: Row): string {
   return actor;
 }
 function pendingHandoff(s:Store,row:Row):boolean {
-  return Boolean(s.get("SELECT id FROM events WHERE workspace_id=? AND entity='task-handoff' AND entity_id=? AND action='pending' LIMIT 1",s.ws,taskId(row)));
+  // Finalization names the exact pending event; one completion must not clear a
+  // different outstanding request, nor keep blocking later unbound work forever.
+  return Boolean(s.get(`SELECT p.id FROM events p WHERE p.workspace_id=? AND p.entity='task-handoff' AND p.entity_id=? AND p.action='pending'
+    AND NOT EXISTS (SELECT 1 FROM events f WHERE f.workspace_id=p.workspace_id AND f.entity=p.entity AND f.entity_id=p.entity_id AND f.action='finalized' AND f.id>p.id
+      AND CASE WHEN json_valid(f.detail) THEN json_extract(f.detail,'$.pending_event') END='E'||p.id) LIMIT 1`,s.ws,taskId(row)));
 }
 function active(row: Row): void { check(!terminal(row), 'Task is closed; reopen it before changing work state', 4); }
 function executable(s: Store, row: Row): void { check(!row.human_only || human(s), 'Human-only work cannot be claimed or completed by an agent', 3); }

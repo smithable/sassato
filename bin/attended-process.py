@@ -10,13 +10,20 @@ import time
 from pathlib import Path
 
 
-def record(pid):
+def record(pid, scanning=False):
     try:
         fields = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()
         return {"pid": pid, "state": fields[0], "group": int(fields[2]),
                 "session": int(fields[3]), "start": fields[19]}
     except FileNotFoundError:
         return None
+    except ProcessLookupError:
+        # An unrelated process listed by the scan can exit between the listing and the read,
+        # and the kernel then answers ESRCH: that process is gone, so it is skipped. The
+        # pinned leader is read without this, so its guard is unchanged.
+        if scanning:
+            return None
+        raise
 
 
 def observe(pid, identity):
@@ -29,7 +36,7 @@ def observe(pid, identity):
     members = []
     for path in Path("/proc").iterdir():
         if path.name.isdecimal():
-            row = record(int(path.name))
+            row = record(int(path.name), scanning=True)
             if row and row["group"] == pid and row["state"] not in ("Z", "X"):
                 members.append(row)
     members.sort(key=lambda row: row["pid"])

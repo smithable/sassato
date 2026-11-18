@@ -5,8 +5,54 @@ import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { buildIndex, findIndex, showIndex } from '../dist/index.js';
-import { indexCacheRoot, readSnapshot, snapshotPath, advanceLatest, publish } from '../dist/index-cache.js';
+import { indexCacheRoot, readSnapshot, snapshotPath, advanceLatest, publish,pruneIndexCache,validAnalysis } from '../dist/index-cache.js';
 import { probeRepositoryIdentity, repositoryFingerprint } from '../dist/repository-identity.js';
+import { analyzeSource } from '../dist/index-extract.js';
+
+test('string-literal module names cannot publish an invalid immutable analysis or snapshot',t=>{
+  const {repo,cache,options}=setup(t),source='const valid = 1; export { valid as "bad\\nname" }; import { "bad\\nname" as local } from "./timer.js"; export function remains() {}';
+  const analysis=analyzeSource('odd.ts',source);
+  assert.equal(validAnalysis(analysis),true);assert.equal(analysis.exports.some(e=>e.name.includes('\n')),false);
+  write(repo,'src/odd.ts',source);commit(repo);const built=buildIndex(options);
+  assert.equal(buildIndex(options).published,false,'same snapshot remains readable');
+  assert.ok(showIndex('remains',options).items.some(i=>i.kind==='function'));
+  const poisoned=join(cache,'analysis','f'.repeat(64)+'.json');
+  assert.throws(()=>publish(poisoned,{...analysis,exports:[{name:'bad\nname',line:1}]}),/Malformed/);
+  assert.equal(existsSync(poisoned),false);assert.ok(readSnapshot(cache,built.repository,built.commit));
+});
+test('broad common-name queries cap candidates before repeated use enrichment and report a lower bound',t=>{
+  const {repo,options}=setup(t);
+  for(let i=0;i<80;i++)write(repo,`src/common-${i}.ts`,'export function get() {}\n'+Array.from({length:80},()=> 'get();').join('\n'));
+  commit(repo);buildIndex(options);
+  const result=showIndex('get',{...options,limit:3});
+  assert.equal(result.items.length,3);assert.equal(result.truncated,true);assert.equal(result.total_is_lower_bound,true);
+  assert.ok(result.total<=60);assert.ok(JSON.stringify(result).length<7000);
+});
+
+test('bounded file queries retain early imports even when later definitions fill the pool',t=>{
+  const {repo,options}=setup(t);
+  write(repo,'src/large-module.ts','import { timer } from "./timer.js";\n'+Array.from({length:100},(_,i)=>`export function symbol${i}() {}`).join('\n'));
+  commit(repo);buildIndex(options);
+  const result=showIndex('src/large-module.ts',{...options,limit:3});
+  assert.deepEqual(result.items.map(item=>[item.kind,item.line]),[['file',1],['import',1],['function',2]]);
+  assert.equal(result.total_is_lower_bound,true);assert.ok(result.total<=60);
+});
+
+test('cache eviction removes oldest recognized objects while preserving locks, unknown files and symlinks',t=>{
+  const {root,cache}=setup(t);indexCacheRoot(cache);const dir=join(cache,'analysis');mkdirSync(dir,{mode:0o700});
+  for(let i=0;i<5;i++)writeFileSync(join(dir,i.toString(16).padStart(64,'0')+'.json'),'{}');
+  writeFileSync(join(dir,'keep.txt'),'keep');const target=join(root,'external');writeFileSync(target,'untouched');
+  symlinkSync(target,join(dir,'e'.repeat(64)+'.json'));mkdirSync(join(cache,'publish.lock'));
+  const pruned=pruneIndexCache(cache,100000,2);assert.equal(pruned.removed,3);assert.equal(pruned.objects,2);
+  assert.equal(readFileSync(target,'utf8'),'untouched');assert.equal(readFileSync(join(dir,'keep.txt'),'utf8'),'keep');
+  assert.ok(existsSync(join(cache,'publish.lock')));
+});
+test('credential and infrastructure secret paths are excluded before source analysis',t=>{
+  const {repo,options}=setup(t),paths=['.envrc','terraform.tfvars','terraform.tfvars.json','.pypirc','kubeconfig','.kube/config','.aws/config'];
+  for(const path of paths)write(repo,path,'export function forbidden() {}');commit(repo);const built=buildIndex(options);
+  const snapshot=JSON.parse(readFileSync(built.path));assert.ok(paths.every(path=>!snapshot.files.some(file=>file.path===path)));
+  assert.equal(showIndex('forbidden',options).total,0);
+});
 
 function git(repo,...args) {
   const result=spawnSync('git',['-C',repo,...args],{encoding:'utf8',timeout:5000});
