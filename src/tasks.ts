@@ -11,10 +11,17 @@ const taskId = (row: Row): string => `T${row.id}`;
 const taskView = (row: Row): Row => ({ ...row, id: taskId(row), human_only: Boolean(row.human_only), review_required: Boolean(row.review_required), stale: Boolean(row.lease_until && row.lease_until < now() && !terminal(row)) });
 const blockerView = (row: Row): Row => ({ ...row, id: `B${row.id}`, task_id: `T${row.task_id}` });
 const questionView = (row: Row): Row => ({ ...row, id: `H${row.id}`, task_id: `T${row.task_id}`, blocker_id: `B${row.blocker_id}`, options: JSON.parse(row.options) });
+// What to ask for when a task is another role's: who can pass it on, and the command they run (T972).
+function retarget(row: Row, actor: string): string {
+  const id = taskId(row);
+  if (row.owner) return `It is held by ${row.owner}: ask ${row.owner} to hand it over (sassato handoff ${id} ${actor} SUMMARY), or a human.`;
+  const who = [...new Set([row.creator, row.for_role].filter(Boolean))].join(' or ');
+  return `Ask ${who || 'a human'} to retarget it to you (sassato update ${id} --for ${actor} --expect ${row.version}), then take it.`;
+}
 const unownedEditor = (row: Row, actor: string): boolean => !row.owner && (row.creator === actor || (!row.human_only && row.for_role === actor));
 function writable(s: Store, row: Row): string {
   const actor = s.requireActor();
-  check(human(s) || row.owner === actor || unownedEditor(row, actor), 'Only the owner, an unowned task\'s creator or target, or a human role may modify this task', 3);
+  check(human(s) || row.owner === actor || unownedEditor(row, actor), `Only the owner, an unowned task's creator or target, or a human role may modify this task. ${retarget(row, actor)}`, 3);
   return actor;
 }
 function pendingHandoff(s:Store,row:Row):boolean {
@@ -123,7 +130,7 @@ export function takeTask(s: Store, task: string, options: { hours?: number } = {
     const row = s.task(task), actor = s.requireActor(); assertWorkAllowed(s, actor); executable(s, row);
     check(row.status === 'open', 'Task is not open for claiming', 4);
     check(!row.owner || row.owner === actor, 'Task is assigned to another role', 4);
-    check(!row.for_role || row.for_role === actor, `Task is for ${row.for_role}`, 3);
+    check(!row.for_role || row.for_role === actor, `Task is for ${row.for_role}. ${retarget(row, actor)}`, 3);
     unblocked(s, row);
     return change(s, row, { owner: actor, status: 'doing', lease_until: lease(options.hours), reviewed_by: null, review_note: null }, 'claimed');
   });
