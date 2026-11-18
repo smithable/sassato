@@ -48,7 +48,7 @@ export function dirtyManifest(root:string,budget=new CaptureBudget()):DirtyEntry
   }
   return ordered.map(path=>{
     budget.check();
-    check(!sensitivePath(path),'Sensitive dirty path blocks brief capture; move credentials outside the checkout before handover',4);
+    check(index.has(path)||!sensitivePath(path),'Sensitive dirty path blocks brief capture; move credentials outside the checkout before handover',4);
     check(!isAbsolute(path) && insideCheckout(root,join(root,path)),'Dirty path escapes checkout',4);
     const full=join(root,path);let working:string,mode:string|null=null;
     try {

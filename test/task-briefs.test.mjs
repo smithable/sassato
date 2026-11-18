@@ -25,11 +25,28 @@ test('one brief budget bounds aggregate reads across both dirty captures and the
   clock=10;assert.throws(()=>time.check(),/overall time/);
   assert.throws(()=>dirtyManifest(root,time),/overall time/);
 });
-test('dirty credential paths block a complete brief instead of persisting a low-entropy secret hash',async t=>{
+test('untracked credential paths block a complete brief instead of persisting a low-entropy secret hash',async t=>{
   const {s,root,task}=await fixture(t);writeFileSync(join(root,'.envrc'),'not-a-real-secret');
   assert.throws(()=>saveTaskBrief(s,task,input(),s.task(task).version),/Sensitive dirty path/);
   assert.equal(showTaskBrief(s,task),null);
 });
+
+test('tracked sensitive-named source and infrastructure files retain complete dirty hashes',async t=>{
+  const {s,root,task,git}=await fixture(t),paths=['src/mail/secrets.ts','infra/beta.auto.tfvars'];
+  mkdirSync(join(root,'src/mail'),{recursive:true});mkdirSync(join(root,'infra'));
+  for(const path of paths)writeFileSync(join(root,path),'tracked fixture base');
+  git('add',...paths);git('-c','user.name=Fixture','-c','user.email=fixture@example.test','commit','-m','Track fixture source');
+  for(const path of paths)writeFileSync(join(root,path),'edited tracked fixture body');
+  const brief=saveTaskBrief(s,task,input(),s.task(task).version);
+  for(const path of paths){
+    const entry=brief.body.observed.dirty_manifest.find(entry=>entry.path===path);
+    assert.equal(entry.working,'sha256:'+hash('edited tracked fixture body'));assert.equal(entry.index.length,1);
+  }
+  assert.equal(JSON.stringify(brief).includes('edited tracked fixture body'),false);
+  writeFileSync(join(root,'infra/untracked.tfvars'),'untracked fixture body');
+  assert.throws(()=>saveTaskBrief(s,task,input(),s.task(task).version),/Sensitive dirty path/);
+});
+
 test('all identity and dirty-manifest Git probes disable lazy fetch and replacement objects',async t=>{
   const {root,dir}=await fixture(t),bin=join(dir,'safe-git-bin');mkdirSync(bin);
   const realGit=execFileSync('which',['git'],{encoding:'utf8'}).trim(),wrapper=join(bin,'git');
