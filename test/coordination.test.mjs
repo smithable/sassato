@@ -1,7 +1,7 @@
 import { fixtureConfig } from './fixtures/team.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -270,9 +270,12 @@ test('context task rows show priority and who asked, marking a human role',t=>{
 });
 
 // A native install runs as the versioned file its launcher links to; argv[0] is then '2.1.327', not 'claude'.
-async function native(t,file,args=['60']) {
-  copyFileSync('/bin/sleep',file);chmodSync(file,0o755);
-  const child=spawn(file,args,{stdio:'ignore'});
+// A copied shell waiting on stdin, not sleep: a multi-call coreutils (uutils on newer Ubuntu) picks its tool by
+// argv[0] and exits at once when the copy is named '2.1.327'.
+const shell=realpathSync('/bin/sh');
+async function native(t,file,args=['-c','read line']) {
+  copyFileSync(shell,file);chmodSync(file,0o755);
+  const child=spawn(file,args,{stdio:['pipe','ignore','ignore']});
   t.after(async()=>{if(child.exitCode===null&&child.signalCode===null){child.kill();await once(child,'exit');}});
   for(let i=0;i<50&&!readFileSync(`/proc/${child.pid}/cmdline`,'utf8').startsWith(file);i++)await new Promise(r=>setTimeout(r,20));
   return child;
@@ -286,7 +289,7 @@ test('a provider started through its launcher\'s resolved, versioned file verifi
   symlinkSync(join(versions,'2.1.327'),join(bin,'claude'));withPath(t,bin);
   assert.equal(c.registerSession(s,{provider:'claude',external_id:sessionId,pid:current.pid}).pid,current.pid);
   // After an update the launcher points at a newer version; the running older one still verifies.
-  copyFileSync('/bin/sleep',join(versions,'2.1.328'));rmSync(join(bin,'claude'));symlinkSync(join(versions,'2.1.328'),join(bin,'claude'));
+  copyFileSync(shell,join(versions,'2.1.328'));rmSync(join(bin,'claude'));symlinkSync(join(versions,'2.1.328'),join(bin,'claude'));
   assert.equal(as(s,'b',()=>c.registerSession(s,{provider:'claude',external_id:sessionId,pid:current.pid})).pid,current.pid);
   // Same folder, not a version name: refused.
   const helper=await native(t,join(versions,'helper'));
