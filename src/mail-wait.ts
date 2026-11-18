@@ -160,6 +160,14 @@ function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
   if(tasks.length)return {...base,reason,task:tasks[0],tasks};
   return undefined;
 }
+/** What one event would put in a role's digest, as the waiter decides it (for the digest statistics
+ * behind digest_skip, T977): a waking kind, an extra entry kind while a digest collects, or nothing. */
+export function digestKindOf(s:Store,actor:string,event:Row):{kind:string;wakes:boolean}|undefined {
+  const wake=workflow(s,actor,event);
+  if(wake)return {kind:wake.message?.reply?'reply-needed':wake.reason,wakes:true};
+  const extra=extraDuringDigest(s,actor,event);
+  return extra?{kind:extra.kind,wakes:false}:undefined;
+}
 /** Immediate workflow signals may be behind a full mail page. Deliver them without crossing skipped events. */
 function priorityWorkflow(s:Store,actor:string,cursor:number):{wake:WaitResult;event:Row}[] {
   const answer=s.get(`SELECT e.* FROM questions q JOIN tasks t ON t.workspace_id=q.workspace_id AND t.id=q.task_id
@@ -231,7 +239,10 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
   });
   const latest=initial.latest;
   let cursor=initial.cursor,omitted=false;let priority:WaitResult|undefined;
+  const skip=new Set(workspaceSettings(s).digest_skip?.[actor]??[]);
   const add=(entry:DigestEntry):boolean=>{
+    // Kinds this role never acts on (digest_skip, T977) are passed over: they neither wake it nor fill its digest.
+    if(skip.has(entry.kind))return true;
     const key=entry.id.startsWith('M')?entry.id:entry.event_id??`${entry.id}:${entry.kind}`;
     if(entries.has(key))return true;
     if(entries.size>=DIGEST_LIMIT){omitted=true;return false;}

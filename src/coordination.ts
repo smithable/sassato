@@ -180,7 +180,7 @@ export function inbox(s: Store, options: InboxOptions = {}): Row[] {
   const read = () => {
     const predicate = state === 'all' ? '1=1' : state === 'pending' ? "r.state IN ('unread','read')" : 'r.state=?';
     const params = state === 'all' || state === 'pending' ? [s.ws,actor,count] : [s.ws,actor,state,count];
-    const rows = s.all(`SELECT m.*,r.state,r.read_at,r.done_at FROM receipts r JOIN messages m ON m.workspace_id=r.workspace_id AND m.id=r.message_id WHERE r.workspace_id=? AND r.recipient=? AND ${predicate} ORDER BY CASE r.state WHEN 'unread' THEN 0 WHEN 'read' THEN 1 ELSE 2 END,m.urgent DESC,m.id LIMIT ?`,...params);
+    const rows = s.all(`SELECT m.*,r.state,r.read_at,r.done_at FROM receipts r JOIN messages m ON m.workspace_id=r.workspace_id AND m.id=r.message_id WHERE r.workspace_id=? AND r.recipient=? AND ${predicate} ORDER BY CASE r.state WHEN 'unread' THEN 0 WHEN 'read' THEN 1 ELSE 2 END,m.urgent DESC,m.id DESC LIMIT ?`,...params);
     if (!options.peek) for (const row of rows) if (row.state === 'unread') {
       row.read_at = now(); row.state = 'read';
       s.run("UPDATE receipts SET state='read',read_at=? WHERE workspace_id=? AND message_id=? AND recipient=? AND state='unread'",row.read_at,s.ws,row.id,actor);

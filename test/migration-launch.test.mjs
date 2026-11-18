@@ -331,7 +331,7 @@ test('Claude bootstrap snapshots then arms one role-scoped background waiter bef
   const context='sassato context --json --as a --workspace test';
   assert.doesNotMatch(prompt,/context advise|Ask the human.*(?:compact|fresh)/i);
   assert.match(prompt,/After meaningful progress/);assert.match(prompt,/Keep native automatic compaction enabled/);
-  const waiter='sassato wait --since CURSOR --as a --workspace test';
+  const waiter='sassato wake --since CURSOR --as a --workspace test';
   assert(prompt.indexOf(context)>=0);assert(prompt.indexOf(context)<prompt.indexOf(waiter));
   assert.match(prompt,/sections.notification_progress\[0\].cursor as CURSOR/);
   assert.match(prompt,/preserving existing progress/);
@@ -344,16 +344,18 @@ test('Claude bootstrap snapshots then arms one role-scoped background waiter bef
   for(const command of ['checkpoint save','checkpoint show','progress show']) {
     assert(prompt.includes(`sassato ${command} --as a --workspace test`));
   }
-  assert.match(prompt,/progress save --cursor CURSOR --expect VERSION --as a --workspace test/);
   assert.match(prompt,/sassato review TASK_ID --expect VERSION --as a --workspace test/);
-  assert.match(prompt,/When notified, run sassato context --as a --workspace test and sassato inbox --as a --workspace test/);
+  assert.match(prompt,/When notified, read the wake's output: it holds everything to act on/);
+  assert.match(prompt,/it has already saved the notification cursor, and it ends with the exact re-arm command/);
+  assert.match(prompt,/one sassato checkpoint save --as a --workspace test\) in one command/);
+  assert.match(prompt,/adding --ack for the urgent mail you handled/);
   assert.match(prompt,/BEFORE beginning work or going idle, start exactly one native Claude Code background tool-task/);
   assert.match(prompt,/If one waiter is already active, keep it/);
   assert.match(prompt,/Never use a foreground wait, shell &, nohup, or an outer shell loop/);
   assert.match(prompt,/human answers, assigned or resolved blockers, dropped dependencies, assignments or handoffs, newly ready tasks, and review submissions or results/);
   assert.match(prompt,/ordinary mail does not wake/);
-  assert.match(prompt,/cursor returned by wait, not a newer context cursor/);
-  assert.match(prompt,/On timeout, save and rearm with the cursor returned by wait/);
+  assert.match(prompt,/the cursor returned by the wake, not a newer context cursor/);
+  assert.match(prompt,/If the wake says the cursor was NOT saved, read sassato progress show --as a --workspace test before re-arming/);
   assert.match(prompt,/On STOP, do not rearm until a human resumes/);
   assert.equal(plan.args.filter(arg=>arg.includes(context)).length,1,'all bootstrap text remains one literal provider argv value');
   assert(!plan.args.includes('--since'),'watcher flags are instructions, not provider CLI flags');

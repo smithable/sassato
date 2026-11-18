@@ -48,13 +48,14 @@ test('inbox consumes only returned receipts and exposes read/done state to sende
   const first=c.send(s,['b','c','b'],'First shared handoff');
   const second=c.send(s,['b'],'Second shared handoff');
   assert.equal(as(s,'b',()=>c.inbox(s,{peek:true,limit:1}))[0].state,'unread');
-  as(s,'b',()=>{ const read=c.inbox(s,{limit:1});assert.equal(read[0].id,first.id);assert.equal(read[0].state,'read'); });
+  // Newest first (T977): the one returned is the second message.
+  as(s,'b',()=>{ const read=c.inbox(s,{limit:1});assert.equal(read[0].id,second.id);assert.equal(read[0].state,'read'); });
   let sent=c.outbox(s);
-  assert.equal(sent.find(m=>m.id===first.id).receipts.find(r=>r.recipient==='b').state,'read');
+  assert.equal(sent.find(m=>m.id===second.id).receipts[0].state,'read');
+  assert.equal(sent.find(m=>m.id===first.id).receipts.find(r=>r.recipient==='b').state,'unread');
   assert.equal(sent.find(m=>m.id===first.id).receipts.find(r=>r.recipient==='c').state,'unread');
-  assert.equal(sent.find(m=>m.id===second.id).receipts[0].state,'unread');
-  // A previous read-but-unfinished message must not starve new unread messages.
-  assert.equal(as(s,'b',()=>c.inbox(s,{limit:1}))[0].id,second.id);
+  // A previous read-but-unfinished message must not starve unread messages.
+  assert.equal(as(s,'b',()=>c.inbox(s,{limit:1}))[0].id,first.id);
   as(s,'b',()=>c.acknowledge(s,first.id));
   const events=s.get('SELECT count(*) AS n FROM events').n;
   as(s,'b',()=>c.acknowledge(s,first.id));

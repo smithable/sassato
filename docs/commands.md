@@ -625,3 +625,58 @@ For example, an agent's `wait --timeout 10` can return a collected digest with
 `flush: deadline` even though its default quiet window is 120 seconds. Treat exit 5
 as an **empty** timeout; a short timeout never discards notifications already
 collected. `--settle 0` explicitly selects immediate notification behavior.
+
+## One call per wake (T977)
+
+`sas wake` replaces the waiter's read-handle-save routine with one call. It is the background waiter:
+
+```sh
+sas wake --since 123 --as builder                    # first wake after context
+sas wake --since 140 --ack M12,M13 --as builder      # the re-arm: acknowledge what was handled, wait again
+```
+
+In one call, `wake`:
+1. acknowledges the mail named with `--ack`;
+2. waits exactly like `wait` (same settling, STOP and immediate signals; `--since` defaults to the saved
+   progress);
+3. prints what the role needs to act without a second read:
+   - STOP, with the `stopped` command;
+   - each digest entry with its full text: a message's body; a task's state, its brief when the task is
+     new to the role, a review's note and the latest task note; a question with its answer;
+   - urgent and needs-reply mail still waiting for an acknowledgement.
+
+   Text over 1,500 characters is cut, with a marked tail naming the record to `show`;
+4. saves the notification cursor with the expected-version check. If progress moved while it waited
+   (another waiter or session), nothing is saved, the output says so, and the exit status is 4;
+5. ends with the exact re-arm command, with `--ack` for the urgent and needs-reply mail it showed.
+
+A wake with nothing new prints one line (`Nothing new for builder · cursor 140 saved · re-arm: …`).
+A STOP saves nothing and offers no re-arm.
+
+Saving at wake time means the role attests that it **read** the entries, not that it finished them. Work
+that cannot be finished at once goes on its task (a note or a block). Urgent mail keeps coming back until
+it is acknowledged.
+
+A wake is then: one `sas wake`; the handling; one command with the writes (notes, replies, one
+`checkpoint save`); the re-arm, in the same response as the last write.
+
+### Leaving out what a role never acts on
+
+`workspace set --digest-skip JSON` (a human) names, per role, the digest entry kinds that neither wake it
+nor fill its digest:
+
+```sh
+sas workspace set --digest-skip '{"fable":["own-work","task-finished"]}' --as johan
+```
+
+These kinds can be skipped: `own-work`, `open-work`, `task-ready`, `task-finished`, `mail`,
+`dependency-dropped`. Urgent mail, replies, answers, blockers, reviews and STOP always reach the role.
+The default is none: every role gets its digest as before.
+
+`node scripts/digest-stats.mjs <copy of the database> <workspace> [days]` counts, per role, the kinds the
+waiter would have put in each digest over the last days, so a list can rest on numbers. Run it on a copy:
+it reads current task states, so it shows what still applies, not every past wake.
+
+### Inbox
+
+`sas inbox` lists newest first within unread, read and done. `--unread` is short for `--state unread`.
