@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { Store } from '../dist/storage.js';
 import { now } from '../dist/errors.js';
 import { previewImport, applyImport, exportMarkdown } from '../dist/migration.js';
+import { setWorkspaceSettings, setRoleAutocompact, roleAutocompact, workspaceSettings } from '../dist/workspace-settings.js';
 import { planLaunch, launch, unlockLaunch, windowsTerminalArgs, savedCodexSession } from '../dist/launch.js';
 import { registerSession, processIdentity } from '../dist/coordination.js';
 
@@ -431,4 +432,22 @@ test('codex resume finds the role\'s newest saved Codex session when none is reg
   const registered='12345678-1234-1234-1234-123456789abc';
   f.s.run('INSERT INTO sessions(workspace_id,role,provider,external_id,started_at,last_seen_at,ended_at) VALUES(?,?,?,?,?,?,?)',f.s.ws,'c','codex',registered,now(),now(),now());
   assert.equal(planLaunch(f.s,['c'],{resume:true,noPrompt:true})[0].sessionId,registered);
+});
+
+test('a Claude role\'s auto-compact window is passed by launch; unset, Codex and small values are refused or left out (T980)',t=>{
+  const f=fixture(t);
+  assert(!planLaunch(f.s,['a'],{fresh:true})[0].args.includes('--autocompact'),'unset: nothing passed');
+  setWorkspaceSettings(f.s,{autocompact:{a:200000}});
+  const args=planLaunch(f.s,['a'],{fresh:true})[0].args;
+  assert.equal(args[args.indexOf('--autocompact')+1],'200000');
+  assert(!planLaunch(f.s,['c'],{fresh:true})[0].args.includes('--autocompact'));
+  // An entry for a non-Claude role is dropped, never a reason to refuse; setting one is refused.
+  assert.deepEqual(setWorkspaceSettings(f.s,{autocompact:{a:200000,c:200000}}).autocompact,{a:200000});
+  assert.throws(()=>setRoleAutocompact(f.s,'c','200000'),/for Claude roles/);
+  assert.throws(()=>setRoleAutocompact(f.s,'a','5'),/from 100000/);
+  assert.equal(setRoleAutocompact(f.s,'a','300000'),300000);
+  assert.equal(roleAutocompact(workspaceSettings(f.s),'constructor'),null);
+  assert.throws(()=>setWorkspaceSettings(f.s,{autocompact:{a:99999}}),/from 100000/);
+  setWorkspaceSettings(f.s,{autocompact:{}});
+  assert(!planLaunch(f.s,['a'],{fresh:true})[0].args.includes('--autocompact'),'auto: nothing passed again');
 });

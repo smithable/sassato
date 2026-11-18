@@ -688,3 +688,15 @@ it reads current task states, so it shows what still applies, not every past wak
 ### Inbox
 
 `sas inbox` lists newest first within unread, read and done. `--unread` is short for `--state unread`.
+
+## Auto-compact window per Claude role (T980)
+
+```sh
+sas role set builder --autocompact 200000 --as alice   # launch passes: claude --autocompact 200000
+sas role set builder --autocompact auto --as alice     # back to Claude Code's own default
+```
+
+A human sets it. It applies to Claude roles only, from 100,000 to 10,000,000 tokens, and `sas roles` shows it
+as `autocompact` (null when unset). It is kept in the workspace settings, so it needs no schema change. Unset
+by default: nothing changes until it is set. In the session, `/autocompact` shows the window in force. Claude
+Code raises a conversation's window by itself when what loads with every request fills more than half of it.
