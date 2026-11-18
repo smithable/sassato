@@ -4,7 +4,7 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { availableParallelism, constants } from 'node:os';
-import { basename } from 'node:path';
+import { basename,isAbsolute } from 'node:path';
 import type { Row, Store } from './storage.js';
 import { AppError,check, name, now, safe } from './errors.js';
 import { assertWorkAllowed } from './control.js';
@@ -198,9 +198,26 @@ function sampleTree(pids: number[]): { mb: number; cpuS: number } {
 export interface RunOptions { kind: string; wait: boolean; command: string[]; estimate?: Estimate; log?: (line: string) => void }
 
 /** Jobs are machine-wide, so honor every configured workspace maintenance lock. */
-function maintenancePaths(s:Store):string[] {
-  const configured=s.all("SELECT detail FROM events WHERE entity='attended-enrollment' AND action='configured'").map(row=>String(JSON.parse(row.detail).maintenance_lock));
-  return [...new Set([...configured,...s.all("SELECT e.detail FROM events e WHERE e.entity='supervisor-policy' AND e.action='configured' AND e.id=(SELECT max(n.id) FROM events n WHERE n.workspace_id=e.workspace_id AND n.entity='supervisor-policy' AND n.action='configured')").map(row=>String(JSON.parse(row.detail).policy.maintenance_lock))])].sort();
+function maintenanceVersion(s:Store):string {
+  return JSON.stringify(s.all(`SELECT w.id,(SELECT max(e.id) FROM events e WHERE e.workspace_id=w.id AND e.entity IN ('attended-enrollment','supervisor-policy') AND e.action='configured') AS version FROM workspaces w ORDER BY w.id`));
+}
+export function maintenancePolicy(s:Store):{paths:string[];version:string} {
+  return s.snapshot(()=>{
+    const paths:string[]=[];
+    // Jobs are machine-wide. Read only current enrollment per role and current
+    // supervisor policy per workspace, outside the admission writer transaction.
+    for(const workspace of s.all('SELECT id FROM workspaces ORDER BY id')) {
+      const rows=s.all(`SELECT e.entity,e.detail FROM events e WHERE e.workspace_id=? AND e.action='configured' AND e.entity IN ('attended-enrollment','supervisor-policy')
+        AND e.id=(SELECT max(n.id) FROM events n WHERE n.workspace_id=e.workspace_id AND n.entity=e.entity AND n.action=e.action AND (e.entity='supervisor-policy' OR n.entity_id=e.entity_id))`,workspace.id);
+      for(const row of rows) {
+        let detail:Row;try{detail=JSON.parse(row.detail);}catch{throw new AppError('Current supervisor maintenance policy is malformed; reconcile it before job admission',4);}
+        const path=row.entity==='supervisor-policy'?detail?.policy?.maintenance_lock:detail?.maintenance_lock;
+        check(typeof path==='string'&&path.length>0&&path.length<=4096&&isAbsolute(path)&&!/[\x00-\x1f]/.test(path),'Current supervisor maintenance lock must be an absolute path; reconcile it before job admission',4);
+        paths.push(path);
+      }
+    }
+    return {paths:[...new Set(paths)].sort(),version:maintenanceVersion(s)};
+  });
 }
 
 /** Ask, wait if told to, run, measure, release. Resolves to the exit status to leave with. */
@@ -208,14 +225,14 @@ export async function runJob(s: Store, options: RunOptions): Promise<number> {
   let reported=false;
   for(;;){
     assertWorkAllowed(s,s.requireActor());
-    const paths=maintenancePaths(s),leases:SupervisorLease[]=[];
+    const policy=maintenancePolicy(s),leases:SupervisorLease[]=[];
     let acquired=false;
     try {
-      for(const path of paths)leases.push(acquireSupervisorLock(path,'shared'));
+      for(const path of policy.paths)leases.push(acquireSupervisorLock(path,'shared'));
       acquired=true;
       return await runProtectedJob(s,options,()=>{
         for(const lease of leases)lease.assertHeld();
-        check(JSON.stringify(maintenancePaths(s))===JSON.stringify(paths),'Supervisor maintenance policy changed before job admission; retry after reconciliation',4);
+        check(maintenanceVersion(s)===policy.version,'Supervisor maintenance policy changed before job admission; retry after reconciliation',4);
       });
     } catch(error) {
       if(acquired || !(error instanceof AppError) || !error.message.includes('lock is busy'))throw error;

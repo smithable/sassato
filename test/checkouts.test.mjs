@@ -30,6 +30,23 @@ async function fixture(t) {
   const task=role=>{s.actor=role;const task=addTask(s,{title:'Work in '+role});takeTask(s,task.id);return task.id;};
   return {dir,root,linked,s,task,git,children};
 }
+test('worker paths reject direct and symlinked Git metadata in ordinary and linked checkouts',async t=>{
+  const {root,linked,s,task,git}=await fixture(t),checkout=registerCheckout(s,root),id=task('builder');
+  bindCheckout(s,{checkout:checkout.checkout_id,directory:root,task:id,provider:'claude',session:'first'});
+  assert.throws(()=>resolveWorkerPath(s,'.git/config'),/Git metadata/);
+  symlinkSync(join(root,'.git'),join(root,'metadata-alias'));
+  assert.throws(()=>resolveWorkerPath(s,'metadata-alias/config'),/Git metadata/);
+  assert.ok(resolveWorkerPath(s,'file.txt').path.endsWith('/file.txt'));
+  const second=registerCheckout(s,linked),other=task('reviewer');
+  bindCheckout(s,{checkout:second.checkout_id,directory:linked,task:other,provider:'codex',session:'second'});
+  assert.throws(()=>resolveWorkerPath(s,'.git'),/Git metadata/);
+  symlinkSync(join(linked,'.git'),join(linked,'gitfile-alias'));
+  assert.throws(()=>resolveWorkerPath(s,'gitfile-alias'),/Git metadata/);
+  assert.throws(()=>resolveWorkerPath(s,'.GiT/config'),/Git metadata/);
+  const common=git('-C',linked,'rev-parse','--path-format=absolute','--git-common-dir').trim();
+  symlinkSync(common,join(linked,'common-alias'));
+  assert.throws(()=>resolveWorkerPath(s,'common-alias/config'),/escapes|Git metadata/);
+});
 test('two workers resolve source and state to their own checkout and exact cwd',async t=>{
   const {s,root,linked,task,children}=await fixture(t),first=registerCheckout(s,root),second=registerCheckout(s,linked);
   assert.equal(first.repository_id,second.repository_id);assert.notEqual(first.checkout_id,second.checkout_id);

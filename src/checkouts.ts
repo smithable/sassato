@@ -5,6 +5,7 @@ import { type Store, type Row } from './storage.js';
 import { check, id, name, now, text } from './errors.js';
 import { assertWorkAllowed } from './control.js';
 import { sessionState } from './coordination.js';
+import type { CaptureBudget } from './capture-budget.js';
 import { probeRepositoryIdentity, repositoryFingerprint, checkoutFingerprint, insideCheckout, assertPhysicalIdentity, type RepositoryIdentity } from './repository-identity.js';
 
 export function registerCheckout(s:Store,directory:string):Row {
@@ -38,8 +39,8 @@ export function registeredCheckout(s:Store,checkoutId:string):Row {
   const row=s.get('SELECT c.*,p.id AS project_id FROM registry_checkouts c JOIN project_checkouts pc ON pc.checkout_id=c.id JOIN registry_projects p ON p.id=pc.project_id WHERE p.workspace_id=? AND c.id=?',s.ws,text(checkoutId,'checkout id',100));
   check(row,'Checkout is not registered in this project',3);return row;
 }
-export function inspectCheckout(s:Store,checkoutId:string,directory?:string):RepositoryIdentity {
-  const row=registeredCheckout(s,checkoutId),identity=probeRepositoryIdentity(directory??row.root);
+export function inspectCheckout(s:Store,checkoutId:string,directory?:string,budget?:CaptureBudget):RepositoryIdentity {
+  const row=registeredCheckout(s,checkoutId),identity=probeRepositoryIdentity(directory??row.root,budget);
   check(checkoutFingerprint(identity)===row.fingerprint,'Checkout identity changed; explicit rebind is required',4);
   return identity;
 }
@@ -89,8 +90,11 @@ export function resolveWorkerPath(s:Store,relativePath:string,task?:string):Row 
   const binding=currentBinding(s,task),identity=inspectCheckout(s,binding.checkout_id,binding.working_dir);
   text(relativePath,'repository relative path',4096);
   check(!isAbsolute(relativePath),'Path must be repository relative');
+  check(!relativePath.split(/[\\/]/).some(part=>part.toLowerCase()==='.git'),'Git metadata paths are not worker files',3);
   const path=realpathSync(resolve(identity.checkout_root,relativePath));
   check(insideCheckout(identity.checkout_root,path),'Resolved path escapes the registered checkout',3);
+  check(!path.split(/[\\/]/).some(part=>part.toLowerCase()==='.git'),'Git metadata paths are not worker files',3);
+  check(!insideCheckout(identity.git_dir,path)&&!insideCheckout(identity.git_common_dir,path),'Git metadata paths are not worker files',3);
   return {path,project_id:registeredCheckout(s,binding.checkout_id).project_id,repository_id:registeredCheckout(s,binding.checkout_id).repository_id,checkout_id:binding.checkout_id,head:identity.head,working_dir:identity.working_dir};
 }
 export function releaseCheckout(s:Store):Row {

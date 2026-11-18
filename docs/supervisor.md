@@ -235,6 +235,12 @@ never fallback. The first release supports non-bare Git checkouts only.
 
 Reserve one coding worker per checkout, and one worker per role instance, across
 projects sharing this local database. Separate review checkouts are required.
+Role names are database-wide worker identities, not independent identities per
+workspace. A managed `builder` or active checkout reservation in one workspace
+therefore also reserves `builder` in every other workspace of that database,
+including ordinary launches and waiter enrollment. Use distinct role names or
+separate databases for independent workers. This exclusion is intentional; changing
+the selected workspace must not bypass a generation fence or launch reservation.
 Serialize common-Git-dir ref/worktree mutations as well as registry reservations.
 Replacement never creates a worktree, resets, stashes, deletes files or switches
 branches. Persist SQLite and controller locks on a verified local native Linux filesystem;

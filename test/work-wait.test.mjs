@@ -9,7 +9,7 @@ import {initWorkspace} from '../dist/admin.js';
 import {send,inbox,acknowledge} from '../dist/coordination.js';
 import {requestStop,resumeWork,acknowledgeStop} from '../dist/control.js';
 import {addTask,askHuman,answerQuestion,blockTask,resolveBlocker,addDependency,removeDependency,takeTask,doneTask,dropTask,reopenTask,releaseTask,handoffTask,updateTask} from '../dist/tasks.js';
-import {waitForWork} from '../dist/mail-wait.js';
+import {waitForWork,idleOpenWork} from '../dist/mail-wait.js';
 import {workspaceSettings,setWorkspaceSettings} from '../dist/workspace-settings.js';
 function fixture(t){
   const dir=mkdtempSync(join(tmpdir(),'sassato-workwait-')),path=join(dir,'state.db'),s=new Store(path,'human',{create:true});
@@ -18,6 +18,17 @@ function fixture(t){
   return {s,reader,stopFile:join(dir,'stop'),cursor:()=>s.get('SELECT coalesce(max(id),0) n FROM events WHERE workspace_id=?',s.ws).n};
 }
 function as(s,role,fn){const old=s.actor;s.actor=role;try{return fn();}finally{s.actor=old;}}
+test('idle open-work selection honors empty, routed and selected roles without changing strict role syntax',t=>{
+  const f=fixture(t),loose=addTask(f.s,{title:'Unrouted'}),routed=addTask(f.s,{title:'Routed',forRole:'a'});
+  setWorkspaceSettings(f.s,{open_work_roles:[]});
+  assert.deepEqual(idleOpenWork(f.reader,'a'),[routed.id]);
+  setWorkspaceSettings(f.s,{open_work_roles:['a','a']});
+  assert.deepEqual(workspaceSettings(f.s).open_work_roles,['a']);
+  assert.deepEqual(idleOpenWork(f.reader,'a'),[loose.id,routed.id]);
+  assert.throws(()=>setWorkspaceSettings(f.s,{open_work_roles:[' A ']}),/Names/);
+  assert.throws(()=>setWorkspaceSettings(f.s,{open_work_roles:['A']}),/Names/);
+  assert.deepEqual(workspaceSettings(f.s).open_work_roles,['a']);
+});
 const task=(s,title,owner='a')=>addTask(s,{title,owner});
 const wait=(f,since,extra={})=>waitForWork(f.reader,{settle:0,timeout:1,stopFile:f.stopFile,...(since===undefined?{}:{since}),...extra});
 const finish=(s,id)=>as(s,s.task(id).owner??'human',()=>{takeTask(s,id);doneTask(s,id);});

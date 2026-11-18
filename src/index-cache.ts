@@ -1,6 +1,6 @@
-import { constants, closeSync, existsSync, linkSync, lstatSync, mkdirSync, realpathSync, openSync, readFileSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { constants, closeSync, existsSync, linkSync, lstatSync, mkdirSync, realpathSync, openSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { check } from './errors.js';
 import { INDEX_SCHEMA, type FileAnalysis, type IndexSnapshot } from './index-types.js';
@@ -20,7 +20,34 @@ export function indexCacheRoot(path?:string):string {
     try {mkdirSync(result,{mode:0o700});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;}
     privateDirectory(result);return result;
   }
-  const root=canonical(requested);privateDirectory(root);cacheRoots.add(root);return root;
+  const root=canonical(requested);privateDirectory(root);cacheRoots.add(root);pruneIndexCache(root);return root;
+}
+/** Cached navigation is disposable. Never remove locks, hints or unknown files. */
+export function pruneIndexCache(root:string,maxBytes=256*1024*1024,maxObjects=2000):{removed:number;bytes:number;objects:number} {
+  privateDirectory(root);
+  const objects:{path:string;bytes:number;modified:number}[]=[];
+  const collect=(path:string,depth:number):void=>{
+    if(!existsSync(path))return;
+    privateDirectory(path);
+    for(const entry of readdirSync(path,{withFileTypes:true})) {
+      const full=join(path,entry.name);
+      if(entry.isDirectory()&&depth<3&&(/^[a-f0-9]{64}$/.test(entry.name)||/^v\d+-[\w.-]+$/.test(entry.name)||['analysis','commits'].includes(entry.name)))collect(full,depth+1);
+      else if(entry.isFile()&&/^[a-f0-9]{40,64}\.json$/.test(entry.name)&&['analysis','commits'].includes(basename(path))) {
+        try {
+          const stat=lstatSync(full);
+          if(stat.isFile()&&(!process.getuid||stat.uid===process.getuid())&&(stat.mode&0o022)===0)objects.push({path:full,bytes:stat.size,modified:stat.mtimeMs});
+        }catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+      }
+    }
+  };
+  collect(root,0);
+  let bytes=objects.reduce((n,o)=>n+o.bytes,0),count=objects.length,removed=0;
+  for(const object of objects.sort((a,b)=>a.modified-b.modified||a.path.localeCompare(b.path))) {
+    if(bytes<=maxBytes&&count<=maxObjects)break;
+    try {unlinkSync(object.path);removed++;}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+    bytes-=object.bytes;count--;
+  }
+  return {removed,bytes,objects:count};
 }
 function privateDirectory(path:string):void {
   const stat=lstatSync(path);
@@ -46,6 +73,13 @@ export function validAnalysis(value:FileAnalysis):boolean {
 }
 /** Publish without replacing an existing immutable object, even when another writer wins the race. */
 export function publish(path:string,value:unknown):boolean {
+  // Never poison immutable objects that subsequent readers must reject.
+  if(basename(dirname(path))==='analysis')check(validAnalysis(value as FileAnalysis),'Malformed index analysis; nothing published',4);
+  if(basename(dirname(path))==='commits') {
+    const snapshot=value as IndexSnapshot;
+    check(snapshot&&snapshot.schema===INDEX_SCHEMA&&snapshot.parser===parserVersion&&Array.isArray(snapshot.files)&&snapshot.files.every(file=>validAnalysis(file)),'Malformed index snapshot; nothing published',4);
+    assertSnapshotPaths(snapshot.files.map(file=>file.path));
+  }
   const serialized=JSON.stringify(value)+'\n';
   check(Buffer.byteLength(serialized)<=MAX_CACHE_BYTES,'Index metadata exceeds cache size limit; nothing published',4);
   directory(dirname(path));
@@ -78,7 +112,7 @@ export function cachedAnalysis(root:string,file:TreeFile,source:Buffer):FileAnal
     const value=readCache(path) as FileAnalysis;
     if(validAnalysis(value))return value;
   }catch { /* Missing or malformed analysis is recomputed from the requesting snapshot's source. */ }
-  const value=analyzeSource(file.path,source.toString('utf8'));publish(path,value);return value;
+  const value=analyzeSource(file.path,source.toString('utf8'));check(validAnalysis(value),'Malformed extracted index analysis',4);publish(path,value);return value;
 }
 export function advanceLatest(root:string,snapshot:IndexSnapshot,identity:RepositoryIdentity):boolean {
   try {return advanceLatestHint(root,snapshot,identity);}catch {return false;}

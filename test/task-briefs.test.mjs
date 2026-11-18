@@ -14,8 +14,47 @@ import { registerCheckout,bindCheckout,currentBinding } from '../dist/checkouts.
 import { saveTaskBrief,showTaskBrief,pendingBoundHandoff } from '../dist/task-briefs.js';
 import { saveNotificationProgress } from '../dist/notification-progress.js';
 import { dirtyManifest } from '../dist/dirty-manifest.js';
+import { CaptureBudget } from '../dist/capture-budget.js';
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const input=()=>({version:1,objective:'Finish the parser',acceptance:['Parser handles all input'],decisions:[{decision:'Preserve the API',source:'task decision'}],open_issues:[],validation:[{command:'node --test parser.test.mjs',result:'Pending'}],artifacts:[],next_action:'Run parser regression',configuration:{digest:hash('fixture settings'),provenance:['fixture/settings.json']},jobs:[]});
+test('one brief budget bounds aggregate reads across both dirty captures and the total deadline',async t=>{
+  const {root}=await fixture(t);writeFileSync(join(root,'edit.txt'),'sixsix');
+  const bytes=new CaptureBudget(10,30000);assert.equal(dirtyManifest(root,bytes).length,1);
+  assert.throws(()=>dirtyManifest(root,bytes),/total source-byte/);
+  let clock=0;const time=new CaptureBudget(100,10,()=>clock);assert.equal(time.timeout(100),10);
+  clock=10;assert.throws(()=>time.check(),/overall time/);
+  assert.throws(()=>dirtyManifest(root,time),/overall time/);
+});
+test('untracked credential paths block a complete brief instead of persisting a low-entropy secret hash',async t=>{
+  const {s,root,task}=await fixture(t);writeFileSync(join(root,'.envrc'),'not-a-real-secret');
+  assert.throws(()=>saveTaskBrief(s,task,input(),s.task(task).version),/Sensitive dirty path/);
+  assert.equal(showTaskBrief(s,task),null);
+});
+
+test('tracked sensitive-named source and infrastructure files retain complete dirty hashes',async t=>{
+  const {s,root,task,git}=await fixture(t),paths=['src/mail/secrets.ts','infra/beta.auto.tfvars'];
+  mkdirSync(join(root,'src/mail'),{recursive:true});mkdirSync(join(root,'infra'));
+  for(const path of paths)writeFileSync(join(root,path),'tracked fixture base');
+  git('add',...paths);git('-c','user.name=Fixture','-c','user.email=fixture@example.test','commit','-m','Track fixture source');
+  for(const path of paths)writeFileSync(join(root,path),'edited tracked fixture body');
+  const brief=saveTaskBrief(s,task,input(),s.task(task).version);
+  for(const path of paths){
+    const entry=brief.body.observed.dirty_manifest.find(entry=>entry.path===path);
+    assert.equal(entry.working,'sha256:'+hash('edited tracked fixture body'));assert.equal(entry.index.length,1);
+  }
+  assert.equal(JSON.stringify(brief).includes('edited tracked fixture body'),false);
+  writeFileSync(join(root,'infra/untracked.tfvars'),'untracked fixture body');
+  assert.throws(()=>saveTaskBrief(s,task,input(),s.task(task).version),/Sensitive dirty path/);
+});
+
+test('all identity and dirty-manifest Git probes disable lazy fetch and replacement objects',async t=>{
+  const {root,dir}=await fixture(t),bin=join(dir,'safe-git-bin');mkdirSync(bin);
+  const realGit=execFileSync('which',['git'],{encoding:'utf8'}).trim(),wrapper=join(bin,'git');
+  writeFileSync(wrapper,`#!${process.execPath}\nimport {spawnSync} from 'node:child_process';\nif(process.env.GIT_NO_LAZY_FETCH!=='1'||process.env.GIT_NO_REPLACE_OBJECTS!=='1')process.exit(91);\nconst p=spawnSync(${JSON.stringify(realGit)},process.argv.slice(2),{stdio:'inherit'});process.exit(p.status??1);\n`);chmodSync(wrapper,0o700);
+  const before=process.env.PATH;process.env.PATH=bin+':'+before;
+  try{const {probeRepositoryIdentity}=await import('../dist/repository-identity.js');assert.ok(probeRepositoryIdentity(root).head);assert.deepEqual(dirtyManifest(root),[]);}
+  finally{process.env.PATH=before;}
+});
 async function fixture(t) {
   const dir=mkdtempSync(join(tmpdir(),'sassato-briefs-')),root=join(dir,'checkout');mkdirSync(root);
   const git=(...args)=>execFileSync('git',['-C',root,...args],{encoding:'utf8',stdio:['ignore','pipe','pipe']});
