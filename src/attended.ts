@@ -114,44 +114,62 @@ export function processObservation(w:Row,retire=false):Row {
   check(!result.error && result.status===0,`Attended process observation failed: ${result.stdout.trim()||'unknown identity/membership'}`,4);
   return JSON.parse(result.stdout);
 }
-function ownCaller(w:Row):void {
-  check(processIdentity(w.pid)===w.process_start,'Recorded worker leader is no longer live',4);
-  const fields=readFileSync('/proc/self/stat','utf8').split(') ').at(-1)!.split(' ');
-  check(Number(fields[2])===w.pid && Number(fields[3])===w.pid,'Command must originate in the owned provider process group',3);
+function ownCaller(s:Store,w:Row):void {
+  s.authenticateManaged();
+  check(digest(worker(s,w.role))===digest(w),'Worker identity or generation changed',4);
+  check(Number.isSafeInteger(w.pid) && w.pid>1 && typeof w.process_start==='string','Recorded worker identity is missing',4);
+  const result=spawnSync('python3',['-B',fileURLToPath(new URL('../bin/attended-ancestry.py',import.meta.url)),String(process.pid),String(w.pid),w.process_start],{encoding:'utf8',timeout:2000,maxBuffer:16384,shell:false});
+  check(!result.error && result.status===0,'Command must have a proven live ancestry to the owned provider',3);
+  check(JSON.parse(result.stdout).authorized===true,'Caller ancestry authorization is missing',3);
+  s.authenticateManaged();
+  check(digest(worker(s,w.role))===digest(w),'Worker identity or generation changed',4);
 }
 export function attendedAssignment(s:Store):Row {
-  const w=worker(s,s.requireActor()),t=latest(s,w),p=enrollment(s,w.role);ownCaller(w);
-  return {worker_id:w.id,generation:w.generation,state:w.state,transition:t.id,task:p.task,configuration:JSON.parse(w.context).configuration,configuration_digest:w.configuration_digest,previous_brief:JSON.parse(t.payload).previous_brief??null,handled_cursor:JSON.parse(w.context).notification_progress.cursor,limitations:'Cooperative only. Settle all tools, waiters, nested/background/detached work; after ready start nothing.'};
+  return s.snapshot(()=>{
+    const w=worker(s,s.requireActor()),t=latest(s,w),p=enrollment(s,w.role);
+    permitted(s,p);check(['reconciling','running','draining'].includes(w.state),'Worker assignment is frozen',4);
+    const assignment={worker_id:w.id,generation:w.generation,state:w.state,transition:t.id,task:p.task,configuration:JSON.parse(w.context).configuration,configuration_digest:w.configuration_digest,previous_brief:JSON.parse(t.payload).previous_brief??null,handled_cursor:JSON.parse(w.context).notification_progress.cursor,limitations:'Cooperative only. Settle all tools, waiters, nested/background/detached work; after ready start nothing.'};
+    ownCaller(s,w);return assignment;
+  });
 }
 export function reconcileAttended(s:Store,externalId:string):Row {
-  const w=worker(s,s.requireActor()),t=latest(s,w),p=enrollment(s,w.role),snapshot=JSON.parse(w.context);ownCaller(w);permitted(s,p);
+  const w=worker(s,s.requireActor()),t=latest(s,w),p=enrollment(s,w.role),snapshot=JSON.parse(w.context);ownCaller(s,w);permitted(s,p);
   check(w.state==='reconciling' && t.state==='reconciling' && t.bootstrap_released_at,'Bootstrap is not released for reconciliation',4);
   check(externalId!==JSON.parse(t.payload).previous_external_id,'A distinct conversation identity is required',4);text(externalId,'provider conversation identity',200);
   check(!s.get('SELECT id FROM sessions WHERE provider=? AND external_id=? AND (pid IS NULL OR pid!=? OR process_start IS NULL OR process_start!=?)',w.provider,externalId,w.pid,w.process_start),'Conversation identity was already used by another process/generation',4);
+  const priorBinding=w.binding_id?currentBinding(s,p.task):null;
+  check(!priorBinding || priorBinding.id===w.binding_id,'Binding changed',4);
   snapshotEqual(s,w.role,p,snapshot);
   // Read recovery inputs without consuming receipts or advancing progress.
   const initial=context(s),mail=inbox(s,{peek:true,limit:100});
   return s.tx(()=>{
-    permitted(s,p);reservationEqual(s,w.role,snapshot);check(worker(s,w.role).state==='reconciling','Generation changed',4);
+    permitted(s,p);reservationEqual(s,w.role,snapshot);ownCaller(s,w);
+    check(digest(latest(s,w))===digest(t),'Generation transition changed',4);
     const session=registerSession(s,{provider:w.provider,external_id:externalId,pid:w.pid,replace:true});
     let binding:Row;
-    if(w.binding_id){binding=currentBinding(s,p.task);check(binding.id===w.binding_id,'Binding changed',4);s.run('UPDATE checkout_bindings SET provider_session_id=?,session_row_id=? WHERE id=?',externalId,id(session.id,'S'),binding.id);}
+    if(w.binding_id){binding=currentBinding(s,p.task);check(digest(binding)===digest(priorBinding),'Binding changed',4);s.run('UPDATE checkout_bindings SET provider_session_id=?,session_row_id=? WHERE id=?',externalId,id(session.id,'S'),binding.id);}
     else binding=bindCheckout(s,{checkout:p.checkout,directory:p.cwd,task:p.task,provider:w.provider,session:externalId});
     s.run("UPDATE managed_workers SET state='running',binding_id=?,external_id=?,updated_at=? WHERE id=?",binding.id,externalId,now(),w.id);
     s.run("UPDATE managed_transitions SET state='complete',updated_at=? WHERE id=?",now(),t.id);
     s.event('managed-transition',t.id,'attended-reconciled',{generation:w.generation,external_id:externalId,handled_cursor:snapshot.notification_progress.cursor,context_cursor:initial.cursor,read_mail:mail.map(row=>row.id),evidence_kind:kind});
+    // Fresh admission at the commit boundary; earlier ancestry evidence is not reused.
+    ownCaller(s,worker(s,w.role));
     return {state:'running',generation:w.generation,task:p.task,handled_cursor:snapshot.notification_progress.cursor};
   });
 }
 export function readyAttended(s:Store,report:unknown,expected:number):Row {
-  const w=worker(s,s.requireActor()),p=enrollment(s,w.role),reported=validateBriefInput(report);ownCaller(w);permitted(s,p);
+  const w=worker(s,s.requireActor()),p=enrollment(s,w.role),reported=validateBriefInput(report);ownCaller(s,w);permitted(s,p);
   check(w.state==='running','Worker must be running before cooperative handover',4);settled(s,w.role);
   const snapshot=attendedSnapshot(s,w.role,p,JSON.parse(w.context).configuration),binding=currentBinding(s,p.task);
+  check(binding.id===w.binding_id && binding.provider_session_id===w.external_id && binding.provider===w.provider && binding.checkout_id===w.checkout_id,'Worker binding identity changed',4);
+  const boundSession=s.get('SELECT pid,process_start,external_id FROM sessions WHERE id=?',binding.session_row_id);
+  check(boundSession && boundSession.pid===w.pid && boundSession.process_start===w.process_start && boundSession.external_id===w.external_id,'Bound session identity changed',4);
   check(s.task(p.task).version===expected,'Task version changed',4);check(reported.configuration.digest===snapshot.configuration_digest,'Brief configuration digest differs',4);
   const body={version:1,reported,observed:{...snapshot,worker_generation:w.generation,binding_id:binding.id},readiness:'cooperative-attended; worker declares every tool/background job settled; no enforced barrier or escape containment'};
   check(Buffer.byteLength(JSON.stringify(body))<=32768,'Complete attended brief exceeds 32768 bytes');
   return s.tx(()=>{
-    permitted(s,p);check(worker(s,w.role).state==='running','Generation changed',4);reservationEqual(s,w.role,snapshot);settled(s,w.role);
+    permitted(s,p);reservationEqual(s,w.role,snapshot);settled(s,w.role);ownCaller(s,w);
+    check(digest(currentBinding(s,p.task))===digest(binding) && binding.id===w.binding_id,'Binding changed',4);
     const brief=randomUUID(),transition=randomUUID(),at=now();
     s.run('INSERT INTO task_briefs VALUES(?,?,?,?,?,?,?,?)',brief,s.ws,id(p.task,'T'),w.role,binding.id,JSON.stringify(body),digest(body),at);
     const pending=s.event('task-handoff',p.task,'pending',{to:w.generation===2?null:w.role,summary:reported.next_action,brief_id:brief,brief_digest:digest(body),task_version:expected,binding_id:binding.id,worker_id:w.id,generation:w.generation,successor_generation:w.generation===2?null:2,mode:kind});
@@ -162,6 +180,7 @@ export function readyAttended(s:Store,report:unknown,expected:number):Row {
     check(Buffer.byteLength(JSON.stringify(checkpoint))<=MAX_CHECKPOINT_BYTES,'Complete attended checkpoint exceeds its bound');s.event('checkpoint',w.role,'saved',checkpoint);
     s.run("UPDATE managed_workers SET state='ready',context=?,updated_at=? WHERE id=?",JSON.stringify({...snapshot,launch_id:payload.launch_id,terminal:payload.terminal}),at,w.id);
     s.event('managed-transition',transition,'attended-ready',{generation:w.generation,brief_id:brief,evidence_kind:kind});
+    ownCaller(s,worker(s,w.role));
     return {state:'ready',generation:w.generation,brief_id:brief,instruction:'Start no tools, waiter or background work. Remain silent awaiting attended retirement.'};
   });
 }

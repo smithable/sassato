@@ -28,6 +28,17 @@ if '--version' in sys.argv:
                 counter.write_text(str(count))
                 if count >= 2:
                     (root / 'late-busy').write_text('fixture busy')
+    race = os.environ.get('ATTENDED_FIXTURE_WORKER_RACE')
+    if race:
+        import sqlite3
+        with sqlite3.connect(os.environ['ATTENDED_FIXTURE_DB']) as connection:
+            if connection.execute("SELECT 1 FROM managed_workers WHERE state='running'").fetchone():
+                if race == 'generation':
+                    connection.execute('UPDATE managed_workers SET generation=generation+1')
+                elif race == 'binding':
+                    connection.execute("UPDATE checkout_bindings SET provider_session_id='changed-before-mutation'")
+                else:
+                    connection.execute("UPDATE managed_workers SET external_id='changed-before-mutation'")
     print('attended fixture 1')
     sys.exit(0)
 
@@ -45,7 +56,7 @@ if ordinary_marker:
 
 
 def cli(*args):
-    result = subprocess.run(['sassato', *args, '--json'], text=True, capture_output=True)
+    result = subprocess.run(['sassato', *args, '--json'], text=True, capture_output=True, start_new_session=bool(os.environ.get('ATTENDED_FIXTURE_TOOL_SESSION')))
     if result.returncode:
         raise RuntimeError(result.stderr + result.stdout)
     return json.loads(result.stdout)
