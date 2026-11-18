@@ -196,6 +196,31 @@ function runtimeEnvironment(store:Store,role:string,parentPath:string):{director
   return {directory,env:{...process.env,PATH:[directory,dirname(process.execPath),parentPath].join(':'),SASSATO_DB:store.path,SASSATO_WORKSPACE:store.workspace,SASSATO_ROLE:role}};
 }
 const lockPath=launchLockPath;
+// A launch lock records its launcher as boot_id:start. One written before the machine last booted
+// cannot belong to a living launcher (a WSL restart ends them all), so it is stale beyond doubt.
+// That holds because launch locks sit beside one machine's database (one host, one boot id).
+// Anything else stays for a human: unreadable, malformed, or a launcher that died this boot.
+const BOOT_IDENTITY=/^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):\d+$/;
+function earlierBootLock(path:string):{pid:number;identity:string}|null {
+  if(process.platform!=='linux')return null;
+  try {
+    const lock=JSON.parse(readFileSync(path,'utf8'));
+    const match=typeof lock.identity==='string'?BOOT_IDENTITY.exec(lock.identity):null;
+    if(!Number.isInteger(lock.pid)||lock.pid<1||!match)return null;
+    const boot=readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim();
+    return BOOT_IDENTITY.test(`${boot}:0`)&&match[1]!==boot?lock:null;
+  } catch {return null;}
+}
+function lockHeld(path:string,role:string):Error {
+  let detail='Another launcher may be active. Use launch-unlock only after checking it has stopped.';
+  try {
+    const lock=JSON.parse(readFileSync(path,'utf8'));
+    if(process.platform==='linux'&&Number.isInteger(lock.pid)&&lock.pid>0&&typeof lock.identity==='string'
+      &&(!existsSync(`/proc/${lock.pid}`)||(processIdentity(lock.pid)??lock.identity)!==lock.identity))
+      detail=`Its launcher (pid ${lock.pid}) has exited, so it is stale: a human clears it with launch-unlock ${role}.`;
+  } catch {}
+  return new Error(`Launch lock exists for ${role}. ${detail}`);
+}
 function acquire(store:Store,role:string,options:{dispatch?:StartupRequest;adopt?:StartupRequest}={}):()=>void {
   const path=lockPath(store,role),token=options.adopt?.token??options.dispatch?.token??randomUUID(),identity=processIdentity(process.pid);
   // Serialize both acquiring and explicitly removing locks with SQLite's same writer lock.
@@ -218,8 +243,11 @@ function acquire(store:Store,role:string,options:{dispatch?:StartupRequest;adopt
     mkdirSync(dirname(path),{recursive:true,mode:0o700});
     let fd:number;
     try {fd=openSync(path,'wx',0o600);} catch(error) {
-      if((error as NodeJS.ErrnoException).code==='EEXIST') throw new Error(`Launch lock exists for ${role}. Another launcher may be active. Use launch-unlock only after checking it has stopped.`);
-      throw error;
+      if((error as NodeJS.ErrnoException).code!=='EEXIST') throw error;
+      const stale=earlierBootLock(path);
+      if(!stale) throw lockHeld(path,role);
+      try {unlinkSync(path);fd=openSync(path,'wx',0o600);} catch {throw lockHeld(path,role);}
+      store.event('launch-lock',role,'cleared-after-reboot',{pid:stale.pid,identity:stale.identity});
     }
     try {writeFileSync(fd,JSON.stringify({pid:process.pid,identity,token,phase:options.dispatch?'dispatch':'native',created_at:now()}));fsyncSync(fd);} finally {closeSync(fd);}
   });

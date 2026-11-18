@@ -181,6 +181,31 @@ test('stale launch locks are explicit and live launcher locks cannot be removed'
   assert.deepEqual(unlockLaunch(f.s,['a']),{unlocked:['a']});assert(!existsSync(path));
 });
 
+const linuxBoot=existsSync('/proc/sys/kernel/random/boot_id')?{}:{skip:'needs a Linux boot id'};
+const earlierBoot='00000000-0000-4000-8000-000000000000:12345';
+test('a launch lock from before the last boot is cleared by the next launch, and recorded (T956)',linuxBoot,async t=>{
+  const f=fixture(t),fake=fakeProvider(f,t,{delay:100}),dir=join(`${f.s.path}.launch`,'test');mkdirSync(dir,{recursive:true});
+  writeFileSync(join(dir,'a.lock'),JSON.stringify({pid:process.pid,identity:earlierBoot,token:'x',phase:'native'}));
+  const plans=await launch(f.s,['a'],{fresh:true,noPrompt:true,stopFile:join(f.dir,'no-stop')});
+  assert.equal(plans[0].status,'exited');assert(existsSync(fake.log));assert(!existsSync(join(dir,'a.lock')));
+  const event=f.s.get("SELECT * FROM events WHERE entity='launch-lock' AND action='cleared-after-reboot'");
+  assert.equal(event.entity_id,'a');assert.match(event.detail,/00000000-0000-4000-8000-000000000000:12345/);
+});
+
+test('a lock whose launcher died this boot, or is unreadable or malformed, still blocks launch for a human',linuxBoot,async t=>{
+  const f=fixture(t),fake=fakeProvider(f,t,{delay:100}),dir=join(`${f.s.path}.launch`,'test');mkdirSync(dir,{recursive:true});
+  const boot=readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim(),path=join(dir,'a.lock');
+  writeFileSync(path,JSON.stringify({pid:process.pid,identity:`${boot}:1`}));
+  await assert.rejects(launch(f.s,['a'],{fresh:true,noPrompt:true,stopFile:join(f.dir,'no-stop')}),/has exited, so it is stale: a human clears it with launch-unlock a/);
+  writeFileSync(path,JSON.stringify({pid:process.pid,identity:processIdentity(process.pid)}));
+  await assert.rejects(launch(f.s,['a'],{fresh:true,noPrompt:true,stopFile:join(f.dir,'no-stop')}),/Another launcher may be active/);
+  for(const bad of ['not json',JSON.stringify({pid:process.pid,identity:':garbage'}),JSON.stringify({pid:process.pid,identity:'old-boot:12345'}),JSON.stringify({pid:0,identity:earlierBoot})]) {
+    writeFileSync(path,bad);
+    await assert.rejects(launch(f.s,['a'],{fresh:true,noPrompt:true,stopFile:join(f.dir,'no-stop')}),/Launch lock exists for a/);
+  }
+  assert(existsSync(path));assert(!existsSync(fake.log));
+});
+
 test('Claude hook discovers provider PID, replaces ID on clear, and leaves receipts unread',async t=>{
   const f=fixture(t),fake=fakeProvider(f,t,{delay:100});
   const hook=resolve('examples/claude-hook.mjs'),output=join(f.dir,'hook-output.json');

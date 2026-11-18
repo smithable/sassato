@@ -202,7 +202,8 @@ role/repository names for repeat trials (enrollment and generation tombstones ar
 intentionally retained). The normal first roles are `probe-codex`, `probe-claude`.
 
 After the planned WSL restart, recover the installation paths in the new operator
-shell before preparing a trial. Use the actual retained installation directory:
+shell before preparing a trial. Launch locks left by the launchers the restart ended are cleared by
+the next `sassato launch` (a `launch-lock` event); no `launch-unlock` is needed for them. Use the actual retained installation directory:
 
 ```bash
 set -e

@@ -34,7 +34,8 @@ sassato launch builder reviewer --new-window --as alice
 
 Windows Terminal must be available and WSL_DISTRO_NAME set (or use `--distro`). The launcher
 resolves provider executables, preserves the required PATH and waits for verified startup.
-`launch-unlock ROLE` requires a human and removes only demonstrably stale locks.
+`launch-unlock ROLE` requires a human and removes only demonstrably stale locks. Locks from before the last boot
+(after `wsl --shutdown`, say) need no unlock: the next launch clears them and records it.
 
 ## Worker instructions and hooks
 
