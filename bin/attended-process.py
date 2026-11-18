@@ -13,7 +13,7 @@ from pathlib import Path
 def record(pid, scanning=False):
     try:
         fields = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()
-        return {"pid": pid, "state": fields[0], "group": int(fields[2]),
+        return {"pid": pid, "state": fields[0], "parent": int(fields[1]), "group": int(fields[2]),
                 "session": int(fields[3]), "start": fields[19]}
     except FileNotFoundError:
         return None
@@ -26,6 +26,53 @@ def record(pid, scanning=False):
         raise
 
 
+# Codex's TUI on WSL keeps one clipboard reader for its whole life: Windows PowerShell started
+# through WSL's /init, a direct child of the TUI, in its group, reading stdin line by line and
+# answering with Get-Clipboard. It ends when the TUI's end closes its stdin. It is listed apart
+# from the live members, so it does not block retirement, and the group still counts as exited
+# only when it is gone too (T953). It is known by its real executable, its exact arguments and
+# its whole script (compared without outer whitespace); anything else blocks as before. Should a
+# reader outlive the TUI (another holder of its stdin, or reparented once its parent is gone), the
+# group is not exited, retirement's TERM deadline passes and it fails without KILL, as before.
+CLIPBOARD_SCRIPT = """$ErrorActionPreference = 'Stop'
+$out = [Console]::OpenStandardOutput()
+$utf8 = [System.Text.UTF8Encoding]::new($false)
+while ($null -ne [Console]::ReadLine()) {
+    $bytes = $utf8.GetBytes([string](Get-Clipboard -Raw))
+    $header = [BitConverter]::GetBytes([uint32]$bytes.Length)
+    $out.Write($header, 0, $header.Length)
+    $out.Write($bytes, 0, $bytes.Length)
+    $out.Flush()
+}"""
+# WSL starts a Windows program through its /init, which is then the process's real executable.
+WSL_INIT_EXE = "/init"
+# Windows PowerShell where Windows installs it, as WSL mounts the system drive.
+WINDOWS_POWERSHELL = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+
+
+def cmdline(pid):
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except (FileNotFoundError, ProcessLookupError):
+        return []
+
+
+def clipboard_helper(row, leader):
+    if row["parent"] != leader or row["pid"] == leader:
+        return False
+    try:
+        if os.readlink(f"/proc/{row['pid']}/exe") != WSL_INIT_EXE:
+            return False
+    except OSError:
+        return False
+    argv = [part.decode("utf-8", "replace") for part in cmdline(row["pid"])]
+    if argv and argv[-1] == "":
+        argv.pop()
+    return (len(argv) == 7 and argv[0] == "/init" and argv[1] == argv[2] == WINDOWS_POWERSHELL
+            and argv[3:6] == ["-NoProfile", "-NonInteractive", "-Command"]
+            and argv[6].strip() == CLIPBOARD_SCRIPT)
+
+
 def observe(pid, identity):
     boot, start = identity.split(":")
     if Path("/proc/sys/kernel/random/boot_id").read_text().strip() != boot:
@@ -33,15 +80,17 @@ def observe(pid, identity):
     leader = record(pid)
     if leader and (leader["start"] != start or leader["group"] != pid or leader["session"] != pid):
         raise RuntimeError("Leader identity or original process group changed")
-    members = []
+    members, helpers = [], []
     for path in Path("/proc").iterdir():
         if path.name.isdecimal():
             row = record(int(path.name), scanning=True)
             if row and row["group"] == pid and row["state"] not in ("Z", "X"):
-                members.append(row)
+                # One reader at most: a second is not Codex's and blocks like any other member.
+                (helpers if not helpers and clipboard_helper(row, pid) else members).append(row)
     members.sort(key=lambda row: row["pid"])
-    return {"leader": leader, "live_members": members,
-            "exited": not members and (leader is None or leader["state"] in ("Z", "X"))}
+    helpers.sort(key=lambda row: row["pid"])
+    return {"leader": leader, "live_members": members, "helpers": helpers,
+            "exited": not members and not helpers and (leader is None or leader["state"] in ("Z", "X"))}
 
 
 def signal_guards(fd):
