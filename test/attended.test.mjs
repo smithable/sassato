@@ -74,7 +74,7 @@ test('the documented setup script enrolls a fresh disposable role without provid
   f.run(process.execPath,[cli,'init','--db',f.db,'--workspace','supervisor-probe','--humans','operator','--as','operator','--no-interactive']);
   writeFileSync(join(f.dir,'source-roles.json'),JSON.stringify([f.s.role('builder')]));symlinkSync(cli,join(f.bin,'sassato'));
   const setup=readFileSync('docs/attended-supervisor.md','utf8').split("python3 - <<'PY'\n")[1].split('\nPY')[0];
-  f.run('python3',['-c',setup],{env:{...process.env,PATH:f.bin+':'+process.env.PATH,EVIDENCE:f.dir,PROBE_DB:f.db,PROBE_ROLE:'probe-script',PROBE_REPO:f.repo,SOURCE_ROLE:'builder',PROVIDER:'codex'}});
+  f.run('python3',['-c',setup],{env:{...process.env,PATH:f.bin+':'+process.env.PATH,TRIAL_EVIDENCE:f.dir,PROBE_DB:f.db,PROBE_ROLE:'probe-script',PROBE_REPO:f.repo,SOURCE_ROLE:'builder',PROVIDER:'codex'}});
   assert.equal(f.s.get("SELECT count(*) n FROM events WHERE entity='attended-enrollment' AND entity_id='probe-script'").n,1);assert.equal(f.s.get('SELECT count(*) n FROM managed_workers').n,0);
   const detail=JSON.parse(f.s.get("SELECT detail FROM events WHERE entity='attended-enrollment' AND entity_id='probe-script'").detail);const busy=detail.busy_checks.find(row=>row.name==='release-heavy-jobs');
   const observed=spawnSync(busy.argv[0],busy.argv.slice(1),{encoding:'utf8',timeout:2000});assert.equal(observed.status,1,observed.stderr);

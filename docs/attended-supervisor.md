@@ -23,15 +23,32 @@ Linux/WSL, Node 24.13+ with `process.execve`, Python 3 with Linux pidfds, Git an
 `flock` are required. Provider executables must already be installed and signed in.
 
 In the operator's terminal, set these to the actual existing database, human role
-and approved merge commit. Do not use an unreviewed branch or overwrite a backup:
+and approved merge commit. Retain the previous installed release's package tarball
+for rollback and set `PREVIOUS_PACKAGE` to its absolute path; do not use a package
+with only a matching version number. Do not use an unreviewed branch or overwrite
+a backup. Run these installation/rollback blocks in a dedicated Bash shell with
+`set -e` so a failed command stops the procedure:
 
 ```bash
+set -e
 export PROBE_DB="$HOME/.local/share/sassato/sassato.db"
 export LIVE_HUMAN='your-existing-human-role'
 export APPROVED_MERGE='the-reviewed-40-character-merge-commit'
-export EVIDENCE="$HOME/repos/.session-scripts/supervisor-test/$(date +%Y-%m-%d-%H%M%S)-install"
-mkdir -m 700 -p "$EVIDENCE"
-sassato backup "$EVIDENCE/before-install.db" --db "$PROBE_DB" --workspace smithable --as "$LIVE_HUMAN"
+export INSTALL_EVIDENCE="$HOME/repos/.session-scripts/supervisor-test/$(date +%Y-%m-%d-%H%M%S)-install"
+mkdir -m 700 "$INSTALL_EVIDENCE"
+export PREVIOUS_PACKAGE='/absolute/path/to/the-previous-installed-release.tgz'
+test -f "$PREVIOUS_PACKAGE"
+sassato --version --json > "$INSTALL_EVIDENCE/before-install-version.json"
+export INSTALL_BACKUP="$INSTALL_EVIDENCE/before-install.db"
+export INSTALL_VERSION="$INSTALL_EVIDENCE/before-install-version.json"
+sassato backup "$INSTALL_BACKUP" --db "$PROBE_DB" --workspace smithable --as "$LIVE_HUMAN"
+python3 - <<'PY_INSTALL_STATE'
+import json, os, pathlib
+state = {key: os.environ[key] for key in ('PROBE_DB', 'LIVE_HUMAN', 'PREVIOUS_PACKAGE')}
+for key in ('PROBE_DB', 'PREVIOUS_PACKAGE'):
+    assert pathlib.Path(state[key]).is_absolute(), key + ' must be absolute'
+(pathlib.Path(os.environ['INSTALL_EVIDENCE']) / 'install-state.json').write_text(json.dumps(state))
+PY_INSTALL_STATE
 sassato stop --all --db "$PROBE_DB" --workspace smithable --as "$LIVE_HUMAN"
 sassato stop-status --db "$PROBE_DB" --workspace smithable --as "$LIVE_HUMAN"
 ```
@@ -47,16 +64,131 @@ git checkout --detach "$APPROVED_MERGE"
 test "$(git rev-parse HEAD)" = "$APPROVED_MERGE"
 npm ci --ignore-scripts
 npm run build
-npm pack --pack-destination "$EVIDENCE"
-npm install --global "$EVIDENCE"/sassato-*.tgz
+npm pack --pack-destination "$INSTALL_EVIDENCE"
+npm install --global "$INSTALL_EVIDENCE"/sassato-*.tgz
 sassato --version --json
+sassato migrate --db "$PROBE_DB"
+sassato doctor --db "$PROBE_DB" --workspace smithable --as "$LIVE_HUMAN" --json
 ```
 
-Save the version/build output. Perform the planned WSL restart from the Windows
-terminal (`wsl --shutdown`) only after jobs have stopped. Reopen the operator and
-assistant terminals. The human alone reconciles and clears their own prior STOP
+Save the version/build, migration and doctor output. Confirm doctor reports
+`"ok": true` and `"schema": 10` for `PROBE_DB` before continuing. The version
+command reports the CLI schema; doctor reads the database schema. Perform the
+planned WSL restart from the Windows terminal (`wsl --shutdown`) only after jobs
+have stopped. Reopen the operator and assistant terminals. The human alone reconciles and clears their own prior STOP
 requests when ready; never clear someone else's request to make a probe pass.
 Do not launch ordinary workers during the controlled trial window.
+
+When ordinary sessions restart after the trial window, their first coordination
+step is the digest waiter, after reading checkpoint/context/inbox and their saved
+notification cursor: `sassato wait --since CURSOR --as ROLE --workspace smithable`.
+It batches urgent/needs-reply mail and workflow events after 120 seconds of quiet,
+600 seconds at most. STOP, human answers and `--now` mail wake it immediately;
+reserve `--now` for an outage, broken main or a stop that cannot wait. Handle each
+digest entry, acknowledge handled mail, save the returned cursor with its expected
+progress version and re-arm one waiter. Never advance to the latest context cursor
+or re-arm during STOP.
+
+### Roll back the installation
+
+The old CLI cannot open the migrated database. Going back requires both the exact
+previous CLI package and `before-install.db`; reinstalling the old CLI alone is
+insufficient. Restoring loses coordination changes made since that backup, so the
+human must reconcile those changes before resuming workers. Keep all sessions and
+jobs stopped, close every other database client, and preserve the shared STOP file.
+`INSTALL_EVIDENCE` always identifies the installation directory; trial setup uses
+`TRIAL_EVIDENCE` separately. After a shell/WSL restart, recover the installation
+variables below using the actual retained installation directory, never a trial
+directory. Do this before stopping or changing any installation/database files:
+
+```bash
+set -e
+export INSTALL_EVIDENCE='/absolute/path/to/the-retained-install-directory'
+export INSTALL_BACKUP="$INSTALL_EVIDENCE/before-install.db"
+export INSTALL_VERSION="$INSTALL_EVIDENCE/before-install-version.json"
+PROBE_DB="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["PROBE_DB"])' "$INSTALL_EVIDENCE/install-state.json")"
+export PROBE_DB
+LIVE_HUMAN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["LIVE_HUMAN"])' "$INSTALL_EVIDENCE/install-state.json")"
+export LIVE_HUMAN
+PREVIOUS_PACKAGE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["PREVIOUS_PACKAGE"])' "$INSTALL_EVIDENCE/install-state.json")"
+export PREVIOUS_PACKAGE
+python3 - <<'PY_PREFLIGHT'
+import json, os, pathlib, sqlite3, tarfile
+backup, package, version_file = (pathlib.Path(os.environ[key]) for key in
+                                ('INSTALL_BACKUP', 'PREVIOUS_PACKAGE', 'INSTALL_VERSION'))
+assert all(path.is_absolute() and path.is_file() for path in (backup, package, version_file))
+version = json.loads(version_file.read_text())
+assert version['build'] and version['version'] and isinstance(version['schema'], int)
+with sqlite3.connect(backup.as_uri() + '?mode=ro', uri=True) as db:
+    assert db.execute('PRAGMA user_version').fetchone()[0] == version['schema'], 'Backup schema differs'
+    assert db.execute('PRAGMA integrity_check').fetchall() == [('ok',)], 'Backup integrity failed'
+    assert db.execute('PRAGMA foreign_key_check').fetchall() == [], 'Backup foreign keys failed'
+with tarfile.open(package, 'r:gz') as archive:
+    metadata = json.load(archive.extractfile('package/package.json'))
+    assert metadata['name'] == 'sassato' and metadata['version'] == version['version']
+print('Backup schema/integrity and rollback package preflight passed')
+PY_PREFLIGHT
+sassato stop --all --db "$PROBE_DB" --workspace smithable --as "$LIVE_HUMAN"
+sassato stop-status --db "$PROBE_DB" --workspace smithable --as "$LIVE_HUMAN"
+```
+
+Wait for every worker/job to settle and every other database client to close.
+Reinstall the old CLI, verify its exact build, then restore and validate a staging
+database **before moving the live database**. The staging path is beside `PROBE_DB`
+so final placement stays on the same filesystem. Restore refuses an existing path.
+
+```bash
+set -e
+export ROLLBACK_EVIDENCE="$INSTALL_EVIDENCE/rollback-$(date +%Y-%m-%d-%H%M%S)"
+mkdir -m 700 "$ROLLBACK_EVIDENCE"
+npm install --global "$PREVIOUS_PACKAGE"
+sassato --version --json > "$ROLLBACK_EVIDENCE/cli-version.json"
+python3 - <<'PY_VERSION'
+import json, os, pathlib
+expected = json.loads(pathlib.Path(os.environ['INSTALL_VERSION']).read_text())
+actual = json.loads((pathlib.Path(os.environ['ROLLBACK_EVIDENCE']) / 'cli-version.json').read_text())
+assert all(actual[key] == expected[key] for key in ('version', 'build', 'schema')), 'Wrong rollback CLI'
+PY_VERSION
+export RESTORED_DB="$PROBE_DB.rollback-$(date +%Y-%m-%d-%H%M%S)"
+sassato restore "$INSTALL_BACKUP" --db "$RESTORED_DB"
+sassato doctor --db "$RESTORED_DB" --workspace smithable --as "$LIVE_HUMAN" --json > "$ROLLBACK_EVIDENCE/doctor.json"
+python3 - <<'PY_PLACE'
+import json, os, pathlib, sqlite3
+expected = json.loads(pathlib.Path(os.environ['INSTALL_VERSION']).read_text())
+target = pathlib.Path(os.environ['ROLLBACK_EVIDENCE'])
+report = json.loads((target / 'doctor.json').read_text())
+source, restored = (pathlib.Path(os.environ[key]) for key in ('PROBE_DB', 'RESTORED_DB'))
+assert source.is_absolute() and source.is_file() and restored.is_file()
+assert report['ok'] and report['schema'] == expected['schema'], 'Staging validation failed'
+# Close/checkpoint staging WAL before placing the database; never lose restored data.
+db = sqlite3.connect(restored)
+try:
+    assert db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0] == 0
+finally:
+    db.close()
+# Preserve migrated files beside the live path, on the same filesystem.
+preserved = pathlib.Path(str(restored) + '.migrated')
+preserved.mkdir(mode=0o700)
+for suffix in ('', '-wal', '-shm', '-journal'):
+    path = pathlib.Path(str(source) + suffix)
+    if path.exists():
+        path.rename(preserved / path.name)
+restored.rename(source)
+# Retain any checkpointed staging sidecars as evidence under their distinct names.
+for suffix in ('-wal', '-shm', '-journal'):
+    path = pathlib.Path(str(restored) + suffix)
+    if path.exists():
+        path.rename(preserved / path.name)
+print('Migrated database preserved at', preserved)
+PY_PLACE
+sassato doctor --db "$PROBE_DB" --workspace smithable --as "$LIVE_HUMAN" --json
+```
+
+Verify the CLI build matches `INSTALL_VERSION`, doctor reports `ok`
+and the previous schema, and the expected workspace records are present. If any
+step fails, keep workers stopped and preserve all evidence; do not migrate the
+restored database with the newer CLI. Only the human reconciles prior STOP
+requests and authorizes workers to resume.
 
 ## 2. Prepare one disposable trial
 
@@ -69,14 +201,23 @@ Choose a new evidence directory for each normal/STOP/crash trial, and new dispos
 role/repository names for repeat trials (enrollment and generation tombstones are
 intentionally retained). The normal first roles are `probe-codex`, `probe-claude`.
 
+After the planned WSL restart, recover the installation paths in the new operator
+shell before preparing a trial. Use the actual retained installation directory:
+
 ```bash
+set -e
+export INSTALL_EVIDENCE='/absolute/path/to/the-retained-install-directory'
+PROBE_DB="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["PROBE_DB"])' "$INSTALL_EVIDENCE/install-state.json")"
+export PROBE_DB
+LIVE_HUMAN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["LIVE_HUMAN"])' "$INSTALL_EVIDENCE/install-state.json")"
+export LIVE_HUMAN
 export PROVIDER=codex
 export SOURCE_ROLE='your-existing-codex-role'
 export PROBE_ROLE="probe-$PROVIDER"
 export PROBE_REPO="$HOME/repos/wt/$PROBE_ROLE"
-export EVIDENCE="$HOME/repos/.session-scripts/supervisor-test/$(date +%Y-%m-%d-%H%M%S)-$PROVIDER"
-mkdir -m 700 -p "$EVIDENCE"
-sassato roles --db "$PROBE_DB" --workspace smithable --as "$LIVE_HUMAN" --json > "$EVIDENCE/source-roles.json"
+export TRIAL_EVIDENCE="$HOME/repos/.session-scripts/supervisor-test/$(date +%Y-%m-%d-%H%M%S)-$PROVIDER"
+mkdir -m 700 -p "$TRIAL_EVIDENCE"
+sassato roles --db "$PROBE_DB" --workspace smithable --as "$LIVE_HUMAN" --json > "$TRIAL_EVIDENCE/source-roles.json"
 sassato init --db "$PROBE_DB" --workspace supervisor-probe --humans operator --as operator --no-interactive
 mkdir -m 700 "$PROBE_REPO"
 git -C "$PROBE_REPO" init -b main
@@ -93,7 +234,7 @@ Configure the disposable coordination records with this script:
 ```bash
 python3 - <<'PY'
 import json, os, pathlib, subprocess
-root = pathlib.Path(os.environ['EVIDENCE'])
+root = pathlib.Path(os.environ['TRIAL_EVIDENCE'])
 db, role, repo = (os.environ[key] for key in ('PROBE_DB','PROBE_ROLE','PROBE_REPO'))
 base = ['--db', db, '--workspace', 'supervisor-probe']
 def sas(*args, actor='operator'):
@@ -147,7 +288,7 @@ leases to Sassato `job run`; it does not alter a host service or lock policy.
 ## 3. Run, confirm, and preserve replay evidence
 
 Use a terminal recorder that preserves TTY input/output (`tee` does not). For
-example start `script -q -f -e "$EVIDENCE/controller.log"`, then run the applicable
+example start `script -q -f -e "$TRIAL_EVIDENCE/controller.log"`, then run the applicable
 command inside that recorded shell. The controller requires a human terminal:
 
 ```bash
@@ -171,11 +312,20 @@ are saved atomically. It then remains silent with no waiter. If it asks for help
 use its separate terminal; never weaken a failed guard.
 
 At the first retirement prompt, **before pressing Enter**, enqueue a unique mail
-from a third human/assistant terminal and save its ID:
+from a third human/assistant terminal and save its ID. A new terminal does not
+inherit the operator shell's exports: first set this trial's actual evidence path
+and recover its database/role from the recorded `trial.json`. Use this recovery
+block in any replacement terminal too; never guess a fresh evidence directory:
 
 ```bash
-sassato send "$PROBE_ROLE" "attended-replay-$(date +%s)-$PROBE_ROLE" --urgent --db "$PROBE_DB" --workspace supervisor-probe --as operator --json > "$EVIDENCE/replay-message.json"
-sassato progress show --db "$PROBE_DB" --workspace supervisor-probe --as "$PROBE_ROLE" --json > "$EVIDENCE/ready-cursor.json"
+set -e
+export TRIAL_EVIDENCE='/absolute/path/to/this-trial-evidence-directory'
+PROBE_DB="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["database"])' "$TRIAL_EVIDENCE/trial.json")"
+export PROBE_DB
+PROBE_ROLE="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["role"])' "$TRIAL_EVIDENCE/trial.json")"
+export PROBE_ROLE
+sassato send "$PROBE_ROLE" "attended-replay-$(date +%s)-$PROBE_ROLE" --urgent --db "$PROBE_DB" --workspace supervisor-probe --as operator --json > "$TRIAL_EVIDENCE/replay-message.json"
+sassato progress show --db "$PROBE_DB" --workspace supervisor-probe --as "$PROBE_ROLE" --json > "$TRIAL_EVIDENCE/ready-cursor.json"
 ```
 
 Do not advance generation 1's handled cursor. Inspect the proposal: role,
@@ -229,13 +379,13 @@ Save the following per trial (the recorder log and private runtime PTY log must 
 retained; neither is a native provider transcript to edit):
 
 ```bash
-sassato show "$(python3 -c 'import json,os;print(json.load(open(os.environ["EVIDENCE"]+"/trial.json"))["task"])')" --db "$PROBE_DB" --workspace supervisor-probe --as operator --json > "$EVIDENCE/task.json"
-sassato sessions --db "$PROBE_DB" --workspace supervisor-probe --as operator --json > "$EVIDENCE/sessions.json"
-sassato export "$EVIDENCE/export" --db "$PROBE_DB" --workspace supervisor-probe --as operator
-sassato backup "$EVIDENCE/after-trial.db" --db "$PROBE_DB" --workspace supervisor-probe --as operator
-git -C "$PROBE_REPO" log --format=fuller > "$EVIDENCE/git-log.txt"
-git -C "$PROBE_REPO" status --porcelain=v1 > "$EVIDENCE/dirty.txt"
-sha256sum "$PROBE_REPO/attended-sentinel.txt" > "$EVIDENCE/sentinel.sha256"
+sassato show "$(python3 -c 'import json,os;print(json.load(open(os.environ["TRIAL_EVIDENCE"]+"/trial.json"))["task"])')" --db "$PROBE_DB" --workspace supervisor-probe --as operator --json > "$TRIAL_EVIDENCE/task.json"
+sassato sessions --db "$PROBE_DB" --workspace supervisor-probe --as operator --json > "$TRIAL_EVIDENCE/sessions.json"
+sassato export "$TRIAL_EVIDENCE/export" --db "$PROBE_DB" --workspace supervisor-probe --as operator
+sassato backup "$TRIAL_EVIDENCE/after-trial.db" --db "$PROBE_DB" --workspace supervisor-probe --as operator
+git -C "$PROBE_REPO" log --format=fuller > "$TRIAL_EVIDENCE/git-log.txt"
+git -C "$PROBE_REPO" status --porcelain=v1 > "$TRIAL_EVIDENCE/dirty.txt"
+sha256sum "$PROBE_REPO/attended-sentinel.txt" > "$TRIAL_EVIDENCE/sentinel.sha256"
 ```
 
 Keep the `.sat-<controller-id-prefix>-<generation>` runtime directories beside the
