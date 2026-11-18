@@ -93,13 +93,28 @@ function queryIndex(query:string,options:IndexOptions,show:boolean):IndexResult 
   const view=currentView(options,query),files=view.snapshot.files,paths=new Set(files.map(file=>file.path)),items:IndexHit[]=[];
   const normalized=query.replace(/^\.\//,'').replace(/\/$/,''),needle=normalized.toLowerCase();
   let capped=false;
+  const compare=(a:IndexHit,b:IndexHit):number=>a.path.localeCompare(b.path,'en')||a.line-b.line||a.kind.localeCompare(b.kind,'en')||a.name.localeCompare(b.name,'en');
   const definitions:{file:IndexFile;symbol:IndexFile['symbols'][number]}[]=[];
   for(const file of files)for(const symbol of file.symbols)if(show?symbol.name===query:symbol.name.toLowerCase().includes(needle)) {
-    if(definitions.length<candidateLimit)definitions.push({file,symbol});else capped=true;
+    let low=0,high=definitions.length;
+    const candidate=hit(file,symbol.name,symbol.line,symbol.kind);
+    while(low<high){const middle=(low+high)>>>1,entry=definitions[middle];if(compare(hit(entry.file,entry.symbol.name,entry.symbol.line,entry.symbol.kind),candidate)<=0)low=middle+1;else high=middle;}
+    if(low>=candidateLimit){capped=true;continue;}
+    definitions.splice(low,0,{file,symbol});
+    if(definitions.length>candidateLimit){definitions.pop();capped=true;}
   }
   const names=new Set(definitions.map(({symbol})=>symbol.name));
   const definitionKeys=new Set(definitions.map(({file,symbol})=>file.path+'\0'+symbol.name));
-  const add=(item:IndexHit):void=>{if(items.length<candidateLimit)items.push(item);else capped=true;};
+  // Retain the earliest hits in display order, regardless of discovery order.
+  const candidateKeys=new Set<string>();
+  const add=(item:IndexHit):void=>{
+    const key=JSON.stringify(item);if(candidateKeys.has(key))return;
+    let low=0,high=items.length;
+    while(low<high){const middle=(low+high)>>>1;if(compare(items[middle],item)<=0)low=middle+1;else high=middle;}
+    if(low>=candidateLimit){capped=true;return;}
+    items.splice(low,0,item);candidateKeys.add(key);
+    if(items.length>candidateLimit){candidateKeys.delete(JSON.stringify(items.pop()!));capped=true;}
+  };
   const uses=new Map<string,{file:IndexFile;use:IndexFile['uses'][number]}[]>();
   const aliases=new Map<string,{file:IndexFile;use:IndexFile['uses'][number]}[]>();
   for(const file of files) {
@@ -136,13 +151,11 @@ function queryIndex(query:string,options:IndexOptions,show:boolean):IndexResult 
     const declared=new Set(file.symbols.map(symbol=>symbol.name));
     for(const part of file.exports)if(!declared.has(part.name))add(hit(file,part.name,part.line,'export',undefined,part.from?`from ${part.from}`:'local export'));
     for(const imported of file.imports)add(hit(file,imported.specifier,imported.line,'import',undefined,resolveIndexImport(file.path,imported.specifier,paths)??'external or unresolved'));
-    if(items.length===candidateLimit){capped=true;break;}
   }
   for(const {file,symbol} of definitions) {
     add(hit(file,symbol.name,symbol.line,symbol.kind,symbol.signature,`defined in module ${file.module}`));
     for(const {file:user,use} of [...uses.get(symbol.name)??[],...aliases.get(file.path+'\0'+symbol.name)??[]])
       if(!(user.path===file.path&&use.line===symbol.line))add(hit(user,symbol.name,use.line,'use',undefined,`${use.kind}; potential name reference`));
-    if(items.length===candidateLimit){capped=true;break;}
   }
   const unique=new Map<string,IndexHit>();
   const tests=new Map<string,Set<string>>();
@@ -154,7 +167,7 @@ function queryIndex(query:string,options:IndexOptions,show:boolean):IndexResult 
     const related_tests=[...tests.get(item.path)??[]].sort().slice(0,8);
     const enriched=related_tests.length?{...item,related_tests}:item;unique.set(JSON.stringify(enriched),enriched);
   }
-  const sorted=[...unique.values()].sort((a,b)=>a.path.localeCompare(b.path,'en')||a.line-b.line||a.kind.localeCompare(b.kind,'en')||a.name.localeCompare(b.name,'en'));
+  const sorted=[...unique.values()].sort(compare);
   const moduleNames=[...new Set(sorted.slice(0,limit).map(item=>moduleOf(item.path)))].slice(0,10);
   const modules=moduleNames.map(path=>{const members=files.filter(file=>file.module===path);return {path,description:`${members.length} files; ${members.reduce((n,file)=>n+file.symbols.length,0)} definitions; ${members.reduce((n,file)=>n+file.exports.length,0)} exported names (navigation aid)`};});
   return {schema:INDEX_SCHEMA,repository:view.snapshot.repository,checkout:checkoutFingerprint(view.identity),commit:view.snapshot.commit,view:view.view,state:view.state,fallback:view.fallback,...(view.reason?{reason:view.reason}:{}),...(options.registry??{}),query,items:sorted.slice(0,limit),total:sorted.length,total_is_lower_bound:capped,truncated:capped||sorted.length>limit,modules};

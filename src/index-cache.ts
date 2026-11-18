@@ -1,6 +1,6 @@
 import { constants, closeSync, existsSync, linkSync, lstatSync, mkdirSync, realpathSync, openSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { check } from './errors.js';
 import { INDEX_SCHEMA, type FileAnalysis, type IndexSnapshot } from './index-types.js';
@@ -32,7 +32,7 @@ export function pruneIndexCache(root:string,maxBytes=256*1024*1024,maxObjects=20
     for(const entry of readdirSync(path,{withFileTypes:true})) {
       const full=join(path,entry.name);
       if(entry.isDirectory()&&depth<3&&(/^[a-f0-9]{64}$/.test(entry.name)||/^v\d+-[\w.-]+$/.test(entry.name)||['analysis','commits'].includes(entry.name)))collect(full,depth+1);
-      else if(entry.isFile()&&/^[a-f0-9]{40,64}\.json$/.test(entry.name)&&['analysis','commits'].includes(path.split('/').at(-1)!)) {
+      else if(entry.isFile()&&/^[a-f0-9]{40,64}\.json$/.test(entry.name)&&['analysis','commits'].includes(basename(path))) {
         try {
           const stat=lstatSync(full);
           if(stat.isFile()&&(!process.getuid||stat.uid===process.getuid())&&(stat.mode&0o022)===0)objects.push({path:full,bytes:stat.size,modified:stat.mtimeMs});
@@ -74,8 +74,8 @@ export function validAnalysis(value:FileAnalysis):boolean {
 /** Publish without replacing an existing immutable object, even when another writer wins the race. */
 export function publish(path:string,value:unknown):boolean {
   // Never poison immutable objects that subsequent readers must reject.
-  if(dirname(path).endsWith('/analysis'))check(validAnalysis(value as FileAnalysis),'Malformed index analysis; nothing published',4);
-  if(dirname(path).endsWith('/commits')) {
+  if(basename(dirname(path))==='analysis')check(validAnalysis(value as FileAnalysis),'Malformed index analysis; nothing published',4);
+  if(basename(dirname(path))==='commits') {
     const snapshot=value as IndexSnapshot;
     check(snapshot&&snapshot.schema===INDEX_SCHEMA&&snapshot.parser===parserVersion&&Array.isArray(snapshot.files)&&snapshot.files.every(file=>validAnalysis(file)),'Malformed index snapshot; nothing published',4);
     assertSnapshotPaths(snapshot.files.map(file=>file.path));

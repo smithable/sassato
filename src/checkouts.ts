@@ -90,9 +90,10 @@ export function resolveWorkerPath(s:Store,relativePath:string,task?:string):Row 
   const binding=currentBinding(s,task),identity=inspectCheckout(s,binding.checkout_id,binding.working_dir);
   text(relativePath,'repository relative path',4096);
   check(!isAbsolute(relativePath),'Path must be repository relative');
-  check(!relativePath.split(/[\\/]/).includes('.git'),'Git metadata paths are not worker files',3);
+  check(!relativePath.split(/[\\/]/).some(part=>part.toLowerCase()==='.git'),'Git metadata paths are not worker files',3);
   const path=realpathSync(resolve(identity.checkout_root,relativePath));
   check(insideCheckout(identity.checkout_root,path),'Resolved path escapes the registered checkout',3);
+  check(!path.split(/[\\/]/).some(part=>part.toLowerCase()==='.git'),'Git metadata paths are not worker files',3);
   check(!insideCheckout(identity.git_dir,path)&&!insideCheckout(identity.git_common_dir,path),'Git metadata paths are not worker files',3);
   return {path,project_id:registeredCheckout(s,binding.checkout_id).project_id,repository_id:registeredCheckout(s,binding.checkout_id).repository_id,checkout_id:binding.checkout_id,head:identity.head,working_dir:identity.working_dir};
 }

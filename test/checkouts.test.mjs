@@ -40,6 +40,9 @@ test('worker paths reject direct and symlinked Git metadata in ordinary and link
   const second=registerCheckout(s,linked),other=task('reviewer');
   bindCheckout(s,{checkout:second.checkout_id,directory:linked,task:other,provider:'codex',session:'second'});
   assert.throws(()=>resolveWorkerPath(s,'.git'),/Git metadata/);
+  symlinkSync(join(linked,'.git'),join(linked,'gitfile-alias'));
+  assert.throws(()=>resolveWorkerPath(s,'gitfile-alias'),/Git metadata/);
+  assert.throws(()=>resolveWorkerPath(s,'.GiT/config'),/Git metadata/);
   const common=git('-C',linked,'rev-parse','--path-format=absolute','--git-common-dir').trim();
   symlinkSync(common,join(linked,'common-alias'));
   assert.throws(()=>resolveWorkerPath(s,'common-alias/config'),/escapes|Git metadata/);

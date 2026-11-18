@@ -28,6 +28,16 @@ test('broad common-name queries cap candidates before repeated use enrichment an
   assert.equal(result.items.length,3);assert.equal(result.truncated,true);assert.equal(result.total_is_lower_bound,true);
   assert.ok(result.total<=60);assert.ok(JSON.stringify(result).length<7000);
 });
+
+test('bounded file queries retain early imports even when later definitions fill the pool',t=>{
+  const {repo,options}=setup(t);
+  write(repo,'src/large-module.ts','import { timer } from "./timer.js";\n'+Array.from({length:100},(_,i)=>`export function symbol${i}() {}`).join('\n'));
+  commit(repo);buildIndex(options);
+  const result=showIndex('src/large-module.ts',{...options,limit:3});
+  assert.deepEqual(result.items.map(item=>[item.kind,item.line]),[['file',1],['import',1],['function',2]]);
+  assert.equal(result.total_is_lower_bound,true);assert.ok(result.total<=60);
+});
+
 test('cache eviction removes oldest recognized objects while preserving locks, unknown files and symlinks',t=>{
   const {root,cache}=setup(t);indexCacheRoot(cache);const dir=join(cache,'analysis');mkdirSync(dir,{mode:0o700});
   for(let i=0;i<5;i++)writeFileSync(join(dir,i.toString(16).padStart(64,'0')+'.json'),'{}');

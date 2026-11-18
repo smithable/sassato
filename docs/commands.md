@@ -94,7 +94,10 @@ prompts. Configuration is validated before creating a database.
 `--for` role becomes ready (`all`, the default, wakes every eligible role); a role left out still
 sees such tasks in `tasks --available` and is woken for work owned by or routed to it.
 An empty list (`--open-work-roles ''`) deliberately disables only unrouted open-work
-wakes, including idle reminders; it does not disable owned or explicitly routed work,
+wakes, including idle reminders. When unset, every role may see eligible unrouted
+open work in its idle reminder. A task routed to another role is excluded from
+the waiting role’s idle open-work reminder even when the waiting role owns it.
+The empty list does not disable eligible owned or explicitly routed work,
 mail, answers or STOP. Role names are strict lowercase identifiers: whitespace or
 uppercase aliases are rejected, not silently normalized.
 Use `none` to clear the default human or stop file. `role set NAME --kind human` adds a
