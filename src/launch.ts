@@ -9,7 +9,7 @@ import { check, id, name, now, text } from './errors.js';
 import { processIdentity, registerSession, sessionState } from './coordination.js';
 import { validateRoleOptions } from './role-options.js';
 import { assertWorkAllowed } from './control.js';
-import { workspaceSettings } from './workspace-settings.js';
+import { workspaceSettings, roleAutocompact } from './workspace-settings.js';
 import { assertOrdinaryLaunchAllowed,launchLockPath,launchDirectory } from './launch-admission.js';
 
 export interface LaunchOptions {
@@ -72,7 +72,7 @@ export function planLaunch(store:Store, selected:string[], options:LaunchOptions
       if(config.reasoning_effort) args.push('--effort',config.reasoning_effort);
       if(config.permission_mode) args.push('--permission-mode',config.permission_mode);
       // The auto-compact window set for this role (workspace settings, T980); unset leaves Claude Code's default.
-      const compact=workspaceSettings(store).autocompact?.[role];
+      const compact=roleAutocompact(workspaceSettings(store),role);
       if(compact) args.push('--autocompact',String(compact));
     } else {
       if(config.reasoning_effort) args.push('--config',`model_reasoning_effort=${JSON.stringify(config.reasoning_effort)}`);

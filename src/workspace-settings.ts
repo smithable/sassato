@@ -49,15 +49,38 @@ export function validateSettings(s: Store, input: Row): WorkspaceSettings {
   // Claude Code's own default. Set by a human (role set ROLE --autocompact N|auto).
   const compact=input.autocompact??{};
   check(compact&&typeof compact==='object'&&!Array.isArray(compact)&&Object.keys(compact).length<=64,'autocompact must be an object of role names to token counts');
+  // An entry for a role that is no longer a Claude role (or no longer exists) is dropped, never a reason to
+  // refuse an unrelated settings change; setRoleAutocompact refuses setting one for a non-Claude role.
+  const claude=new Set(s.all("SELECT name FROM roles WHERE workspace_id=? AND provider='claude'",s.ws).map(r=>String(r.name)));
+  const kept:Record<string,number>={};
   for(const [role,tokens] of Object.entries(compact)) {
-    check(s.role(name(role)).provider==='claude',`autocompact is for Claude roles; ${role} is not one`);
-    check(Number.isSafeInteger(tokens)&&(tokens as number)>=100_000&&(tokens as number)<=10_000_000,`autocompact.${role} must be a whole number of tokens from 100000 to 10000000`);
+    if(!claude.has(role))continue;
+    check(validCompact(tokens),`autocompact.${role} must be a whole number of tokens from 100000 to 10000000`);
+    kept[role]=tokens as number;
   }
-  return {autocompact:{...compact} as Record<string,number>,digest_skip:Object.fromEntries(Object.entries(skip).map(([role,kinds])=>[role,[...new Set(kinds as string[])]])),open_work_roles:openWork===null?null:[...new Set((openWork as unknown[]).map(String))],default_human:human,import_timezone:validateTimezone(input.import_timezone ?? 'UTC'),stop_file:input.stop_file == null ? null : text(input.stop_file,'stop file',4096),busy_checks:validateBusyChecks(input.busy_checks??[]),import_answer_markers:markers.map(marker=>text(marker,'import answer marker',200)),import_role_aliases:roleAliases,import_timezone_aliases:timezoneAliases};
+  return {autocompact:kept,digest_skip:Object.fromEntries(Object.entries(skip).map(([role,kinds])=>[role,[...new Set(kinds as string[])]])),open_work_roles:openWork===null?null:[...new Set((openWork as unknown[]).map(String))],default_human:human,import_timezone:validateTimezone(input.import_timezone ?? 'UTC'),stop_file:input.stop_file == null ? null : text(input.stop_file,'stop file',4096),busy_checks:validateBusyChecks(input.busy_checks??[]),import_answer_markers:markers.map(marker=>text(marker,'import answer marker',200)),import_role_aliases:roleAliases,import_timezone_aliases:timezoneAliases};
 }
 /** Digest entries a role may choose not to be woken by. Urgent mail, replies, answers, blockers, reviews and
  * stops are never skippable: they always need the role. */
 // Never skippable either: task-ready and dependency-dropped, since both can concern the role's own work.
+const validCompact=(tokens:unknown):boolean=>Number.isSafeInteger(tokens)&&(tokens as number)>=100_000&&(tokens as number)<=10_000_000;
+/** A Claude role's auto-compact window (T980): a number of tokens, or 'auto' to clear it. A human sets it; the
+ * map is read and written in one transaction, so changes for different roles never overwrite each other. */
+export function setRoleAutocompact(s:Store,role:string,value:string):number|null {
+  check(value==='auto'||/^[0-9]+$/.test(value),'--autocompact takes a number of tokens (at least 100000) or auto');
+  const tokens=value==='auto'?null:Number(value);
+  check(tokens===null||validCompact(tokens),'--autocompact must be a whole number of tokens from 100000 to 10000000');
+  return s.tx(()=>{
+    s.requireHuman();
+    check(tokens===null||s.role(name(role)).provider==='claude',`autocompact is for Claude roles; ${role} is not one`);
+    const compact={...(workspaceSettings(s).autocompact??{})};
+    if(tokens===null)delete compact[role];else compact[role]=tokens;
+    setWorkspaceSettings(s,{autocompact:compact});
+    return tokens;
+  });
+}
+/** Own entries only: a role named like an Object property never inherits a value. */
+export const roleAutocompact=(settings:WorkspaceSettings,role:string):number|null=>settings.autocompact&&Object.hasOwn(settings.autocompact,role)?settings.autocompact[role]:null;
 export const DIGEST_SKIPPABLE=['own-work','open-work','task-finished','mail'];
 /** Workspace configuration is recorded in its existing append-only audit history. */
 export function workspaceSettings(s: Store): WorkspaceSettings {

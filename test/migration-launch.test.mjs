@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 import { Store } from '../dist/storage.js';
 import { now } from '../dist/errors.js';
 import { previewImport, applyImport, exportMarkdown } from '../dist/migration.js';
-import { setWorkspaceSettings } from '../dist/workspace-settings.js';
+import { setWorkspaceSettings, setRoleAutocompact, roleAutocompact, workspaceSettings } from '../dist/workspace-settings.js';
 import { planLaunch, launch, unlockLaunch, windowsTerminalArgs, savedCodexSession } from '../dist/launch.js';
 import { registerSession, processIdentity } from '../dist/coordination.js';
 
@@ -441,7 +441,12 @@ test('a Claude role\'s auto-compact window is passed by launch; unset, Codex and
   const args=planLaunch(f.s,['a'],{fresh:true})[0].args;
   assert.equal(args[args.indexOf('--autocompact')+1],'200000');
   assert(!planLaunch(f.s,['c'],{fresh:true})[0].args.includes('--autocompact'));
-  assert.throws(()=>setWorkspaceSettings(f.s,{autocompact:{c:200000}}),/for Claude roles/);
+  // An entry for a non-Claude role is dropped, never a reason to refuse; setting one is refused.
+  assert.deepEqual(setWorkspaceSettings(f.s,{autocompact:{a:200000,c:200000}}).autocompact,{a:200000});
+  assert.throws(()=>setRoleAutocompact(f.s,'c','200000'),/for Claude roles/);
+  assert.throws(()=>setRoleAutocompact(f.s,'a','5'),/from 100000/);
+  assert.equal(setRoleAutocompact(f.s,'a','300000'),300000);
+  assert.equal(roleAutocompact(workspaceSettings(f.s),'constructor'),null);
   assert.throws(()=>setWorkspaceSettings(f.s,{autocompact:{a:99999}}),/from 100000/);
   setWorkspaceSettings(f.s,{autocompact:{}});
   assert(!planLaunch(f.s,['a'],{fresh:true})[0].args.includes('--autocompact'),'auto: nothing passed again');

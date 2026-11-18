@@ -14,7 +14,7 @@ import { retitleImportedTasks } from './retitle.js';
 import { setup } from './setup.js';
 import { promptSetup } from './setup-prompt.js';
 import { loadConfig, configPath } from './config.js';
-import { workspaceSettings, setWorkspaceSettings, type WorkspaceSettings } from './workspace-settings.js';
+import { workspaceSettings, setWorkspaceSettings, setRoleAutocompact, roleAutocompact, type WorkspaceSettings } from './workspace-settings.js';
 import * as control from './control.js';
 import { stop } from './stop.js';
 import { getCheckpoint } from './checkpoints.js';
@@ -310,16 +310,14 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           if(str('open-work-roles')!==undefined)patch.open_work_roles=str('open-work-roles')==='all'?null:str('open-work-roles')!.split(',').map(role=>role.trim()).filter(Boolean);
           result=setWorkspaceSettings(s,patch);break;
         }
-        case 'roles': {empty();const compact=workspaceSettings(s).autocompact??{};result=c.roles(s).map(row=>row.provider==='claude'?{...row,autocompact:compact[row.name]??null}:row);break;}
-        case 'role set': {const role=arg('role');empty();result=c.setRole(s,role,{provider:str('provider'),model:str('model'),reasoning_effort:str('effort'),permission_mode:str('permission-mode'),sandbox_mode:str('sandbox'),approval_policy:str('approval'),working_dir:str('dir'),kind:str('kind') as 'agent'|'human'|undefined});
-          if(str('autocompact')!==undefined) {
-            // Kept in the workspace settings, so no schema change; a human sets it (T980).
-            const value=str('autocompact')!,compact={...(workspaceSettings(s).autocompact??{})};
-            if(value==='auto')delete compact[role];
-            else {check(/^[0-9]+$/.test(value),'--autocompact takes a number of tokens (at least 100000) or auto');compact[role]=Number(value);}
-            setWorkspaceSettings(s,{autocompact:compact});
-            result={...(result as Row),autocompact:compact[role]??null};
-          }
+        case 'roles': {empty();const settings=workspaceSettings(s);result=c.roles(s).map(row=>row.provider==='claude'?{...row,autocompact:roleAutocompact(settings,String(row.name))}:row);break;}
+        case 'role set': {const role=arg('role');empty();
+          // A bad --autocompact is refused before anything is saved; the window is set after the role, so a
+          // provider change in the same command is seen (T980).
+          const compactValue=str('autocompact');
+          if(compactValue!==undefined)check(compactValue==='auto'||(/^[0-9]+$/.test(compactValue)&&Number(compactValue)>=100_000&&Number(compactValue)<=10_000_000),'--autocompact takes a whole number of tokens from 100000 to 10000000, or auto');
+          result=c.setRole(s,role,{provider:str('provider'),model:str('model'),reasoning_effort:str('effort'),permission_mode:str('permission-mode'),sandbox_mode:str('sandbox'),approval_policy:str('approval'),working_dir:str('dir'),kind:str('kind') as 'agent'|'human'|undefined});
+          if(compactValue!==undefined)result={...(result as Row),autocompact:setRoleAutocompact(s,role,compactValue)};
           break;}
         case 'add': {const title=str('title')??rest('title');empty();result=t.addTask(s,{title,body:str('body'),owner:str('owner'),forRole:str('for'),priority:num('priority'),humanOnly:bool('human-only'),reviewRequired:bool('review-required')});break;}
         case 'tasks': empty();result=t.listTaskPage(s,{status:str('status'),owner:str('owner'),forRole:str('for'),available:bool('available'),limit:num('limit'),after:str('after')});break;
