@@ -636,7 +636,7 @@ sas wake --since 140 --ack M12,M13 --as builder      # the re-arm: acknowledge w
 ```
 
 In one call, `wake`:
-1. acknowledges the mail named with `--ack`;
+1. acknowledges the mail named with `--ack`, once its cursor checks have passed;
 2. waits exactly like `wait` (same settling, STOP and immediate signals). It needs saved progress (the start
    text makes it). `--since` defaults to the saved cursor; one past it is refused, since it would skip events,
    and an earlier one replays them;
@@ -649,13 +649,15 @@ In one call, `wake`:
      rest).
 
    Text over 1,500 characters is cut, with a marked tail naming the record to `show`;
-4. saves the notification cursor last, after everything above is built, with the expected-version check. If
-   progress moved while it waited (another waiter or session), nothing is saved, the output says so and gives
-   no re-arm from that cursor, and the exit status is 4;
+4. saves the notification cursor after the output is printed, with the expected-version check, and prints a
+   last line saying so. A wake whose output never reached the session saves nothing. If progress moved while
+   it waited (another waiter or session), nothing is saved, that line says not to re-arm from this cursor,
+   and the exit status is 4;
 5. ends with the exact re-arm command (with the same `--stop-file`, if one was given), and `--ack` for the
    urgent and needs-reply mail it showed.
 
-A wake with nothing new prints one line (`Nothing new for builder · cursor 140 saved · re-arm: …`).
+A wake with nothing new prints one line and the save line (`Nothing new for builder · cursor 140 · re-arm: …`,
+`Cursor 140 saved.`).
 A STOP saves nothing and offers no re-arm.
 
 Saving at wake time means the role attests that it **read** the entries, not that it finished them. Work

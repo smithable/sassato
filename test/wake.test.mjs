@@ -24,7 +24,12 @@ function fixture(t) {
   return { s, b, dir, stopFile: join(dir, 'stop'), latest };
 }
 const as = (s, actor, fn) => { const old = s.actor; s.actor = actor; try { return fn(); } finally { s.actor = old; } };
-const quick = (f, more = {}) => wake(f.b, { stopFile: f.stopFile, timeout: 3, settle: 1, settleMax: 2, ...more });
+// As the CLI does: print the text, then save the cursor (commit) and print its line.
+const quick = async (f, more = {}) => {
+  const out = await wake(f.b, { stopFile: f.stopFile, timeout: 3, settle: 1, settleMax: 2, ...more });
+  const saved = out.commit?.();
+  return { ...out, saved: saved?.saved ?? false, text: out.text + (saved ? `\n${saved.line}` : '') };
+};
 
 test('a wake prints each entry in full, saves the cursor and ends with the re-arm command', async t => {
   const f = fixture(t);
@@ -44,8 +49,8 @@ test('--ack acknowledges before waiting, and a quiet wake is one line', async t 
   const first = await quick(f);
   const second = await quick(f, { ack: [m.id], timeout: 1 });
   assert.deepEqual(second.acknowledged, [m.id]);
-  assert.equal(second.text.split('\n').length, 2);
-  assert.match(second.text, /^Acknowledged M\d+\.\nNothing new for b · cursor \d+ saved · re-arm: sassato wake --since \d+ --as b --workspace team --stop-file \S+$/);
+  assert.equal(second.text.split('\n').length, 3);
+  assert.match(second.text, /^Acknowledged M\d+\.\nNothing new for b · cursor \d+ · re-arm: sassato wake --since \d+ --as b --workspace team --stop-file \S+\nCursor \d+ saved\.$/);
   assert.ok(second.result.cursor >= first.result.cursor);
 });
 
@@ -115,10 +120,23 @@ test('a --since past the saved cursor is refused, and wake needs saved progress'
   await assert.rejects(quick(f, { since: saved + 1 }), /past the saved cursor/);
   const fresh = new Store(join(f.dir, 'state.db'), 'a'); fresh.use('team'); t.after(() => fresh.close());
   await assert.rejects(wake(fresh, { stopFile: f.stopFile, timeout: 1 }), /No saved notification progress/);
+  const m = as(f.s, 'a', () => send(f.s, ['b'], 'Not to be acknowledged by a refused wake', { urgent: true }));
+  await assert.rejects(quick(f, { since: saved + 5, ack: [m.id] }), /past the saved cursor/);
+  assert.equal(inbox(f.b, { peek: true, state: 'unread' }).some((r) => r.id === m.id), true, 'a refused wake acknowledges nothing');
 });
 
 test('kinds that can concern a role\'s own work cannot be skipped', t => {
   const f = fixture(t);
   for (const kind of ['task-ready', 'dependency-dropped', 'urgent', 'review-submitted'])
     assert.throws(() => as(f.s, 'human', () => setWorkspaceSettings(f.s, { digest_skip: { b: [kind] } })), /must list kinds among/);
+});
+
+test('nothing is saved until the caller commits, after printing', async t => {
+  const f = fixture(t);
+  as(f.s, 'a', () => send(f.s, ['b'], 'Deliver me first', { urgent: true }));
+  const before = getNotificationProgress(f.b);
+  const out = await wake(f.b, { stopFile: f.stopFile, timeout: 3, settle: 1, settleMax: 2 });
+  assert.equal(getNotificationProgress(f.b).version, before.version, 'not saved before commit');
+  assert.equal(out.commit().saved, true);
+  assert.equal(getNotificationProgress(f.b).cursor, out.result.cursor);
 });
