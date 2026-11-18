@@ -283,7 +283,7 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
       more=events.length===200;
       for(const event of events) {
         const wake=workflow(s,actor,event);
-        if(!settle){cursor=event.id;if(wake)return wake;continue;}
+        if(!settle){cursor=event.id;if(wake&&!skip.has(wake.message?.reply?'reply-needed':wake.reason))return wake;continue;}
         const entry=wake?entryFor(s,wake,event):entries.size?extraDuringDigest(s,actor,event):undefined;
         if(entry&&!add(entry)) {
           if(wake&&['answer','supervisor-ping'].includes(wake.reason))return digest('immediate',priority??wake);
@@ -308,7 +308,7 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
       });
       if(own) {
         const wake:WaitResult={reason:own.reason,role:actor,cursor,task:own.tasks[0],tasks:own.tasks};
-        if(!settle)return wake;
+        if(!settle&&!skip.has(own.reason))return wake;
         if(!add(entryFor(s,wake)))return digest('capacity');
       }
       idleSince=performance.now();

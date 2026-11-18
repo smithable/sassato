@@ -34,7 +34,7 @@ test('a wake prints each entry in full, saves the cursor and ends with the re-ar
   assert.equal(out.saved, true);
   assert.match(out.text, new RegExp(`${m.id} · from a · urgent`));
   assert.match(out.text, /Please merge PR 42\.\n {4}Second line with detail\./);
-  assert.match(out.text, new RegExp(`sassato wake --since ${out.result.cursor} --as b --workspace team --ack ${m.id}`));
+  assert.match(out.text, new RegExp(`sassato wake --since ${out.result.cursor} --as b --workspace team --stop-file \\S+ --ack ${m.id}`));
   assert.equal(getNotificationProgress(f.b).cursor, out.result.cursor);
 });
 
@@ -45,7 +45,7 @@ test('--ack acknowledges before waiting, and a quiet wake is one line', async t 
   const second = await quick(f, { ack: [m.id], timeout: 1 });
   assert.deepEqual(second.acknowledged, [m.id]);
   assert.equal(second.text.split('\n').length, 2);
-  assert.match(second.text, /^Acknowledged M\d+\.\nNothing new for b · cursor \d+ saved · re-arm: sassato wake --since \d+ --as b --workspace team$/);
+  assert.match(second.text, /^Acknowledged M\d+\.\nNothing new for b · cursor \d+ saved · re-arm: sassato wake --since \d+ --as b --workspace team --stop-file \S+$/);
   assert.ok(second.result.cursor >= first.result.cursor);
 });
 
@@ -56,7 +56,7 @@ test('a task entry carries its state, brief and latest note, and long text is cu
   const out = await quick(f);
   assert.match(out.text, new RegExp(`${task.id} "Fix the gate" · open · owner - · for b · version \\d+`));
   assert.match(out.text, /Brief: the gate fails on X\./);
-  assert.match(out.text, /Latest note \(a\): Started on it, then handed over\./);
+  assert.match(out.text, /Note \(a\): Started on it, then handed over\./);
   assert.equal(out.text.split(`  ${task.id} · from`).length, 2, 'a task woken twice prints once');
   assert.match(wakeText('x'.repeat(20), 'M9', 10), /^x{10}… \[cut at 10 characters; read it all: sassato show M9\]$/);
 });
@@ -106,4 +106,19 @@ test('inbox lists newest first', t => {
   const second = as(f.s, 'a', () => send(f.s, ['b'], 'newer'));
   const rows = inbox(f.b, { peek: true, state: 'unread' });
   assert.deepEqual(rows.map(r => r.id), [second.id, first.id]);
+});
+
+test('a --since past the saved cursor is refused, and wake needs saved progress', async t => {
+  const f = fixture(t);
+  const saved = getNotificationProgress(f.b).cursor;
+  as(f.s, 'a', () => send(f.s, ['human'], 'events after the cursor'));
+  await assert.rejects(quick(f, { since: saved + 1 }), /past the saved cursor/);
+  const fresh = new Store(join(f.dir, 'state.db'), 'a'); fresh.use('team'); t.after(() => fresh.close());
+  await assert.rejects(wake(fresh, { stopFile: f.stopFile, timeout: 1 }), /No saved notification progress/);
+});
+
+test('kinds that can concern a role\'s own work cannot be skipped', t => {
+  const f = fixture(t);
+  for (const kind of ['task-ready', 'dependency-dropped', 'urgent', 'review-submitted'])
+    assert.throws(() => as(f.s, 'human', () => setWorkspaceSettings(f.s, { digest_skip: { b: [kind] } })), /must list kinds among/);
 });

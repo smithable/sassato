@@ -637,18 +637,23 @@ sas wake --since 140 --ack M12,M13 --as builder      # the re-arm: acknowledge w
 
 In one call, `wake`:
 1. acknowledges the mail named with `--ack`;
-2. waits exactly like `wait` (same settling, STOP and immediate signals; `--since` defaults to the saved
-   progress);
+2. waits exactly like `wait` (same settling, STOP and immediate signals). It needs saved progress (the start
+   text makes it). `--since` defaults to the saved cursor; one past it is refused, since it would skip events,
+   and an earlier one replays them;
 3. prints what the role needs to act without a second read:
    - STOP, with the `stopped` command;
    - each digest entry with its full text: a message's body; a task's state, its brief when the task is
-     new to the role, a review's note and the latest task note; a question with its answer;
-   - urgent and needs-reply mail still waiting for an acknowledgement.
+     new to the role, a review's note, and the notes written since the last wake (the last three); a question
+     with its answer. One record woken twice for the same reason is printed once, with both senders;
+   - urgent and needs-reply mail still waiting for an acknowledgement (twenty, newest first, with a count of the
+     rest).
 
    Text over 1,500 characters is cut, with a marked tail naming the record to `show`;
-4. saves the notification cursor with the expected-version check. If progress moved while it waited
-   (another waiter or session), nothing is saved, the output says so, and the exit status is 4;
-5. ends with the exact re-arm command, with `--ack` for the urgent and needs-reply mail it showed.
+4. saves the notification cursor last, after everything above is built, with the expected-version check. If
+   progress moved while it waited (another waiter or session), nothing is saved, the output says so and gives
+   no re-arm from that cursor, and the exit status is 4;
+5. ends with the exact re-arm command (with the same `--stop-file`, if one was given), and `--ack` for the
+   urgent and needs-reply mail it showed.
 
 A wake with nothing new prints one line (`Nothing new for builder · cursor 140 saved · re-arm: …`).
 A STOP saves nothing and offers no re-arm.
@@ -669,8 +674,9 @@ nor fill its digest:
 sas workspace set --digest-skip '{"fable":["own-work","task-finished"]}' --as johan
 ```
 
-These kinds can be skipped: `own-work`, `open-work`, `task-ready`, `task-finished`, `mail`,
-`dependency-dropped`. Urgent mail, replies, answers, blockers, reviews and STOP always reach the role.
+These kinds can be skipped: `own-work`, `open-work`, `task-finished`, `mail`. Urgent mail, replies, answers,
+blockers, reviews, ready tasks, dropped dependencies and STOP always reach the role, since they can concern
+its own work.
 The default is none: every role gets its digest as before.
 
 `node scripts/digest-stats.mjs <copy of the database> <workspace> [days]` counts, per role, the kinds the

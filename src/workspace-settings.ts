@@ -49,7 +49,8 @@ export function validateSettings(s: Store, input: Row): WorkspaceSettings {
 }
 /** Digest entries a role may choose not to be woken by. Urgent mail, replies, answers, blockers, reviews and
  * stops are never skippable: they always need the role. */
-export const DIGEST_SKIPPABLE=['own-work','open-work','task-ready','task-finished','mail','dependency-dropped'];
+// Never skippable either: task-ready and dependency-dropped, since both can concern the role's own work.
+export const DIGEST_SKIPPABLE=['own-work','open-work','task-finished','mail'];
 /** Workspace configuration is recorded in its existing append-only audit history. */
 export function workspaceSettings(s: Store): WorkspaceSettings {
   const event=s.get("SELECT actor,detail FROM events WHERE workspace_id=? AND entity='workspace' AND action IN ('created','settings-updated') ORDER BY id DESC LIMIT 1",s.ws);
