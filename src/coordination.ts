@@ -1,7 +1,7 @@
 import { messageIsNow } from './wait-digest.js';
 import { contextDelta,contextLine } from './context-brief.js';
 import { accessSync, constants, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
-import { basename, dirname, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { Store, type Row } from './storage.js';
 import { AppError, check, id, integer, name, now, text } from './errors.js';
 import { workspaceSettings } from './workspace-settings.js';
@@ -103,11 +103,13 @@ function providerProcess(pid: number, provider: string): boolean {
     // The launcher must resolve to the provider's own file, never a shared runtime such as node.
     const launcher = launcherPath(provider);
     if (launcher === null || !(basename(launcher) === provider || versionName.test(basename(launcher)))) return false;
-    const running = statSync(`/proc/${pid}/exe`), installed = statSync(launcher);
-    if (running.dev === installed.dev && running.ino === installed.ino) return true;
-    // A replaced or deleted file reads as '<path> (deleted)' and fails here: fail closed.
-    const executable = readlinkSync(`/proc/${pid}/exe`);
-    return versionName.test(basename(launcher)) && dirname(executable) === dirname(launcher) && versionName.test(basename(executable));
+    const running = statSync(`/proc/${pid}/exe`,{ bigint: true });
+    const same = (path: string): boolean => { const file = statSync(path,{ bigint: true }); return file.dev === running.dev && file.ino === running.ino; };
+    if (same(launcher)) return true;
+    // A replaced or deleted file reads as '<path> (deleted)' and fails the name test: fail closed. The sibling is
+    // compared as a file in the launcher's folder here, so another mount namespace's same-named path does not count.
+    const name = basename(readlinkSync(`/proc/${pid}/exe`));
+    return versionName.test(basename(launcher)) && versionName.test(name) && same(join(dirname(launcher),name));
   } catch { return false; }
 }
 export function sessionState(row: Row): 'ended' | 'running' | 'stale' | 'unknown' {
