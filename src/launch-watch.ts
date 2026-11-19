@@ -140,7 +140,7 @@ async function observe(s:Store,human:string,remote:string,thread:string,clock:()
       if(pendingStop(s))return await stop();
       inspect();
       const progress=getNotificationProgress(s)!;
-      const result=await waitForWork(s,{since:progress.cursor,idleMinutes:50},{inspect,deliveredMail});
+      const result=await waitForWork(s,{since:progress.cursor,defaultIdleMinutes:50},{inspect,deliveredMail});
       if(result.reason==='stop' || pendingStop(s))return await stop();
       inspect();
       const pending=stagePendingWake(s,epoch,progress,result);

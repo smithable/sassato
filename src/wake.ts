@@ -4,13 +4,14 @@
 // expected-version check, and ends with the exact command to re-arm. Saving at wake time means the role
 // attests that it has read the entries, not that it has finished them: unfinished work stays on its tasks
 // (a note, a block), and urgent mail keeps coming back until it is acknowledged.
+import { activeStop } from './control.js';
 import { readPendingWake, workerStop } from './pending-wake.js';
 import type { Row, Store } from './storage.js';
 import { waitWithManagedObservation } from './managed-wait.js';
 import { getNotificationProgress, saveNotificationProgress } from './notification-progress.js';
 import { acknowledgeMany } from './coordination.js';
 import type { WaitOptions, WaitResult } from './mail-wait.js';
-import { DIGEST_GROUPS, type DigestEntry } from './wait-digest.js';
+import { DIGEST_GROUPS, scoreExplanation, type DigestEntry } from './wait-digest.js';
 import { AppError, check } from './errors.js';
 
 export const WAKE_TEXT_LIMIT = 1500;
@@ -92,7 +93,7 @@ function formatWake(s: Store, options: WakeOptions, since: number, result: WaitR
   const actor=s.requireActor();
   const quote = (value: string) => /^[\w./~:@%+=,-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
   const stopFlag = options.stopFile ? ` --stop-file ${quote(options.stopFile)}` : '';
-  const idleFlag = options.idleMinutes ? ` --idle-minutes ${options.idleMinutes}` : '';
+  const idleFlag = options.idleMinutes!==undefined ? ` --idle-minutes ${options.idleMinutes}` : '';
   const rearm = (ack: string[]) => `sassato wake --since ${result.cursor}${idleFlag} --as ${actor} --workspace ${s.workspace}${stopFlag}${ack.length ? ` --ack ${ack.join(',')}` : ''}`;
   const lines: string[] = [];
   if (acknowledged.length) lines.push(`Acknowledged ${acknowledged.join(', ')}.`);
@@ -113,18 +114,19 @@ function formatWake(s: Store, options: WakeOptions, since: number, result: WaitR
   if(options.pending && !result.digest && result.tasks) {
     for(const task of result.tasks) body.push(indent(detail(s,{id:task,task,from:actor,kind:result.reason,group:'other',summary:task},since,result.cursor)));
   }
-  for (const group of DIGEST_GROUPS) {
+  if(result.digest?.score)body.push(scoreExplanation(result.digest.score));
+  for (const group of result.digest?.score?['scored']:DIGEST_GROUPS) {
     // One record woken twice for the same reason (created, then handed over) is printed once, with both senders.
     const inGroup = new Map<string, { entry: DigestEntry; from: string[] }>();
-    for (const entry of entries.filter((e) => e.group === group)) {
+    for (const entry of entries.filter((e) => group==='scored' || e.group === group)) {
       const key = `${entry.id}:${entry.kind}`, seen = inGroup.get(key);
       if (seen) { if (!seen.from.includes(entry.from)) seen.from.push(entry.from); } else inGroup.set(key, { entry, from: [entry.from] });
     }
     if (!inGroup.size) continue;
-    body.push(`${group}:`);
+    if(group!=='scored')body.push(`${group}:`);
     for (const { entry, from } of inGroup.values()) {
       body.push(`  ${entry.id} · from ${from.join(', ')} · ${entry.kind}${entry.task && entry.task !== entry.id ? ` · ${entry.task}` : ''}`);
-      if(options.pending && entry.tasks?.length) {
+      if((options.pending||result.scored) && entry.tasks?.length) {
         for(const task of entry.tasks) body.push(indent(detail(s,{...entry,id:task,task},since,result.cursor)));
       } else body.push(indent(detail(s, entry, since, result.cursor)));
     }
@@ -136,12 +138,20 @@ function formatWake(s: Store, options: WakeOptions, since: number, result: WaitR
   }
   if (result.digest?.has_more) body.push('More notifications remain: handle these, then re-arm at once for the rest.');
   const direct = result.message && (result.reason === 'urgent' || result.reason === 'reply-needed') ? [String(result.message.id)] : [];
-  const toAck = [...new Set([...direct, ...entries.filter((e) => /^M\d+$/.test(e.id) && ['urgent', 'reply-needed'].includes(e.kind)).map((e) => e.id), ...left.map((m) => `M${m.id}`)])];
+  const toAck = [...new Set([...direct, ...entries.filter((e) => /^M\d+$/.test(e.id) && (Boolean(result.scored) || ['urgent', 'reply-needed'].includes(e.kind))).map((e) => e.id), ...left.map((m) => `M${m.id}`)])];
 
   // The cursor is saved by commit(), which the caller runs after the text has been delivered (printed), so a
   // wake whose output never reached the session saves nothing.
-  const commit = version===undefined ? undefined : (): { saved: boolean; line: string } => {
-    try { saveNotificationProgress(s, { cursor: result.cursor, expected_version: version }); return { saved: true, line: `Cursor ${result.cursor} saved.` }; }
+  const commit = version===undefined || (result.mode==='scored' && result.reason==='timeout') ? undefined : (): { saved: boolean; line: string } => {
+    try {
+      const saved=s.tx(()=>{
+        if(activeStop(s,[actor],options.stopFile))return false;
+        saveNotificationProgress(s,{cursor:result.cursor,expected_version:version,scored:result.scored});
+        return true;
+      });
+      return saved?{saved,line:`Cursor ${result.cursor} saved.`}:
+        {saved,line:'STOP requested during delivery; cursor preserved. Checkpoint and do not start work.'};
+    }
     catch (error) {
       if (!(error instanceof AppError) || error.code !== 4) throw error;
       return { saved: false, line: `Cursor ${result.cursor} NOT saved: ${error.message}. Another waiter or session saved progress for ${actor}: do not re-arm from this cursor; read sassato progress show --as ${actor} --workspace ${s.workspace} and wake from the saved one.` };

@@ -1,3 +1,4 @@
+import { stripScoredWakeSql } from './fixtures/team.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -39,7 +40,7 @@ test('housekeeping stays in audit but not search; schema migration removes old s
   }
   const task=takeTask(s,addTask(s,{title:'Substantive work'}).id);noteTask(s,task.id,'retainquartznote');
   const before=s.all('SELECT * FROM events ORDER BY id');
-  s.db.exec('DROP TABLE supervisor_waiters; DROP TABLE supervisor_pings; DROP TABLE managed_transitions; DROP TABLE managed_workers; DROP TABLE managed_controllers; DROP TABLE task_briefs; DROP TABLE checkout_bindings; DROP TABLE project_checkouts; DROP TABLE registry_checkouts; DROP TABLE registry_repositories; DROP TABLE registry_projects; DROP TABLE jobs; ALTER TABLE messages DROP COLUMN reply; DELETE FROM schema_migrations WHERE version>=6; PRAGMA user_version=5;');
+  s.db.exec(stripScoredWakeSql+'DROP TABLE supervisor_waiters; DROP TABLE supervisor_pings; DROP TABLE managed_transitions; DROP TABLE managed_workers; DROP TABLE managed_controllers; DROP TABLE task_briefs; DROP TABLE checkout_bindings; DROP TABLE project_checkouts; DROP TABLE registry_checkouts; DROP TABLE registry_repositories; DROP TABLE registry_projects; DROP TABLE jobs; ALTER TABLE messages DROP COLUMN reply; DELETE FROM schema_migrations WHERE version>=6; PRAGMA user_version=5;');
   s=f.reopen();
   assert.equal(s.get('PRAGMA user_version').user_version,SCHEMA_VERSION);
   assert.deepEqual(s.all('SELECT * FROM events ORDER BY id'),before);

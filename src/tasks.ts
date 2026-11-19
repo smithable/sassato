@@ -62,7 +62,7 @@ function notify(s: Store, recipients: string[], body: string, task: Row): void {
   const n = s.run('INSERT INTO messages(workspace_id,sender,body,task_id,created_at) VALUES(?,?,?,?,?)', s.ws, sender, body, task.id, at).lastInsertRowid;
   for (const recipient of to) s.run('INSERT INTO receipts(workspace_id,message_id,recipient) VALUES(?,?,?)', s.ws, n, recipient);
   s.index('message', `M${n}`, `${sender} → ${to.join(', ')}`, body, { role: sender, updated_at: at });
-  s.event('message', `M${n}`, 'sent', { recipients: to, task_id: taskId(task), body });
+  s.event('message', `M${n}`, 'sent', { recipients: to, task_id: taskId(task), body, workflow_mirror:true });
 }
 function lease(hours = 4): string { return new Date(Date.now() + integer(hours, 'lease hours', 1, 168) * 3_600_000).toISOString(); }
 function priority(value = 0): number { return integer(value, 'priority', 0, 100); }

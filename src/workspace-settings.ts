@@ -1,8 +1,9 @@
 import { type Store, type Row } from './storage.js';
 import { check, name, text } from './errors.js';
+import { WAKE_SPEEDS, validateRoleWakePolicy, type RoleWakePolicy, type WakeMode, type WakeSpeed } from './wake-policy.js';
 import { validateBusyChecks, type BusyCheck } from './busy-checks.js';
 
-export interface WorkspaceSettings { default_human: string | null; import_timezone: string; stop_file: string | null; busy_checks:BusyCheck[]; import_answer_markers:string[]; import_role_aliases:Record<string,string>; import_timezone_aliases:Record<string,string>; open_work_roles:string[]|null; digest_skip:Record<string,string[]>; autocompact:Record<string,number> }
+export interface WorkspaceSettings { default_human: string | null; import_timezone: string; stop_file: string | null; busy_checks:BusyCheck[]; import_answer_markers:string[]; import_role_aliases:Record<string,string>; import_timezone_aliases:Record<string,string>; open_work_roles:string[]|null; digest_skip:Record<string,string[]>; autocompact:Record<string,number>; wake_mode:WakeMode; speed:WakeSpeed; wake_roles:Record<string,RoleWakePolicy> }
 function standardTimezone(zone:string):boolean {
   try {new Intl.DateTimeFormat('en',{timeZone:zone});return true;} catch {return false;}
 }
@@ -22,6 +23,13 @@ export function validateTimezone(value: unknown): string {
   return zone;
 }
 export function validateSettings(s: Store, input: Row): WorkspaceSettings {
+  const wakeMode=input.wake_mode??'legacy',speed=input.speed??'normal',wakeRoles=input.wake_roles??{};
+  check(wakeMode==='legacy'||wakeMode==='scored','Wake mode must be legacy or scored');
+  check(WAKE_SPEEDS.some(profile=>profile===speed),'Workspace speed must be slow, normal or fast');
+  check(wakeRoles&&typeof wakeRoles==='object'&&!Array.isArray(wakeRoles)&&Object.keys(wakeRoles).length<=64,'wake_roles must map up to 64 role names to settings');
+  const wake_roles=Object.fromEntries(Object.entries(wakeRoles).map(([role,value])=>{
+    s.role(name(role));return [role,validateRoleWakePolicy(value)];
+  }));
   const human = input.default_human ?? null;
   if (human !== null) check(s.role(name(human)).kind === 'human','Default decision recipient must be a human role',3);
   const markers=input.import_answer_markers??[];
@@ -58,7 +66,7 @@ export function validateSettings(s: Store, input: Row): WorkspaceSettings {
     check(validCompact(tokens),`autocompact.${role} must be a whole number of tokens from 100000 to 10000000`);
     kept[role]=tokens as number;
   }
-  return {autocompact:kept,digest_skip:Object.fromEntries(Object.entries(skip).map(([role,kinds])=>[role,[...new Set(kinds as string[])]])),open_work_roles:openWork===null?null:[...new Set((openWork as unknown[]).map(String))],default_human:human,import_timezone:validateTimezone(input.import_timezone ?? 'UTC'),stop_file:input.stop_file == null ? null : text(input.stop_file,'stop file',4096),busy_checks:validateBusyChecks(input.busy_checks??[]),import_answer_markers:markers.map(marker=>text(marker,'import answer marker',200)),import_role_aliases:roleAliases,import_timezone_aliases:timezoneAliases};
+  return {wake_mode:wakeMode,speed,wake_roles,autocompact:kept,digest_skip:Object.fromEntries(Object.entries(skip).map(([role,kinds])=>[role,[...new Set(kinds as string[])]])),open_work_roles:openWork===null?null:[...new Set((openWork as unknown[]).map(String))],default_human:human,import_timezone:validateTimezone(input.import_timezone ?? 'UTC'),stop_file:input.stop_file == null ? null : text(input.stop_file,'stop file',4096),busy_checks:validateBusyChecks(input.busy_checks??[]),import_answer_markers:markers.map(marker=>text(marker,'import answer marker',200)),import_role_aliases:roleAliases,import_timezone_aliases:timezoneAliases};
 }
 /** Digest entries a role may choose not to be woken by. Urgent mail, replies, answers, blockers, reviews and
  * stops are never skippable: they always need the role. */
@@ -85,18 +93,18 @@ export const DIGEST_SKIPPABLE=['own-work','open-work','task-finished','mail'];
 /** Workspace configuration is recorded in its existing append-only audit history. */
 export function workspaceSettings(s: Store): WorkspaceSettings {
   const event=s.get("SELECT actor,detail FROM events WHERE workspace_id=? AND entity='workspace' AND action IN ('created','settings-updated') ORDER BY id DESC LIMIT 1",s.ws);
-  if (!event) return {default_human:null,import_timezone:'UTC',stop_file:null,busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{},autocompact:{}};
+  if (!event) return {default_human:null,import_timezone:'UTC',stop_file:null,busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{},autocompact:{},wake_mode:'legacy',speed:'normal',wake_roles:{}};
   const detail=JSON.parse(event.detail);
   if (detail.settings) {
     // Older builds allowed aliases such as EST/CET. Ignore those overrides on
     // read so standard meanings win and unrelated settings remain editable.
-    const settings={busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{},autocompact:{},...detail.settings};
+    const settings={busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{},autocompact:{},wake_mode:'legacy',speed:'normal',wake_roles:{},...detail.settings};
     settings.import_timezone_aliases=Object.fromEntries(Object.entries(settings.import_timezone_aliases).filter(([key])=>!standardTimezone(key)));
     return settings;
   }
   // Preserve the recorded bootstrap human; unconfigured imports use generic UTC.
   const human=s.get("SELECT name FROM roles WHERE workspace_id=? AND name=? AND kind='human'",s.ws,event.actor)?.name ?? null;
-  return {default_human:human,import_timezone:'UTC',stop_file:null,busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{},autocompact:{}};
+  return {default_human:human,import_timezone:'UTC',stop_file:null,busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{},autocompact:{},wake_mode:'legacy',speed:'normal',wake_roles:{}};
 }
 export function setWorkspaceSettings(s: Store, patch: Partial<WorkspaceSettings>): WorkspaceSettings {
   return s.tx(()=>{
@@ -104,4 +112,8 @@ export function setWorkspaceSettings(s: Store, patch: Partial<WorkspaceSettings>
     const before=workspaceSettings(s),settings=validateSettings(s,{...before,...patch});
     s.event('workspace',s.workspace,'settings-updated',{before,settings});return settings;
   });
+}
+
+export function roleWakePolicy(settings:WorkspaceSettings,role:string):RoleWakePolicy {
+  return Object.hasOwn(settings.wake_roles,role)?settings.wake_roles[role]:{};
 }

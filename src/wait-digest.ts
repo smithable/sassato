@@ -1,10 +1,11 @@
+import type { WakeScore } from './wake-policy.js';
 import type { Row, Store } from './storage.js';
 
 export const DIGEST_LIMIT=100;
 export const DIGEST_GROUPS=['needs-a-decision','review-requested','finished','other'] as const;
 export type DigestGroup=typeof DIGEST_GROUPS[number];
-export interface DigestEntry {id:string;event_id?:string;from:string;kind:string;task?:string;tasks?:string[];summary:string;group:DigestGroup;}
-export interface WaitDigest {entries:DigestEntry[];total:number;flush:'quiet'|'max'|'deadline'|'capacity'|'immediate';settle:number;settle_max:number;has_more:boolean;}
+export interface DigestEntry {id:string;event_id?:string;from:string;kind:string;task?:string;tasks?:string[];summary:string;group:DigestGroup;weight?:number;}
+export interface WaitDigest {entries:DigestEntry[];total:number;flush:'quiet'|'max'|'deadline'|'capacity'|'immediate'|'scored';settle:number;settle_max:number;has_more:boolean;score?:WakeScore;}
 export const digestText=(value:unknown):string=>Array.from(String(value??'').replace(/[\x00-\x1f\x7f]/g,' ').replace(/\s+/g,' ').trim()).slice(0,160).join('');
 /** Monotonic quiet/max policy shared by the runtime and timestamp replay. */
 export class DigestWindow {
@@ -34,7 +35,10 @@ export function digestGroup(kind:string):DigestGroup {
 }
 export function formatDigest(digest:WaitDigest,cursor:number):string {
   const lines=[`Work digest: ${digest.total} notifications (${digest.flush}) · cursor ${cursor}`];
-  for(const group of DIGEST_GROUPS) {
+  if(digest.score) {
+    lines.push(scoreExplanation(digest.score));
+    for(const entry of digest.entries)lines.push(`${entry.event_id??entry.id} ${entry.id} · from ${entry.from} · ${entry.kind}${entry.weight===undefined?'':` · ${entry.weight} points`} · ${entry.summary}`);
+  } else for(const group of DIGEST_GROUPS) {
     const entries=digest.entries.filter(entry=>entry.group===group);if(!entries.length)continue;
     lines.push(group+':');
     for(const entry of entries)lines.push(`${entry.event_id??entry.id} ${entry.id} · from ${entry.from} · ${entry.kind}${entry.task?' · '+entry.task:''} · ${entry.summary}`);
@@ -42,6 +46,11 @@ export function formatDigest(digest:WaitDigest,cursor:number):string {
   if(digest.flush==='capacity'||digest.has_more)lines.push('More notifications remain; handle these entries, save this cursor, then wait again for the remainder.');
   lines.push('Read full records by id; receipts and notification progress are unchanged.');
   return lines.join('\n');
+}
+
+export function scoreExplanation(score:NonNullable<WaitDigest['score']>):string {
+  const reason=score.immediate_cause??(score.age_limit_seconds===undefined?score.reason:`age limit ${score.age_limit_seconds}s`);
+  return `Wake reason: ${reason}${score.trigger?' ('+score.trigger+')':''} · ${score.total}/${score.threshold} points · ${score.speed}`;
 }
 
 /** Indexed by the public message id; legacy/imported sends without the flag are false. */

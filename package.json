@@ -36,6 +36,7 @@
     "examples/recovery-evidence.example.json",
     "examples/smithable.config.json",
     "docs/supervisor.md",
+    "docs/wake-urgency.md",
     "docs/attended-supervisor.md"
   ],
   "scripts": {

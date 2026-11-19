@@ -4,8 +4,9 @@ import { resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { Store, type Row, type Param } from './storage.js';
 import { AppError, check, integer } from './errors.js';
-import { workspaceSettings } from './workspace-settings.js';
-import { getNotificationProgress } from './notification-progress.js';
+import { roleWakePolicy, workspaceSettings, type WorkspaceSettings } from './workspace-settings.js';
+import { getNotificationProgress, scoredDeliveryState, type ScoredDelivery } from './notification-progress.js';
+import { effectiveWakePolicy, scoredWake, WORKFLOW_WAKE_POINTS, type ScoredItem, type WakeScore } from './wake-policy.js';
 
 export interface WaitResult {
   reason:'digest'|'urgent'|'reply-needed'|'own-work'|'open-work'|'stop'|'timeout'|'answer'|'blocker-resolved'|'blocker-assigned'|'dependency-dropped'|'task-assigned'|'task-ready'|'review-submitted'|'review-approved'|'review-rejected'|'supervisor-ping';
@@ -13,11 +14,18 @@ export interface WaitResult {
   question?:string; blocker?:string; task?:string; tasks?:string[];
   /** Task version recorded by the workflow event, not a substitute for reading current work. */
   version?:number;
-  nonce?:string;generation?:number;ping_deadline?:string;
+  nonce?:string;generation?:number;ping_deadline?:string;checkpoint_requested?:boolean;
   managed_observation?:string;
   digest?:WaitDigest;
+  mode?:'scored';
+  scored?:ScoredDelivery;
 }
-export interface WaitOptions { timeout?:number; stopFile?:string; since?:number; idleMinutes?:number; settle?:number; settleMax?:number }
+export interface WaitClock { now():number; monotonic():number; sleep(ms:number):Promise<void> }
+const systemClock:WaitClock={now:Date.now,monotonic:()=>performance.now(),sleep:ms=>new Promise(resolve=>setTimeout(resolve,ms))};
+export interface WaitOptions {
+  timeout?:number; stopFile?:string; since?:number; idleMinutes?:number; settle?:number; settleMax?:number;
+  defaultIdleMinutes?:number; clock?:WaitClock;
+}
 const maximum=(s:Store):number=>Number(s.get('SELECT coalesce(max(id),0) n FROM events WHERE workspace_id=?',s.ws)!.n);
 export function idleOpenWork(s:Store,actor:string):string[] {
   const roles=workspaceSettings(s).open_work_roles,takesOpen=roles===null||roles.includes(actor)?1:0;
@@ -52,7 +60,7 @@ function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
     let detail:Row;try{detail=JSON.parse(event.detail);}catch{return undefined;}
     const ping=s.get('SELECT * FROM supervisor_pings WHERE workspace_id=? AND role=? AND nonce=? AND acknowledged_at IS NULL',s.ws,actor,String(detail.nonce??''));
     const current=s.get('SELECT generation,state,ping_epoch FROM managed_workers WHERE workspace_id=? AND role=?',s.ws,actor);
-    if(ping && (!current || ['running','draining'].includes(current.state)) && ping.generation===(current?.generation??0) && ping.ping_epoch===(current?.ping_epoch??0))return {role:actor,cursor:event.id,reason:'supervisor-ping',nonce:ping.nonce,generation:ping.generation,ping_deadline:ping.deadline};
+    if(ping && (!current || ['running','draining'].includes(current.state)) && ping.generation===(current?.generation??0) && ping.ping_epoch===(current?.ping_epoch??0))return {role:actor,cursor:event.id,reason:'supervisor-ping',nonce:ping.nonce,generation:ping.generation,ping_deadline:ping.deadline,...(detail.checkpoint_requested===true?{checkpoint_requested:true}:{})};
     return undefined;
   }
   // A role already observed its own successful action. Consume its event cursor
@@ -190,7 +198,7 @@ function entryFor(s:Store,wake:WaitResult,event?:Row):DigestEntry {
   const kind=wake.message?.reply?'reply-needed':wake.reason;
   const id=wake.message?.id??wake.question??wake.blocker??wake.task??String(event?.entity_id??'work');
   let summary=wake.message?.summary,task=wake.task;
-  if(!summary&&wake.reason==='supervisor-ping')summary=`generation ${wake.generation}; nonce ${wake.nonce}; deadline ${wake.ping_deadline}`;
+  if(!summary&&wake.reason==='supervisor-ping')summary=`generation ${wake.generation}; nonce ${wake.nonce}; deadline ${wake.ping_deadline}${wake.checkpoint_requested?' · save a current checkpoint after reconciling work':''}`;
   if(!summary&&wake.question) {const row=s.get('SELECT question,answer,task_id FROM questions WHERE workspace_id=? AND id=?',s.ws,Number(wake.question.slice(1)));summary=row?`${row.question}: ${row.answer??''}`:wake.question;task??=row?`T${row.task_id}`:undefined;}
   if(!summary&&wake.task)summary=s.get('SELECT title FROM tasks WHERE workspace_id=? AND id=?',s.ws,Number(wake.task.slice(1)))?.title;
   if(!summary)summary=(wake.tasks??[]).join(', ')||wake.reason;
@@ -257,11 +265,13 @@ export async function waitForWork(s:Store, options:WaitOptions={}, observer?:Wai
     ...(entries.size?{digest:{entries:[...entries.values()],total:entries.size,flush,settle,settle_max:settleMax,has_more:omitted||Boolean(priority&&priority.cursor>cursor)}}:{})});
   check(cursor<=latest,`Event cursor ${cursor} is ahead of this workspace's latest event ${latest}; use a cursor from this workspace`,4);
   if(initial.stopped)return {reason:'stop',role:actor,cursor,stop:initial.stopped};
+  if(options.settle===undefined&&options.settleMax===undefined&&workspaceSettings(s).wake_mode==='scored')
+    return waitForScoredWork(s,actor,cursor,latest,timeout,options,observer);
   const deadline=timeout?performance.now()+timeout*1000:Infinity;
   // --idle-minutes: a role that holds doing tasks and has written nothing for that long is woken
   // with its own work (T660); one with none doing but open tasks of its own (its owner's or for it)
   // that it can take now is woken with those, to take one (T763). Any write of its own starts the period again.
-  const idle=integer(options.idleMinutes??0,'idle minutes',0,10_080)*60_000;
+  const idle=integer(options.idleMinutes??options.defaultIdleMinutes??0,'idle minutes',0,10_080)*60_000;
   let idleSince=performance.now(),idleFrom=latest;
   for(;;) {
     priority=undefined;
@@ -306,12 +316,7 @@ export async function waitForWork(s:Store, options:WaitOptions={}, observer?:Wai
       const own=s.snapshot(()=>{
         const wrote=s.get("SELECT max(id) AS id FROM events WHERE workspace_id=? AND id>? AND actor=? AND entity NOT IN ('session','notification-progress','wake-enrollment','wake-delivery','watch-dispatch')",s.ws,idleFrom,actor)?.id;
         if(wrote){idleFrom=wrote;return undefined;}
-        const doing=s.all("SELECT id FROM tasks WHERE workspace_id=? AND owner=? AND status='doing' ORDER BY priority DESC,id LIMIT 20",s.ws,actor).map(r=>`T${r.id}`);
-        if(doing.length)return {reason:'own-work' as const,tasks:doing};
-        // Only what can be taken now: no open blocker (a pending human question is one), no
-        // unfinished dependency, nothing human-only for an agent (the gates of tasks --available).
-        const open=idleOpenWork(s,actor);
-        return open.length?{reason:'open-work' as const,tasks:open}:undefined;
+        return idleWork(s,actor);
       });
       if(own) {
         const wake:WaitResult={reason:own.reason,role:actor,cursor,task:own.tasks[0],tasks:own.tasks};
@@ -326,6 +331,164 @@ export async function waitForWork(s:Store, options:WaitOptions={}, observer?:Wai
     if(remaining<=0)return entries.size?digest('deadline'):{reason:'timeout',role:actor,cursor};
     // A bounded snapshot permits writers and checkpoints between batches and sleeps.
     await new Promise(resolve=>setTimeout(resolve,nextPause(more,remaining,window.deadline()-performance.now())));
+  }
+}
+function idleWork(s:Store,actor:string) {
+  const doing=s.all("SELECT id FROM tasks WHERE workspace_id=? AND owner=? AND status='doing' ORDER BY priority DESC,id LIMIT 20",s.ws,actor).map(r=>`T${r.id}`);
+  if(doing.length)return {reason:'own-work' as const,tasks:doing};
+  const open=idleOpenWork(s,actor);
+  return open.length?{reason:'open-work' as const,tasks:open}:undefined;
+}
+
+interface ScoredEntry extends ScoredItem {
+  entry:DigestEntry;
+  signal?:WaitResult;
+}
+
+/** Read every eligible obligation in one snapshot, including quiet mail that has no timer. */
+function scoredEntries(s:Store,actor:string,cursor:number,settings:WorkspaceSettings,seen:Set<number>,deliveredMail?:ReadonlySet<string>):ScoredEntry[] {
+  const skip=new Set(settings.digest_skip?.[actor]??[]);
+  const found:ScoredEntry[]=[];
+  const ready=new Set<string>();
+  const events=s.all(`SELECT id,entity,entity_id,actor,action,detail,created_at FROM events
+    WHERE workspace_id=? AND id>? AND (
+      (entity='message' AND action='sent' AND EXISTS (
+        SELECT 1 FROM receipts r WHERE r.workspace_id=events.workspace_id AND r.recipient=?
+        AND r.state!='done' AND r.message_id=CAST(substr(events.entity_id,2) AS INTEGER)
+      )) OR (entity='question' AND action='answered') OR
+      (entity='supervisor-ping' AND action='requested') OR (entity='task' AND action IN
+        ('created','imported','updated','reopened','released','handed-off','dependency-removed','completed',
+         'dropped','import-repaired','blocked','blocker-resolved','submitted','review-approved','review-rejected')))
+    ORDER BY id`,s.ws,cursor,actor);
+  for(const event of events) {
+    if(event.actor===actor&&event.entity!=='supervisor-ping')continue;
+    const at=Date.parse(event.created_at);
+    if(event.entity==='message'){
+      if(seen.has(event.id)||deliveredMail?.has(event.entity_id))continue;
+      const message=s.get(`SELECT m.id,m.sender,m.body,m.task_id,m.reply,m.urgent,m.urgency,
+        coalesce(m.immediate,${MESSAGE_NOW_SQL}) AS wake_now
+        FROM receipts r JOIN messages m ON m.workspace_id=r.workspace_id AND m.id=r.message_id
+        WHERE r.workspace_id=? AND r.recipient=? AND r.state!='done' AND 'M'||m.id=?`,s.ws,actor,event.entity_id);
+      if(!message)continue;
+      let mirror=false;
+      try {const audit=JSON.parse(event.detail);mirror=audit?.workflow_mirror===true||typeof audit?.task_id==='string'&&typeof audit?.body==='string';} catch { /* Read the stored message flags if older audit metadata is absent. */ }
+      const weight=mirror?0:message.urgency??(message.urgent?5:message.reply?3:1);
+      const kind=message.reply?'reply-needed':message.urgent||weight>=5?'urgent':'mail';
+      if(!message.wake_now&&weight<=1&&skip.has(kind))continue;
+      const entry:DigestEntry={id:event.entity_id,event_id:`E${event.id}`,from:message.sender,kind,group:digestGroup(kind),summary:digestText(message.body),
+        ...(message.task_id?{task:`T${message.task_id}`}:{})};
+      found.push({at,event:event.id,weight,entry,...(message.wake_now?{immediate:'now' as const}:{})});
+      continue;
+    }
+    let signal=workflow(s,actor,event);
+    if(signal&&(signal.reason==='task-assigned'||signal.reason==='task-ready')){
+      if(skip.has(signal.reason))continue;
+      const tasks=(signal.tasks??[]).filter(task=>{
+        const n=Number(task.slice(1));
+        if(signal?.reason==='task-ready' && !available(s,actor,'t.id=?',[n],true).length)return false;
+        if(signal?.reason==='task-assigned' && s.role(actor).kind!=='human' && s.get(
+          'SELECT 1 FROM tasks WHERE workspace_id=? AND id=? AND human_only=1',s.ws,n))return false;
+        const later=s.get(`SELECT 1 FROM events e WHERE e.workspace_id=? AND e.id>? AND ((e.entity='task'
+          AND e.entity_id=? AND (e.action IN ('reopened','released','handed-off') OR
+            (e.action='updated' AND CASE WHEN json_valid(e.detail) THEN
+              json_extract(e.detail,'$.before.for_role') IS NOT json_extract(e.detail,'$.after.for_role') OR
+              json_extract(e.detail,'$.before.human_only') IS NOT json_extract(e.detail,'$.after.human_only') ELSE 0 END)))
+          OR (?='completed' AND e.entity='task' AND e.action='completed' AND EXISTS (
+            SELECT 1 FROM dependencies d WHERE d.workspace_id=e.workspace_id AND d.task_id=? AND e.entity_id='T'||d.depends_on))) LIMIT 1`,
+          s.ws,event.id,task,event.action,n);
+        if(later||ready.has(task))return false;
+        ready.add(task);return true;
+      });
+      if(!tasks.length)continue;
+      signal={...signal,task:tasks[0],tasks};
+    }
+    // Delivered entries still represent their current obligation until the cursor passes them.
+    // Superseded transitions above cannot mask a newer assignment or readiness transition.
+    if(seen.has(event.id))continue;
+    const entry=signal?entryFor(s,signal,event):extraDuringDigest(s,actor,event);
+    if(!entry)continue;
+    const immediate=signal?.reason==='supervisor-ping'||signal?.reason==='answer'?signal.reason:undefined;
+    if(!immediate&&skip.has(entry.kind))continue;
+    found.push({at,event:event.id,entry,weight:WORKFLOW_WAKE_POINTS[entry.kind]??0,immediate,signal});
+  }
+  return found;
+}
+
+async function waitForScoredWork(s:Store,actor:string,cursor:number,initialLatest:number,timeout:number,
+  options:WaitOptions,observer?:WaitObserver):Promise<WaitResult> {
+  const clock=options.clock??systemClock;
+  const deadline=timeout?clock.monotonic()+timeout*1000:Infinity;
+  const idleOverride=options.idleMinutes===undefined?undefined:integer(options.idleMinutes,'idle minutes',0,10_080);
+  let idleSince=clock.monotonic(),idleFrom=initialLatest;
+  const stopResult=(settings:WorkspaceSettings):WaitResult|undefined=>{
+    const file=options.stopFile??settings.stop_file;
+    if(file&&existsSync(resolve(file)))return {reason:'stop',role:actor,cursor,stop:{file:resolve(file)}};
+    const request=s.get('SELECT id,acknowledged_at FROM stop_requests WHERE workspace_id=? AND role=? AND cleared_at IS NULL',s.ws,actor);
+    if(request)return {reason:'stop',role:actor,cursor,stop:{id:`R${request.id}`,acknowledged:!!request.acknowledged_at}};
+  };
+  for(;;){
+    const stop=s.snapshot(()=>stopResult(workspaceSettings(s)));
+    if(stop)return stop;
+    observer?.inspect();
+    const scan=s.snapshot(()=>{
+      const settings=workspaceSettings(s);
+      const stop=stopResult(settings);
+      if(stop)return {result:stop};
+      if(settings.wake_mode==='legacy')return {legacy:true};
+      const latest=maximum(s);
+      const {seen,through}=scoredDeliveryState(s,actor,cursor);
+      const pending=scoredEntries(s,actor,cursor,settings,seen,observer?.deliveredMail);
+      const policy=effectiveWakePolicy(settings.speed,roleWakePolicy(settings,actor));
+      const scored=scoredWake(pending,policy,clock.now());
+      const idle=(idleOverride??(s.role(actor).kind==='agent'?policy.idle_minutes:0))*60_000;
+      const write=idle?s.get(`SELECT id,created_at FROM events WHERE workspace_id=? AND id>? AND actor=?
+        AND entity NOT IN ('session','notification-progress','wake-enrollment','wake-delivery','watch-dispatch','supervisor-ping')
+        ORDER BY id DESC LIMIT 1`,s.ws,idleFrom,actor):undefined;
+      if(write) {
+        idleFrom=write.id;
+        idleSince=Math.max(idleSince,clock.monotonic()-Math.max(0,clock.now()-Date.parse(write.created_at)));
+      }
+      let work:ReturnType<typeof idleWork>;
+      if(idle&&clock.monotonic()-idleSince>=idle) {
+        work=idleWork(s,actor);
+        if(work&&settings.digest_skip?.[actor]?.includes(work.reason))work=undefined;
+        if(!work)idleSince=clock.monotonic();
+      }
+      const cause=scored.reason??(through!==undefined&&pending.some(item=>item.event<=through)?'continuation':work?'idle':undefined);
+      if(!cause)return {sleep:Math.min(scored.due-clock.now(),idle?idleSince+idle-clock.monotonic():Infinity)};
+      const order=(item:ScoredEntry)=>item.immediate==='supervisor-ping'?0:item.immediate?1:item===scored.trigger?2:3;
+      pending.sort((a,b)=>order(a)-order(b)||b.weight-a.weight||a.at-b.at||a.event-b.event);
+      const room=work?DIGEST_LIMIT-1:DIGEST_LIMIT;
+      const page=pending.slice(0,room),omitted=pending.slice(room);
+      const boundary=omitted.reduce((first,item)=>Math.min(first,item.event-1),latest);
+      const signal=scored.trigger?.signal??(work?{...work,role:actor,cursor,task:work.tasks[0]}:undefined);
+      const entries:DigestEntry[]=page.map(item=>({...item.entry,weight:item.weight}));
+      if(work)entries.push(entryFor(s,{...work,role:actor,cursor,task:work.tasks[0]}));
+      const score:WakeScore={
+        reason:cause,total:scored.total,threshold:scored.threshold,speed:settings.speed,
+        ...(scored.trigger?{trigger:scored.trigger.entry.id}:{}),
+        ...(scored.trigger?.immediate?{immediate_cause:scored.trigger.immediate}:{}),
+        ...(cause==='age'&&scored.trigger?{age_limit_seconds:scored.trigger.weight>=5?policy.urgent_seconds:policy.reply_seconds}:{}),
+      };
+      const result:WaitResult={...(signal??{reason:'digest',role:actor}),mode:'scored',cursor:boundary,
+        scored:{score,event_ids:page.filter(item=>item.event>boundary).map(item=>item.event),...(omitted.length?{through:latest}:{})},
+        digest:{
+          entries,total:entries.length,flush:cause==='immediate'?'immediate':'scored',settle:0,settle_max:0,has_more:!!omitted.length,
+          score,
+        },
+      };
+      return {result};
+    });
+    if(scan.result)return s.snapshot(()=>stopResult(workspaceSettings(s)))??scan.result;
+    if(scan.legacy) {
+      const remaining=deadline-clock.monotonic();
+      if(remaining<=0)return {reason:'timeout',role:actor,cursor,mode:'scored'};
+      return waitForWork(s,{...options,since:cursor,timeout:timeout?Math.ceil(remaining/1000):0,
+        settle:s.role(actor).kind==='human'?0:120},observer);
+    }
+    const remaining=deadline-clock.monotonic();
+    if(remaining<=0)return {reason:'timeout',role:actor,cursor,mode:'scored'};
+    await clock.sleep(nextPause(false,remaining,scan.sleep??Infinity));
   }
 }
 /** How long the waiter sleeps before looking again: never negative, since a quiet window that

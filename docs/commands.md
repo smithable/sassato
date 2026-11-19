@@ -556,7 +556,7 @@ The collector stops at 100 entries. If another relevant event would overflow it,
 the continuation cursor stays **before** that omitted event. Immediate answers and
 supervisor pings bypass even a full urgent-mail page; the digest may repeat that
 signal until earlier work is handled and its safe cursor catches up. `has_more`
-marks continuation work in an immediate result. Handle and acknowledge
+marks continuation work in an immediate result. With the legacy waiter, handle and acknowledge
 the returned entries, save the returned cursor with `progress save --expect`, then
 wait again. Urgent mail remains eligible until acknowledged, even if its send event
 precedes the cursor; this makes an interrupted or repeated wait safe. The digest
@@ -774,3 +774,51 @@ and pending intent remain visible in `watch-status`.
 After explicit reconciliation, eligible mail still awaiting acknowledgement can
 wake the new enrollment again. A stopped epoch leaves unconsumed notifications
 available from the worker’s last committed cursor.
+
+## Scored wake delivery
+
+`workspace settings` reports the wake policy. Existing databases use `legacy`
+mode and `normal` speed. A human can select `--wake-mode scored` and
+`--speed slow|normal|fast` with `workspace set`. The optional `--wake-roles`
+JSON object replaces the per-role overrides. For example,
+`--wake-roles '{"builder":{"threshold":12,"urgent_seconds":90,"reply_seconds":240}}'`
+sets three base values. Omitted values use the normal defaults before the
+workspace speed multiplier. Use the empty object to clear all overrides.
+
+`send --urgency N` accepts decimal integers from 0 to 10. Agents add a short
+`--reason TEXT` for scores 6 to 10. `--needs-reply` keeps its independent
+reply obligation. `--urgent` means 5 and agrees only with an explicit 5.
+`--now` remains immediate. The legacy waiter still uses the legacy mail flags.
+`workspace wake-audit --as HUMAN` lists recent high scores with their reasons
+and counts of repeated immediate overrides by sender.
+
+In scored mode, a role wakes at its total or earliest age limit. Immediate
+signals are first in the digest. A raw `wait` previews the result. Use `wake`
+to advance scored progress, including continuation pages. The launcher's
+`wake --pending` and direct `wake` both save their receipt after successful output.
+Scripts using `wait --json` can handle the page and then call
+`progress save --cursor N --expect VERSION --scored-receipt JSON`. Pass the
+result's `cursor` as `N` and the compact JSON value of its `scored` field as
+`JSON`. Capture the progress version before waiting. The receipt preserves
+delivered events beyond the cursor and allows the next page to return immediately.
+If `wait` used `--stop-file`, pass the same path to `progress save`.
+For scored JSON output use the exit status and `progress show` to verify the
+receipt. An omitted page remains available on re-arm. A delivered message
+stays in inbox until acknowledged. The progress audit records the wake
+reason, score and speed without copying message text.
+
+Giving `wait` or `wake` either explicit settle option selects legacy batching
+for that invocation. Explicit idle and timeout bounds still apply. Use
+`--idle-minutes 0` to disable idle wakes. The scored supervisor uses the
+profile's minimum ping interval, keeps the existing response deadline, and
+can request a fresh checkpoint on a normal ping for active work with writes
+since its saved checkpoint. These settings do not enroll, launch, or
+replace a provider session.
+
+See the [approved rules and profiles](wake-urgency.md). To reuse a metadata
+replay, pipe a JSON object with `start`, `end`, `paused` and `trace` to
+`node scripts/replay-wake-policy.mjs` after building. Each trace row contains
+its ISO time, event kind and stable ID, followed by an optional numeric
+weight. The approved design replay's `start`, `end`, `paused` and `trace`
+variables can be exported directly. Compare the estimated counts with
+`scored_score` in successful notification-progress events from the trial.

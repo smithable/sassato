@@ -8,7 +8,7 @@ import { assertManagedIdentity,assertManagedWrite,type ManagedCredentials,type M
 // SQLite rows deliberately stay flexible at this small adapter boundary.
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 export function databasePath(value?: string): string {
   const path = resolve(value ?? process.env.SASSATO_DB ?? `${process.env.XDG_DATA_HOME ?? `${homedir()}/.local/share`}/sassato/sassato.db`);
   let ancestor = path;
@@ -139,7 +139,8 @@ export class Store {
       if (current === 6) { this.db.exec(MIGRATION_7); current = 7; }
       if (current === 7) { this.db.exec(MIGRATION_8); current = 8; }
       if (current === 8) { this.db.exec(MIGRATION_9); current = 9; }
-      if (current === 9) this.db.exec(MIGRATION_10);
+      if (current === 9) { this.db.exec(MIGRATION_10); current = 10; }
+      if (current === 10) this.db.exec(MIGRATION_11);
     });
   }
   private cancelClosedQuestions(): void {
@@ -313,4 +314,16 @@ CREATE TABLE supervisor_waiters(id TEXT PRIMARY KEY, workspace_id INTEGER NOT NU
 CREATE UNIQUE INDEX supervisor_waiter_active ON supervisor_waiters(role) WHERE ended_at IS NULL;
 INSERT INTO schema_migrations VALUES(10,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 PRAGMA user_version=10;
+`;
+
+const MIGRATION_11 = `
+ALTER TABLE messages ADD COLUMN urgency INTEGER CHECK(urgency BETWEEN 0 AND 10);
+ALTER TABLE messages ADD COLUMN urgency_reason TEXT;
+ALTER TABLE messages ADD COLUMN immediate INTEGER CHECK(immediate IN (0,1));
+CREATE TABLE scored_wake_delivery (
+  workspace_id INTEGER NOT NULL, role TEXT NOT NULL, event_id INTEGER NOT NULL REFERENCES events(id),
+  PRIMARY KEY(workspace_id,role,event_id), FOREIGN KEY(workspace_id,role) REFERENCES roles(workspace_id,name)
+);
+INSERT INTO schema_migrations VALUES(11,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+PRAGMA user_version=11;
 `;
