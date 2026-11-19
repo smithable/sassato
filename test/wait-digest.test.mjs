@@ -52,7 +52,8 @@ test('new relevant arrivals extend quiet time; repeated pending urgent mail does
   assert.equal(result.digest.flush,'quiet');assert.equal(result.digest.entries.filter(e=>e.id===first.id).length,1);assert.equal(result.digest.total,2);assert.ok(performance.now()-started>=1500);
 });
 test('maximum window bounds continuously arriving relevant traffic',async t=>{
-  const f=fixture(t),since=f.cursor();mail(f,'First',{urgent:true});let n=0;const interval=setInterval(()=>mail(f,'Update '+n++),120);t.after(()=>clearInterval(interval));
+  const f=fixture(t),since=f.cursor();mail(f,'First',{urgent:true});let n=0;mail(f,'Update '+n++);const interval=setInterval(()=>mail(f,'Update '+n++),120);t.after(()=>clearInterval(interval));
+  // The second mail is in before the wait starts, so a loaded runner whose timer has not fired yet still counts two (T1005).
   const result=await wait(f,since,{settle:2,settleMax:1});assert.equal(result.digest.flush,'max');assert.ok(result.digest.total>1);
 });
 test('unrelated traffic never extends the role quiet window',async t=>{
