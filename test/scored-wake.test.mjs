@@ -127,6 +127,44 @@ test('capacity orders the trigger first and preserves the remainder across compe
   assert.equal((await wake(f.b,{timeout:1,clock})).result.reason,'timeout');
 });
 
+test('a scripted wait can save the scored receipt and advance beyond a partly delivered page',t=>{
+  const f=fixture(t);f.opt();
+  const all=Array.from({length:104},()=>f.mail().id);
+  const urgent=f.mail({urgent:true}).id;all.push(urgent);
+  const before=getNotificationProgress(f.b);
+  const run=(...args)=>spawnSync(process.execPath,['bin/sassato.js',...args,'--db',f.b.path,'--workspace','team','--as','b','--json'],{encoding:'utf8'});
+  const first=run('wait','--timeout','1');
+  assert.equal(first.status,0,first.stderr);
+  const page=JSON.parse(first.stdout);
+  assert.equal(page.digest.entries[0].id,urgent);
+  assert.equal(page.digest.has_more,true);
+  assert.deepEqual(getNotificationProgress(f.b),before);
+  const args=['progress','save','--cursor',String(page.cursor),'--expect',String(before.version),'--scored-receipt',JSON.stringify(page.scored)];
+  writeFileSync(f.stopFile,'stop');
+  const stopped=run(...args,'--stop-file',f.stopFile);
+  assert.equal(stopped.status,4,stopped.stderr);
+  assert.deepEqual(getNotificationProgress(f.b),before);
+  rmSync(f.stopFile);
+  const saved=run(...args);
+  assert.equal(saved.status,0,saved.stderr);
+  assert.equal(run(...args).status,4);
+  const next=run('wait','--timeout','1');
+  assert.equal(next.status,0,next.stderr);
+  const rest=JSON.parse(next.stdout);
+  assert.equal(rest.digest.score.reason,'continuation');
+  assert.ok(rest.cursor>page.cursor);
+  assert.deepEqual([...page.digest.entries,...rest.digest.entries].map(entry=>entry.id).sort(),all.sort());
+});
+
+test('a scored wait with only quiet mail polls for an immediate message within 500ms',async t=>{
+  const f=fixture(t);f.opt();f.mail();
+  let immediate;
+  const clock=controlled(f.base,{onSleep:()=>{immediate=f.mail({now:true});}});
+  const result=await waitForWork(f.b,{idleMinutes:0,clock});
+  assert.equal(clock.monotonic(),500);
+  assert.equal(result.digest.score.trigger,immediate.id);
+});
+
 test('STOP before a direct receipt leaves scoring and cursor intact',async t=>{
   const f=fixture(t);f.opt();
   const immediate=f.mail({now:true,urgency:0});

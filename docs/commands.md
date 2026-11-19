@@ -796,6 +796,12 @@ In scored mode, a role wakes at its total or earliest age limit. Immediate
 signals are first in the digest. A raw `wait` previews the result. Use `wake`
 to advance scored progress, including continuation pages. The launcher's
 `wake --pending` and direct `wake` both save their receipt after successful output.
+Scripts using `wait --json` can handle the page and then call
+`progress save --cursor N --expect VERSION --scored-receipt JSON`. Pass the
+result's `cursor` as `N` and the compact JSON value of its `scored` field as
+`JSON`. Capture the progress version before waiting. The receipt preserves
+delivered events beyond the cursor and allows the next page to return immediately.
+If `wait` used `--stop-file`, pass the same path to `progress save`.
 For scored JSON output use the exit status and `progress show` to verify the
 receipt. An omitted page remains available on re-arm. A delivered message
 stays in inbox until acknowledged. The progress audit records the wake

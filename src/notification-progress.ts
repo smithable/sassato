@@ -1,6 +1,7 @@
 import { type Store } from './storage.js';
 import { check, integer, name } from './errors.js';
-import type { WakeScore } from './wake-policy.js';
+import { DIGEST_LIMIT } from './wait-digest.js';
+import { WAKE_SPEEDS, type WakeScore } from './wake-policy.js';
 
 export interface NotificationProgress {
   id: string;
@@ -11,6 +12,27 @@ export interface NotificationProgress {
 }
 export interface ScoredDelivery { event_ids:number[]; through?:number; score:WakeScore }
 export interface NotificationProgressInput { cursor: number; expected_version: number; scored?:ScoredDelivery }
+
+/** Accept the compact scored receipt from `wait --json`, without copying the digest into the audit. */
+export function parseScoredReceipt(json:string):ScoredDelivery {
+  check(json.length<=8192,'--scored-receipt is too long');
+  let value;
+  try {value=JSON.parse(json);} catch {check(false,'--scored-receipt must be valid JSON');}
+  const score=value?.score;
+  check(Array.isArray(value?.event_ids)&&value.event_ids.length<=DIGEST_LIMIT&&score&&
+    WAKE_SPEEDS.includes(score.speed)&&['immediate','age','threshold','continuation','idle'].includes(score.reason),
+  'Use the scored receipt from wait --json');
+  const {trigger,immediate_cause,age_limit_seconds}=score;
+  check(trigger===undefined||typeof trigger==='string'&&/^(?:[A-Z][0-9]+|[a-z][a-z0-9_-]{0,63})$/.test(trigger),'Invalid scored receipt trigger');
+  check(immediate_cause===undefined||['supervisor-ping','answer','now'].includes(immediate_cause),'Invalid immediate wake reason');
+  return {
+    event_ids:value.event_ids.map((id:unknown)=>integer(id,'delivered event',1)),
+    ...(value.through===undefined?{}:{through:integer(value.through,'scored batch boundary')}),
+    score:{reason:score.reason,speed:score.speed,total:integer(score.total,'total'),threshold:integer(score.threshold,'threshold',1),
+      ...(trigger===undefined?{}:{trigger}),...(immediate_cause===undefined?{}:{immediate_cause}),
+      ...(age_limit_seconds===undefined?{}:{age_limit_seconds:integer(age_limit_seconds,'age limit',1)})},
+  };
+}
 
 /** A page can deliver newer urgent items before older ones. Keep those receipts with the
  * cursor and remember the upper boundary of the batch until every page has been delivered. */
