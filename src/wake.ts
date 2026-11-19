@@ -142,11 +142,16 @@ function formatWake(s: Store, options: WakeOptions, since: number, result: WaitR
 
   // The cursor is saved by commit(), which the caller runs after the text has been delivered (printed), so a
   // wake whose output never reached the session saves nothing.
-  const commit = version===undefined || result.reason==='timeout' && result.cursor===since ? undefined : (): { saved: boolean; line: string } => {
-    try { s.tx(()=>{
-      check(!activeStop(s,[actor],options.stopFile),'STOP requested during delivery; checkpoint and do not start work',4);
-      saveNotificationProgress(s,{cursor:result.cursor,expected_version:version,scored:result.scored});
-    }); return { saved: true, line: `Cursor ${result.cursor} saved.` }; }
+  const commit = version===undefined || (result.mode==='scored' && result.reason==='timeout') ? undefined : (): { saved: boolean; line: string } => {
+    try {
+      const saved=s.tx(()=>{
+        if(activeStop(s,[actor],options.stopFile))return false;
+        saveNotificationProgress(s,{cursor:result.cursor,expected_version:version,scored:result.scored});
+        return true;
+      });
+      return saved?{saved,line:`Cursor ${result.cursor} saved.`}:
+        {saved,line:'STOP requested during delivery; cursor preserved. Checkpoint and do not start work.'};
+    }
     catch (error) {
       if (!(error instanceof AppError) || error.code !== 4) throw error;
       return { saved: false, line: `Cursor ${result.cursor} NOT saved: ${error.message}. Another waiter or session saved progress for ${actor}: do not re-arm from this cursor; read sassato progress show --as ${actor} --workspace ${s.workspace} and wake from the saved one.` };

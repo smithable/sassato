@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { Store } from '../dist/storage.js';
 import { initWorkspace, showRecord } from '../dist/admin.js';
 import { acknowledge, inbox, registerSession, send, wakeAudit } from '../dist/coordination.js';
-import { addTask, takeTask, noteTask } from '../dist/tasks.js';
+import { addTask, blockTask, handoffTask, takeTask, noteTask } from '../dist/tasks.js';
 import { waitForWork } from '../dist/mail-wait.js';
 import { wake } from '../dist/wake.js';
 import { enrollPendingWake, readPendingWake, stagePendingWake } from '../dist/pending-wake.js';
@@ -218,4 +218,19 @@ test('unconsumed launcher pagination keeps progress and receipts intact until it
   const next=await waitForWork(f.b,{clock,timeout:1});
   assert.equal(next.digest.score.reason,'continuation');
   assert.deepEqual([...read.result.digest.entries,...next.digest.entries].map(entry=>entry.id).sort(),ids.sort());
+});
+
+
+test('a blocked assignment wakes its recipient without an extra point for the generated mail',async t=>{
+  const f=fixture(t);f.opt();
+  const task=addTask(f.a,{title:'Already blocked',owner:'a'});
+  blockTask(f.a,task.id,{kind:'external',waitingOn:'fixture',body:'Waiting on the fixture'});
+  handoffTask(f.a,task.id,'b','Continue after the external blocker clears');
+  const sent=f.operator.get("SELECT created_at FROM events WHERE entity='task' AND entity_id=? AND action='handed-off'",task.id);
+  const clock=controlled(Date.parse(sent.created_at)+300_000);
+  const woke=await waitForWork(f.b,{timeout:1,clock});
+  assert.equal(woke.digest.score.total,3);
+  assert.equal(woke.reason,'task-assigned');
+  assert.equal(woke.task,task.id);
+  assert.deepEqual(woke.digest.entries.map(entry=>entry.weight),[3,0]);
 });

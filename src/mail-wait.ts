@@ -17,6 +17,7 @@ export interface WaitResult {
   nonce?:string;generation?:number;ping_deadline?:string;checkpoint_requested?:boolean;
   managed_observation?:string;
   digest?:WaitDigest;
+  mode?:'scored';
   scored?:ScoredDelivery;
 }
 export interface WaitClock { now():number; monotonic():number; sleep(ms:number):Promise<void> }
@@ -383,7 +384,9 @@ function scoredEntries(s:Store,actor:string,cursor:number,settings:WorkspaceSett
     if(signal&&(signal.reason==='task-assigned'||signal.reason==='task-ready')){
       const tasks=(signal.tasks??[]).filter(task=>{
         const n=Number(task.slice(1));
-        if(!available(s,actor,'t.id=?',[n],true).length)return false;
+        if(signal?.reason==='task-ready' && !available(s,actor,'t.id=?',[n],true).length)return false;
+        if(signal?.reason==='task-assigned' && s.role(actor).kind!=='human' && s.get(
+          'SELECT 1 FROM tasks WHERE workspace_id=? AND id=? AND human_only=1',s.ws,n))return false;
         const later=s.get(`SELECT 1 FROM events e WHERE e.workspace_id=? AND e.id>? AND ((e.entity='task'
           AND e.entity_id=? AND e.action IN ('reopened','released','handed-off'))
           OR (?='completed' AND e.entity='task' AND e.action='completed' AND EXISTS (
@@ -461,7 +464,7 @@ async function waitForScoredWork(s:Store,actor:string,cursor:number,initialLates
         ...(scored.trigger?.immediate?{immediate_cause:scored.trigger.immediate}:{}),
         ...(cause==='age'&&scored.trigger?{age_limit_seconds:scored.trigger.weight>=5?policy.urgent_seconds:policy.reply_seconds}:{}),
       };
-      const result:WaitResult={...(signal??{reason:'digest',role:actor}),cursor:boundary,
+      const result:WaitResult={...(signal??{reason:'digest',role:actor}),mode:'scored',cursor:boundary,
         scored:{score,event_ids:page.filter(item=>item.event>boundary).map(item=>item.event),...(omitted.length?{through:latest}:{})},
         digest:{
           entries,total:entries.length,flush:cause==='immediate'?'immediate':'scored',settle:0,settle_max:0,has_more:!!omitted.length,
@@ -473,12 +476,12 @@ async function waitForScoredWork(s:Store,actor:string,cursor:number,initialLates
     if(scan.result)return s.snapshot(()=>stopResult(workspaceSettings(s)))??scan.result;
     if(scan.legacy) {
       const remaining=deadline-clock.monotonic();
-      if(remaining<=0)return {reason:'timeout',role:actor,cursor};
+      if(remaining<=0)return {reason:'timeout',role:actor,cursor,mode:'scored'};
       return waitForWork(s,{...options,since:cursor,timeout:timeout?Math.ceil(remaining/1000):0,
         settle:s.role(actor).kind==='human'?0:120},observer);
     }
     const remaining=deadline-clock.monotonic();
-    if(remaining<=0)return {reason:'timeout',role:actor,cursor};
+    if(remaining<=0)return {reason:'timeout',role:actor,cursor,mode:'scored'};
     await clock.sleep(nextPause(false,remaining,scan.sleep??Infinity));
   }
 }
