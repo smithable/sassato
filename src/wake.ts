@@ -4,6 +4,7 @@
 // expected-version check, and ends with the exact command to re-arm. Saving at wake time means the role
 // attests that it has read the entries, not that it has finished them: unfinished work stays on its tasks
 // (a note, a block), and urgent mail keeps coming back until it is acknowledged.
+import { readPendingWake, workerStop } from './pending-wake.js';
 import type { Row, Store } from './storage.js';
 import { waitWithManagedObservation } from './managed-wait.js';
 import { getNotificationProgress, saveNotificationProgress } from './notification-progress.js';
@@ -13,7 +14,7 @@ import { DIGEST_GROUPS, type DigestEntry } from './wait-digest.js';
 import { AppError, check } from './errors.js';
 
 export const WAKE_TEXT_LIMIT = 1500;
-export interface WakeOptions extends WaitOptions { ack?: string[] }
+export interface WakeOptions extends WaitOptions { pending?: boolean; ack?: string[] }
 export interface WakeOutcome { text: string; result: WaitResult; acknowledged: string[]; commit?: () => { saved: boolean; line: string } }
 
 /** Text as written, with control characters other than newlines removed and a marked cut. */
@@ -65,6 +66,17 @@ function waiting(s: Store, actor: string, shown: Set<string>): { rows: Row[]; mo
 
 export async function wake(s: Store, options: WakeOptions = {}): Promise<WakeOutcome> {
   const actor = s.requireActor();
+  if (options.pending) {
+    check(Object.entries(options).every(([key,value]) => key==='pending' || value===undefined),
+      '--pending cannot be combined with acknowledgement or wait options');
+    return s.tx(() => {
+      const stop = workerStop(s,process.env.CODEX_THREAD_ID);
+      if (stop) return formatWake(s,options,0,stop,[]);
+      const pending = readPendingWake(s,process.env.CODEX_THREAD_ID);
+      const output = formatWake(s,options,pending.progress.cursor,pending.result,[]);
+      return {...output,commit:pending.commit};
+    });
+  }
   const before = getNotificationProgress(s);
   check(before !== null, `No saved notification progress for ${actor}. Reconcile as the start text says (sassato context --as ${actor} --workspace ${s.workspace}), save it with sassato progress save --cursor N --expect 0, then wake.`, 4);
   const since = options.since ?? before.cursor;
@@ -72,6 +84,12 @@ export async function wake(s: Store, options: WakeOptions = {}): Promise<WakeOut
   check(since <= before.cursor, `--since ${since} is past the saved cursor ${before.cursor}; that would skip events. Use --since ${before.cursor} or leave it out.`, 4);
   const acknowledged = options.ack?.length ? acknowledgeMany(s, options.ack).map((row) => String(row.message_id)) : [];
   const result = await waitWithManagedObservation(s, { ...options, since });
+  return formatWake(s,options,since,result,acknowledged,before.version);
+}
+
+function formatWake(s: Store, options: WakeOptions, since: number, result: WaitResult,
+  acknowledged: string[], version?: number): WakeOutcome {
+  const actor=s.requireActor();
   const quote = (value: string) => /^[\w./~:@%+=,-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
   const stopFlag = options.stopFile ? ` --stop-file ${quote(options.stopFile)}` : '';
   const idleFlag = options.idleMinutes ? ` --idle-minutes ${options.idleMinutes}` : '';
@@ -92,6 +110,9 @@ export async function wake(s: Store, options: WakeOptions = {}): Promise<WakeOut
   const quiet = !entries.length && !left.length && result.reason === 'timeout';
   const body: string[] = [];
   if (!result.digest && result.reason !== 'timeout') body.push(`${result.reason}${result.task ? ` ${result.task}` : ''}${result.message ? ` ${result.message.id} from ${result.message.sender}:\n${indent(wakeText(result.message.summary, result.message.id))}` : ''}`);
+  if(options.pending && !result.digest && result.tasks) {
+    for(const task of result.tasks) body.push(indent(detail(s,{id:task,task,from:actor,kind:result.reason,group:'other',summary:task},since,result.cursor)));
+  }
   for (const group of DIGEST_GROUPS) {
     // One record woken twice for the same reason (created, then handed over) is printed once, with both senders.
     const inGroup = new Map<string, { entry: DigestEntry; from: string[] }>();
@@ -103,7 +124,9 @@ export async function wake(s: Store, options: WakeOptions = {}): Promise<WakeOut
     body.push(`${group}:`);
     for (const { entry, from } of inGroup.values()) {
       body.push(`  ${entry.id} · from ${from.join(', ')} · ${entry.kind}${entry.task && entry.task !== entry.id ? ` · ${entry.task}` : ''}`);
-      body.push(indent(detail(s, entry, since, result.cursor)));
+      if(options.pending && entry.tasks?.length) {
+        for(const task of entry.tasks) body.push(indent(detail(s,{...entry,id:task,task},since,result.cursor)));
+      } else body.push(indent(detail(s, entry, since, result.cursor)));
     }
   }
   if (left.length) {
@@ -117,8 +140,8 @@ export async function wake(s: Store, options: WakeOptions = {}): Promise<WakeOut
 
   // The cursor is saved by commit(), which the caller runs after the text has been delivered (printed), so a
   // wake whose output never reached the session saves nothing.
-  const commit = (): { saved: boolean; line: string } => {
-    try { saveNotificationProgress(s, { cursor: result.cursor, expected_version: before.version }); return { saved: true, line: `Cursor ${result.cursor} saved.` }; }
+  const commit = version===undefined ? undefined : (): { saved: boolean; line: string } => {
+    try { saveNotificationProgress(s, { cursor: result.cursor, expected_version: version }); return { saved: true, line: `Cursor ${result.cursor} saved.` }; }
     catch (error) {
       if (!(error instanceof AppError) || error.code !== 4) throw error;
       return { saved: false, line: `Cursor ${result.cursor} NOT saved: ${error.message}. Another waiter or session saved progress for ${actor}: do not re-arm from this cursor; read sassato progress show --as ${actor} --workspace ${s.workspace} and wake from the saved one.` };
@@ -129,6 +152,11 @@ export async function wake(s: Store, options: WakeOptions = {}): Promise<WakeOut
     return { text: lines.join('\n'), result, acknowledged, commit };
   }
   lines.push(`Wake for ${actor}: ${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}${result.digest ? ` (${result.digest.flush})` : ''} · cursor ${result.cursor}`, ...body);
+  if (options.pending) {
+    lines.push('Handle this digest and checkpoint. The launcher owns the waiter.');
+    if (toAck.length) lines.push(`Acknowledge handled mail with sassato ack ${toAck.join(' ')} --as ${actor} --workspace ${s.workspace}.`);
+    return {text:lines.join('\n'),result,acknowledged};
+  }
   lines.push(`Then: handle these, put your writes and one checkpoint in one command, and re-arm in the same response: ${rearm(toAck)}`);
   if (toAck.length) lines.push(`(--ack ${toAck.join(',')} acknowledges that mail when the waiter starts; leave out any you have not handled.)`);
   return { text: lines.join('\n'), result, acknowledged, commit };

@@ -194,7 +194,7 @@ function entryFor(s:Store,wake:WaitResult,event?:Row):DigestEntry {
   if(!summary&&wake.question) {const row=s.get('SELECT question,answer,task_id FROM questions WHERE workspace_id=? AND id=?',s.ws,Number(wake.question.slice(1)));summary=row?`${row.question}: ${row.answer??''}`:wake.question;task??=row?`T${row.task_id}`:undefined;}
   if(!summary&&wake.task)summary=s.get('SELECT title FROM tasks WHERE workspace_id=? AND id=?',s.ws,Number(wake.task.slice(1)))?.title;
   if(!summary)summary=(wake.tasks??[]).join(', ')||wake.reason;
-  return {id,...(source?{event_id:`E${source.id}`}:{}) ,from:String(wake.message?.sender??source?.actor??wake.role),kind,...(task?{task}:{}),summary:digestText(summary),group:digestGroup(kind)};
+  return {id,...(source?{event_id:`E${source.id}`}:{}) ,from:String(wake.message?.sender??source?.actor??wake.role),kind,...(task?{task}:{}),...(wake.tasks?{tasks:wake.tasks}:{}),summary:digestText(summary),group:digestGroup(kind)};
 }
 /** Once a wake is collecting, include relevant ordinary mail and completed work too. */
 function extraDuringDigest(s:Store,actor:string,event:Row):DigestEntry|undefined {
@@ -297,7 +297,7 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
     if(result)return result;
     if(idle&&performance.now()-idleSince>=idle) {
       const own=s.snapshot(()=>{
-        const wrote=s.get("SELECT max(id) AS id FROM events WHERE workspace_id=? AND id>? AND actor=? AND entity NOT IN ('session','notification-progress')",s.ws,idleFrom,actor)?.id;
+        const wrote=s.get("SELECT max(id) AS id FROM events WHERE workspace_id=? AND id>? AND actor=? AND entity NOT IN ('session','notification-progress','wake-enrollment','wake-delivery')",s.ws,idleFrom,actor)?.id;
         if(wrote){idleFrom=wrote;return undefined;}
         const doing=s.all("SELECT id FROM tasks WHERE workspace_id=? AND owner=? AND status='doing' ORDER BY priority DESC,id LIMIT 20",s.ws,actor).map(r=>`T${r.id}`);
         if(doing.length)return {reason:'own-work' as const,tasks:doing};
