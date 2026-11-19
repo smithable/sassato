@@ -147,10 +147,22 @@ function fakeProvider(f,t,{selfRegister=false,delay=150}={}) {
 test('native fake-provider lifecycle preserves hook session ID and records exit',async t=>{
   const f=fixture(t),fake=fakeProvider(f,t,{selfRegister:true,delay:220});
   const plans=await launch(f.s,['a'],{fresh:true,noPrompt:true,stopFile:join(f.dir,'no-stop')});
-  assert.equal(plans[0].status,'exited');assert.equal(readFileSync(fake.log,'utf8').trim(),'[]');
+  assert.equal(plans[0].status,'exited');assert.equal(JSON.parse(readFileSync(fake.log,'utf8').trim())[0],'--session-id');
   const row=f.s.get('SELECT * FROM sessions WHERE role=? ORDER BY id DESC LIMIT 1','a');
   assert.equal(row.external_id,'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');assert(row.ended_at);
   assert(!existsSync(join(`${f.s.path}.launch`,'test','a.lock')));
+});
+
+test('a fresh Claude launch names its conversation, records the ID, and the next --resume uses it (T995)',async t=>{
+  const f=fixture(t),fake=fakeProvider(f,t,{delay:220});
+  const preview=planLaunch(f.s,['a'],{fresh:true,noPrompt:true})[0];assert.equal(preview.sessionId,null);assert.deepEqual(preview.args,[]);
+  const plans=await launch(f.s,['a'],{fresh:true,noPrompt:true,stopFile:join(f.dir,'no-stop')});
+  assert.equal(plans[0].status,'exited');
+  const [flag,given]=JSON.parse(readFileSync(fake.log,'utf8').trim());assert.equal(flag,'--session-id');assert.match(given,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  const row=f.s.get('SELECT * FROM sessions WHERE role=? ORDER BY id DESC LIMIT 1','a');assert.equal(row.external_id,given);assert(row.ended_at);
+  const resume=planLaunch(f.s,['a'],{resume:true,noPrompt:true})[0];assert.equal(resume.mode,'resume');assert.deepEqual(resume.args,['--resume',given]);
+  await launch(f.s,['a'],{fresh:true,noPrompt:true,stopFile:join(f.dir,'no-stop')});
+  const second=JSON.parse(readFileSync(fake.log,'utf8').trim().split('\n')[1]);assert.equal(second[0],'--session-id');assert.notEqual(second[1],given);
 });
 
 test('two simultaneous launch attempts start only one provider',async t=>{

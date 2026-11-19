@@ -298,6 +298,9 @@ async function runNative(store:Store,plan:LaunchPlan,options:LaunchOptions,runti
     check(!plan.stopFile||!existsSync(plan.stopFile),`Stop signal exists at ${plan.stopFile}; leave it intact until the operator clears it`,4);
     // Re-plan inside the role lock: two concurrent launchers cannot both pass this check.
     const fresh=planLaunch(store,[plan.role],nativeOptions(options))[0];
+    // A fresh Claude conversation gets its ID here, so the registration records it and a later --resume finds it
+    // (Codex's are found in its own saved sessions). Only this spawn gets it: previews and templates stay without.
+    if(fresh.provider==='claude'&&fresh.mode==='fresh'){fresh.sessionId=randomUUID();fresh.args.unshift('--session-id',fresh.sessionId);}
     if(fresh.status==='already-running') {plan.status='already-running';notifyStartup(runtime,startedResponse(store,plan.role,'already-running'));return;}
     if(runtime?.startup)checkStartup(runtime.startup);
     check(!runtime||runtime.provider===fresh.provider,'Provider configuration changed during launch; retry the preview',4);
