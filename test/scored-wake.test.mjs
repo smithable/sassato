@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { Store } from '../dist/storage.js';
 import { initWorkspace, showRecord } from '../dist/admin.js';
-import { acknowledge, inbox, send, wakeAudit } from '../dist/coordination.js';
+import { acknowledge, inbox, registerSession, send, wakeAudit } from '../dist/coordination.js';
 import { addTask, takeTask, noteTask } from '../dist/tasks.js';
 import { waitForWork } from '../dist/mail-wait.js';
 import { wake } from '../dist/wake.js';
+import { enrollPendingWake, readPendingWake, stagePendingWake } from '../dist/pending-wake.js';
 import { getNotificationProgress, saveNotificationProgress } from '../dist/notification-progress.js';
 import { requestSupervisorPing, acknowledgeSupervisorPing } from '../dist/supervisor-monitor.js';
 import { setWorkspaceSettings, workspaceSettings } from '../dist/workspace-settings.js';
@@ -178,4 +180,42 @@ test('profile cadence respects the original ping deadline and asks active stale 
   acknowledgeSupervisorPing(f.b,near.nonce,0,f.base+120_000);
   const old=requestSupervisorPing(f.operator,'b',f.base+3_601_000);
   assert.equal(old.checkpoint_requested,true);
+});
+
+
+test('CLI parses decimal scores and human settings against the fixture DB', t=>{
+  const f=fixture(t);
+  const run=(actor,...args)=>spawnSync(process.execPath,['bin/sassato.js',...args,'--db',f.b.path,'--workspace','team','--as',actor,'--json'],{encoding:'utf8'});
+  assert.equal(run('a','send','b','Test','--urgency','9').status,2);
+  assert.equal(run('a','send','b','Test','--urgency','1e1').status,2);
+  const sent=run('a','send','b','Test','--urgency','9','--reason','Time-sensitive decision');
+  assert.equal(sent.status,0,sent.stderr);assert.equal(JSON.parse(sent.stdout).urgency,9);
+  assert.equal(run('a','workspace','set','--wake-mode','scored').status,3);
+  const configured=run('human','workspace','set','--wake-mode','scored','--speed','fast','--wake-roles','{"b":{"threshold":14}}');
+  assert.equal(configured.status,0,configured.stderr);
+  assert.deepEqual(JSON.parse(configured.stdout).wake_roles,{b:{threshold:14}});
+  const audit=run('human','workspace','wake-audit');
+  assert.equal(audit.status,0,audit.stderr);assert.equal(JSON.parse(audit.stdout).high_scores[0].urgency,9);
+});
+
+test('unconsumed launcher pagination keeps progress and receipts intact until its bound consumer commits', async t=>{
+  const f=fixture(t);f.opt();
+  const thread='211a70d9-399a-4a54-8dd4-3a156d04a1bb';
+  const session=registerSession(f.b,{provider:'codex',external_id:thread});
+  const epoch=enrollPendingWake(f.b,{session:Number(session.id.slice(1)),thread});
+  const progress=getNotificationProgress(f.b);
+  const ids=Array.from({length:100},()=>f.mail().id);
+  ids.push(f.mail({now:true}).id);
+  const clock=controlled(f.base);
+  const result=await waitForWork(f.b,{since:progress.cursor,clock});
+  stagePendingWake(f.b,epoch,progress,result);
+  assert.deepEqual(getNotificationProgress(f.b),progress);
+  assert.equal(inbox(f.b,{peek:true,limit:100}).filter(row=>row.state==='unread').length,100);
+  assert.throws(()=>readPendingWake(f.b,'another thread'),/different Codex thread/);
+  const read=readPendingWake(f.b,thread);
+  assert.equal(read.result.digest.entries[0].id,ids.at(-1));
+  assert.equal(read.commit().saved,true);
+  const next=await waitForWork(f.b,{clock,timeout:1});
+  assert.equal(next.digest.score.reason,'continuation');
+  assert.deepEqual([...read.result.digest.entries,...next.digest.entries].map(entry=>entry.id).sort(),ids.sort());
 });
