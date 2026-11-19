@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { Store } from '../dist/storage.js';
 import { initWorkspace, showRecord } from '../dist/admin.js';
 import { acknowledge, inbox, registerSession, send, wakeAudit } from '../dist/coordination.js';
-import { addTask, blockTask, handoffTask, takeTask, noteTask } from '../dist/tasks.js';
+import { addTask, blockTask, handoffTask, takeTask, noteTask, updateTask } from '../dist/tasks.js';
 import { waitForWork } from '../dist/mail-wait.js';
 import { wake } from '../dist/wake.js';
 import { enrollPendingWake, readPendingWake, stagePendingWake } from '../dist/pending-wake.js';
@@ -178,6 +178,11 @@ test('profile cadence respects the original ping deadline and asks active stale 
   const near=requestSupervisorPing(f.operator,'b',f.base+120_000);
   assert.notEqual(near.nonce,first.nonce);
   acknowledgeSupervisorPing(f.b,near.nonce,0,f.base+120_000);
+  initWorkspace(f.operator,'another',fixtureConfig);
+  f.operator.use('another');
+  f.operator.run("INSERT INTO jobs(workspace_id,role,kind,command,status,need_mb,cpu_need,margin,pid,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+    f.operator.ws,'b','fixture','[]','waiting',1,1,1,2147483000,new Date(f.base).toISOString());
+  f.operator.use('team');
   const old=requestSupervisorPing(f.operator,'b',f.base+3_601_000);
   assert.equal(old.checkpoint_requested,true);
 });
@@ -233,4 +238,18 @@ test('a blocked assignment wakes its recipient without an extra point for the ge
   assert.equal(woke.reason,'task-assigned');
   assert.equal(woke.task,task.id);
   assert.deepEqual(woke.digest.entries.map(entry=>entry.weight),[3,0]);
+});
+
+test('a replacement route and observed mail cannot contribute their old wake events',async t=>{
+  const f=fixture(t);f.opt();
+  const task=addTask(f.a,{title:'Rerouted work',forRole:'b'});
+  const routed=updateTask(f.a,task.id,{version:task.version,forRole:'a'});
+  updateTask(f.a,task.id,{version:routed.version,forRole:'b'});
+  const replaced=f.operator.get("SELECT max(id) AS id FROM events WHERE entity='task' AND entity_id=?",task.id).id;
+  const delivered=f.mail({now:true});
+  const observer={inspect(){},deliveredMail:new Set([delivered.id])};
+  const out=await waitForWork(f.b,{timeout:1,clock:controlled(Date.now()+300_001)},observer);
+  assert.equal(out.reason,'task-assigned');
+  assert.equal(out.digest.score.total,3);
+  assert.deepEqual(out.digest.entries.map(entry=>entry.event_id),[`E${replaced}`]);
 });

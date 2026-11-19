@@ -16,7 +16,7 @@ function checkpointDue(s:Store,role:string,clock:number,minutes:number):boolean 
   const checkpoint=getCheckpoint(s,role);
   if(!checkpoint || !checkpoint.own_changes_since || clock-Date.parse(checkpoint.saved_at)<minutes*60_000)return false;
   return !activeStop(s,[role]) &&
-    !s.get("SELECT 1 FROM jobs WHERE role=? AND status IN ('waiting','running')",role) &&
+    !s.get("SELECT 1 FROM jobs WHERE workspace_id=? AND role=? AND status IN ('waiting','running')",s.ws,role) &&
     Boolean(s.get("SELECT 1 FROM tasks WHERE workspace_id=? AND owner=? AND status='doing' LIMIT 1",s.ws,role));
 }
 export function requestSupervisorPing(s:Store,target:string,clock=Date.now()):Row {

@@ -556,7 +556,7 @@ The collector stops at 100 entries. If another relevant event would overflow it,
 the continuation cursor stays **before** that omitted event. Immediate answers and
 supervisor pings bypass even a full urgent-mail page; the digest may repeat that
 signal until earlier work is handled and its safe cursor catches up. `has_more`
-marks continuation work in an immediate result. Handle and acknowledge
+marks continuation work in an immediate result. With the legacy waiter, handle and acknowledge
 the returned entries, save the returned cursor with `progress save --expect`, then
 wait again. Urgent mail remains eligible until acknowledged, even if its send event
 precedes the cursor; this makes an interrupted or repeated wait safe. The digest
@@ -793,8 +793,9 @@ reply obligation. `--urgent` means 5 and agrees only with an explicit 5.
 and counts of repeated immediate overrides by sender.
 
 In scored mode, a role wakes at its total or earliest age limit. Immediate
-signals are first in the digest. A raw `wait` previews the result. `wake`
-and launcher's `wake --pending` write their receipt after successful output.
+signals are first in the digest. A raw `wait` previews the result. Use `wake`
+to advance scored progress, including continuation pages. The launcher's
+`wake --pending` and direct `wake` both save their receipt after successful output.
 For scored JSON output use the exit status and `progress show` to verify the
 receipt. An omitted page remains available on re-arm. A delivered message
 stays in inbox until acknowledged. The progress audit records the wake

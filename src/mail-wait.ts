@@ -346,7 +346,7 @@ interface ScoredEntry extends ScoredItem {
 }
 
 /** Read every eligible obligation in one snapshot, including quiet mail that has no timer. */
-function scoredEntries(s:Store,actor:string,cursor:number,settings:WorkspaceSettings,seen:Set<number>):ScoredEntry[] {
+function scoredEntries(s:Store,actor:string,cursor:number,settings:WorkspaceSettings,seen:Set<number>,deliveredMail?:ReadonlySet<string>):ScoredEntry[] {
   const skip=new Set(settings.digest_skip?.[actor]??[]);
   const found:ScoredEntry[]=[];
   const ready=new Set<string>();
@@ -364,7 +364,7 @@ function scoredEntries(s:Store,actor:string,cursor:number,settings:WorkspaceSett
     if(event.actor===actor&&event.entity!=='supervisor-ping')continue;
     const at=Date.parse(event.created_at);
     if(event.entity==='message'){
-      if(seen.has(event.id))continue;
+      if(seen.has(event.id)||deliveredMail?.has(event.entity_id))continue;
       const message=s.get(`SELECT m.id,m.sender,m.body,m.task_id,m.reply,m.urgent,m.urgency,
         coalesce(m.immediate,${MESSAGE_NOW_SQL}) AS wake_now
         FROM receipts r JOIN messages m ON m.workspace_id=r.workspace_id AND m.id=r.message_id
@@ -382,13 +382,17 @@ function scoredEntries(s:Store,actor:string,cursor:number,settings:WorkspaceSett
     }
     let signal=workflow(s,actor,event);
     if(signal&&(signal.reason==='task-assigned'||signal.reason==='task-ready')){
+      if(skip.has(signal.reason))continue;
       const tasks=(signal.tasks??[]).filter(task=>{
         const n=Number(task.slice(1));
         if(signal?.reason==='task-ready' && !available(s,actor,'t.id=?',[n],true).length)return false;
         if(signal?.reason==='task-assigned' && s.role(actor).kind!=='human' && s.get(
           'SELECT 1 FROM tasks WHERE workspace_id=? AND id=? AND human_only=1',s.ws,n))return false;
         const later=s.get(`SELECT 1 FROM events e WHERE e.workspace_id=? AND e.id>? AND ((e.entity='task'
-          AND e.entity_id=? AND e.action IN ('reopened','released','handed-off'))
+          AND e.entity_id=? AND (e.action IN ('reopened','released','handed-off') OR
+            (e.action='updated' AND CASE WHEN json_valid(e.detail) THEN
+              json_extract(e.detail,'$.before.for_role') IS NOT json_extract(e.detail,'$.after.for_role') OR
+              json_extract(e.detail,'$.before.human_only') IS NOT json_extract(e.detail,'$.after.human_only') ELSE 0 END)))
           OR (?='completed' AND e.entity='task' AND e.action='completed' AND EXISTS (
             SELECT 1 FROM dependencies d WHERE d.workspace_id=e.workspace_id AND d.task_id=? AND e.entity_id='T'||d.depends_on))) LIMIT 1`,
           s.ws,event.id,task,event.action,n);
@@ -398,6 +402,8 @@ function scoredEntries(s:Store,actor:string,cursor:number,settings:WorkspaceSett
       if(!tasks.length)continue;
       signal={...signal,task:tasks[0],tasks};
     }
+    // Delivered entries still represent their current obligation until the cursor passes them.
+    // Superseded transitions above cannot mask a newer assignment or readiness transition.
     if(seen.has(event.id))continue;
     const entry=signal?entryFor(s,signal,event):extraDuringDigest(s,actor,event);
     if(!entry)continue;
@@ -431,7 +437,7 @@ async function waitForScoredWork(s:Store,actor:string,cursor:number,initialLates
       if(settings.wake_mode==='legacy')return {legacy:true};
       const latest=maximum(s);
       const {seen,through}=scoredDeliveryState(s,actor,cursor);
-      const pending=scoredEntries(s,actor,cursor,settings,seen);
+      const pending=scoredEntries(s,actor,cursor,settings,seen,observer?.deliveredMail);
       const policy=effectiveWakePolicy(settings.speed,roleWakePolicy(settings,actor));
       const scored=scoredWake(pending,policy,clock.now());
       const idle=(idleOverride??(s.role(actor).kind==='agent'?policy.idle_minutes:0))*60_000;
