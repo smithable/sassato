@@ -1,7 +1,7 @@
 import { fixtureConfig } from './fixtures/team.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -267,4 +267,50 @@ test('context task rows show priority and who asked, marking a human role',t=>{
   const rows=c.context(s,{limit:5}).sections.available;
   assert.equal(rows[0].title,'From the human');assert.equal(rows[0].priority,90);assert.equal(rows[0].asked_by,'human (human)');
   assert.equal(rows[1].asked_by,'a');assert.equal(rows[1].priority,5);
+});
+
+// A native install runs as the versioned file its launcher links to; argv[0] is then '2.1.327', not 'claude'.
+// A copied shell waiting on stdin, not sleep: a multi-call coreutils (uutils on newer Ubuntu) picks its tool by
+// argv[0] and exits at once when the copy is named '2.1.327'.
+const shell=realpathSync('/bin/sh');
+async function native(t,file,args=['-c','read line']) {
+  copyFileSync(shell,file);chmodSync(file,0o755);
+  const child=spawn(file,args,{stdio:['pipe','ignore','ignore']});
+  t.after(async()=>{if(child.exitCode===null&&child.signalCode===null){child.kill();await once(child,'exit');}});
+  for(let i=0;i<50&&!readFileSync(`/proc/${child.pid}/cmdline`,'utf8').startsWith(file);i++)await new Promise(r=>setTimeout(r,20));
+  return child;
+}
+function withPath(t,directory){const old=process.env.PATH;process.env.PATH=`${directory}:${old}`;t.after(()=>{process.env.PATH=old;});}
+const sessionId='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+test('a provider started through its launcher\'s resolved, versioned file verifies; look-alikes do not',{skip:process.platform!=='linux'},async t=>{
+  const {s,dir}=setup(t);
+  const versions=join(dir,'share','claude','versions'),bin=join(dir,'bin');mkdirSync(versions,{recursive:true});mkdirSync(bin);
+  const current=await native(t,join(versions,'2.1.327'));
+  symlinkSync(join(versions,'2.1.327'),join(bin,'claude'));withPath(t,bin);
+  assert.equal(c.registerSession(s,{provider:'claude',external_id:sessionId,pid:current.pid}).pid,current.pid);
+  // After an update the launcher points at a newer version; the running older one still verifies.
+  copyFileSync(shell,join(versions,'2.1.328'));rmSync(join(bin,'claude'));symlinkSync(join(versions,'2.1.328'),join(bin,'claude'));
+  assert.equal(as(s,'b',()=>c.registerSession(s,{provider:'claude',external_id:sessionId,pid:current.pid})).pid,current.pid);
+  // Same folder, not a version name: refused.
+  const helper=await native(t,join(versions,'helper'));
+  assert.throws(()=>c.registerSession(s,{provider:'claude',external_id:sessionId,pid:helper.pid}),/not a verifiable/);
+  // A 'claude' substring in the path or argv is not enough (a live node process running claude-helper.mjs under claude/).
+  mkdirSync(join(dir,'claude'));
+  const lookalike=await provider(t,join(dir,'claude'),'-helper');
+  assert.throws(()=>c.registerSession(s,{provider:'claude',external_id:sessionId,pid:lookalike.pid}),/not a verifiable/);
+  // A version-named file outside the launcher's folder: refused.
+  mkdirSync(join(dir,'other'));
+  const elsewhere=await native(t,join(dir,'other','2.1.327'));
+  assert.throws(()=>c.registerSession(s,{provider:'claude',external_id:sessionId,pid:elsewhere.pid}),/not a verifiable/);
+  // A launcher that resolves to a shared runtime (node) does not make every node process a provider.
+  rmSync(join(bin,'claude'));symlinkSync(process.execPath,join(bin,'claude'));
+  const script=await provider(t,dir,'-other');
+  assert.throws(()=>c.registerSession(s,{provider:'claude',external_id:sessionId,pid:script.pid}),/not a verifiable/);
+  rmSync(join(bin,'claude'));symlinkSync(join(versions,'2.1.328'),join(bin,'claude'));
+  // A replaced (deleted) file: refused.
+  const replaced=await native(t,join(versions,'2.1.329'));rmSync(join(versions,'2.1.329'));
+  assert.throws(()=>c.registerSession(s,{provider:'claude',external_id:sessionId,pid:replaced.pid}),/not a verifiable/);
+  // A dead process: refused.
+  current.kill();await once(current,'exit');
+  assert.throws(()=>c.registerSession(s,{provider:'claude',external_id:sessionId,pid:current.pid}),/not a verifiable/);
 });

@@ -157,6 +157,11 @@ function humanOutput(value: unknown, command?: string): string {
     const blocker=value as Row;
     return `${blocker.id} resolved for ${blocker.task_id}.`;
   }
+  // The attended runner's result also has role and reason; it is not a wait event.
+  if(value && typeof value==='object' && command==='supervise attended') {
+    const r=value as Row;
+    return `Attended ${r.role}: generation ${r.generation} ${r.state}${r.reason?` (${r.reason})`:''}; unattended mode ${r.unattended_enabled?'ON':'OFF'}.`;
+  }
   if(value && typeof value==='object' && 'reason' in value && 'role' in value) {
     const event=value as WaitResult;
     let summary:string;
@@ -177,7 +182,7 @@ function humanOutput(value: unknown, command?: string): string {
     else if(event.reason==='task-assigned') summary=`TASK ${event.task} assigned to ${event.role}: check context.`;
     else if(event.reason==='task-ready') {const tasks=event.tasks??[event.task!];summary=`TASK ${tasks.slice(0,8).join(', ')} ready for ${event.role}${tasks.length>8?` (+${tasks.length-8} more; inspect context/tasks)`:''}.`;}
     else summary=`Timed out waiting for work notifications for ${event.role}.`;
-    return `${summary} · cursor ${event.cursor}${event.message?.inbox_command?`\nRead full mail: ${event.message.inbox_command}`:""}${event.digest?'\n'+formatDigest(event.digest,event.cursor):''}`;
+    return `${summary}${event.cursor===undefined||event.cursor===null?'':` · cursor ${event.cursor}`}${event.message?.inbox_command?`\nRead full mail: ${event.message.inbox_command}`:""}${event.digest?'\n'+formatDigest(event.digest,event.cursor):''}`;
   }
   if(value && typeof value==='object' && 'items' in value && 'has_more' in value) {
     const page=value as t.TaskPage;

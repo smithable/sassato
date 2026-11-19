@@ -1,7 +1,7 @@
 import { messageIsNow } from './wait-digest.js';
 import { contextDelta,contextLine } from './context-brief.js';
-import { readFileSync, realpathSync, statSync } from 'node:fs';
-import { basename } from 'node:path';
+import { accessSync, constants, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { Store, type Row } from './storage.js';
 import { AppError, check, id, integer, name, now, text } from './errors.js';
 import { workspaceSettings } from './workspace-settings.js';
@@ -79,14 +79,37 @@ export function processIdentity(pid: number): string | null {
     return `${readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim()}:${start}`;
   } catch { return null; }
 }
+/** The provider's launcher as found first on this process's PATH, with its links resolved; null when absent. */
+function launcherPath(provider: string): string | null {
+  for (const directory of (process.env.PATH ?? '').split(':')) {
+    if (!directory) continue;
+    try { const candidate = resolve(directory,provider); accessSync(candidate,constants.X_OK); if (statSync(candidate).isFile()) return realpathSync(candidate); }
+    catch { /* Try the next PATH entry. */ }
+  }
+  return null;
+}
+const versionName = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 function providerProcess(pid: number, provider: string): boolean {
   try {
     const args = readFileSync(`/proc/${pid}/cmdline`,'utf8').split('\0').filter(Boolean);
     // Node-based wrappers may place their executable script in argv[1]. No substring matches.
-    return args.slice(0,2).some(arg => {
+    if (args.slice(0,2).some(arg => {
       const executable = basename(arg).replace(/\.(?:js|mjs|cjs|exe)$/,'');
       return executable === provider || (provider === 'codex' && executable === 'codex-cli');
-    });
+    })) return true;
+    // A native install runs as the file its launcher links to (Claude Code: ~/.local/bin/claude -> versions/2.1.327),
+    // so argv[0] is that file's name. Accept the process's executable when it is the launcher's own file (same device
+    // and inode), or a version-named file beside it (the launcher moved to a newer version while this process runs). Whole paths only.
+    // The launcher must resolve to the provider's own file, never a shared runtime such as node.
+    const launcher = launcherPath(provider);
+    if (launcher === null || !(basename(launcher) === provider || versionName.test(basename(launcher)))) return false;
+    const running = statSync(`/proc/${pid}/exe`,{ bigint: true });
+    const same = (path: string): boolean => { const file = statSync(path,{ bigint: true }); return file.dev === running.dev && file.ino === running.ino; };
+    if (same(launcher)) return true;
+    // A replaced or deleted file reads as '<path> (deleted)' and fails the name test: fail closed. The sibling is
+    // compared as a file in the launcher's folder here, so another mount namespace's same-named path does not count.
+    const name = basename(readlinkSync(`/proc/${pid}/exe`));
+    return versionName.test(basename(launcher)) && versionName.test(name) && same(join(dirname(launcher),name));
   } catch { return false; }
 }
 export function sessionState(row: Row): 'ended' | 'running' | 'stale' | 'unknown' {
