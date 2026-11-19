@@ -700,3 +700,19 @@ A human sets it. It applies to Claude roles only, from 100,000 to 10,000,000 tok
 as `autocompact` (null when unset). It is kept in the workspace settings, so it needs no schema change. Unset
 by default: nothing changes until it is set. In the session, `/autocompact` shows the window in force. Claude
 Code raises a conversation's window by itself when what loads with every request fills more than half of it.
+
+### Consume a launcher wake
+
+An enrolled Codex thread runs `sas wake --pending --as ROLE --workspace WORKSPACE`
+to read the launcher's outstanding digest immediately. This preserves the original
+batch boundary and idle-work trigger. Only the matching registered thread may
+consume it. Handle and acknowledge any mail in the ordinary way. The launcher
+owns the wait loop.
+
+The worker writes the digest to stdout before committing its notification cursor
+and receipt together. Check the exit status, including with `--json`: a broken
+pipe or a conflicting session, progress version or enrollment requires recovery.
+A crash before commit permits replay. STOP takes precedence and leaves the cursor
+in place. A duplicate command after consumption exits with a conflict unless a
+new digest is pending. The pending mode takes no wait or acknowledgement options.
+The consumer alone does not start or enable a launcher.

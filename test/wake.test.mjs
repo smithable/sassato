@@ -146,3 +146,84 @@ test('the re-arm keeps the idle wake it was given', async t => {
   const out = await quick(f, { timeout: 1, idleMinutes: 50 });
   assert.match(out.text, /re-arm: sassato wake --since \d+ --idle-minutes 50 --as b --workspace team/);
 });
+
+import { enrollPendingWake, closePendingWake, stagePendingWake } from '../dist/pending-wake.js';
+import { registerSession } from '../dist/coordination.js';
+import { waitForWork } from '../dist/mail-wait.js';
+import { resumeWork } from '../dist/control.js';
+import { spawnSync } from 'node:child_process';
+
+async function staged(t) {
+  const f=fixture(t),thread='a5ae8567-d7ae-408a-9748-798fc3bac37a';
+  const session=registerSession(f.b,{provider:'codex',external_id:thread});
+  const binding={session:Number(session.id.slice(1)),thread};
+  const epoch=enrollPendingWake(f.b,binding);
+  const progress=getNotificationProgress(f.b);
+  const mail=as(f.s,'a',()=>send(f.s,['b'],'Urgent sample',{urgent:true,now:true}));
+  const result=await waitForWork(f.b,{since:progress.cursor});
+  stagePendingWake(f.b,epoch,progress,result);
+  return {...f,epoch,binding,progress,result,mail,thread};
+}
+function pendingCli(f,thread=f.thread,...args) {
+  return spawnSync(process.execPath,['bin/sassato.js','wake','--pending','--db',f.b.path,'--as','b','--workspace','team',...args],
+    {encoding:'utf8',env:{...process.env,CODEX_THREAD_ID:thread}});
+}
+test('pending CLI prints original digest, advances once and leaves mail unacknowledged',async t=>{
+  const f=await staged(t);
+  assert.throws(()=>stagePendingWake(f.b,f.epoch,f.progress,f.result),/already pending/);
+  assert.equal(pendingCli(f,'different').status,4);
+  assert.equal(pendingCli(f,f.thread,'--ack',f.mail.id).status,2);
+  assert.deepEqual(getNotificationProgress(f.b),f.progress);
+  const read=pendingCli(f,f.thread,'--json');
+  assert.equal(read.status,0,read.stderr);
+  assert.match(JSON.parse(read.stdout).text,/Urgent sample/);
+  assert.doesNotMatch(read.stdout,/re-arm in the same response/);
+  assert.equal(pendingCli(f).status,4);
+  assert.equal(getNotificationProgress(f.b).cursor,f.result.cursor);
+  assert.equal(inbox(f.b,{peek:true}).length,1);
+});
+test('STOP supersedes pending work and resume requires a fresh enrollment',async t=>{
+  const f=await staged(t);
+  requestStop(f.s,['b']);
+  assert.match(pendingCli(f).stdout,/^STOP R/);
+  assert.deepEqual(getNotificationProgress(f.b),f.progress);
+  resumeWork(f.s,['b']);
+  assert.equal(pendingCli(f).status,4);
+  closePendingWake(f.b,f.epoch);
+  const next=enrollPendingWake(f.b,f.binding);
+  assert.notEqual(next,f.epoch);
+  assert.equal(pendingCli(f).status,4);
+});
+test('pending wakes refuse changed progress and superseded sessions',async t=>{
+  const f=await staged(t);
+  saveNotificationProgress(f.b,{cursor:f.latest(),expected_version:f.progress.version});
+  assert.equal(pendingCli(f).status,4);
+  closePendingWake(f.b,f.epoch);
+  registerSession(f.b,{provider:'codex',external_id:'different',replace:true});
+  assert.throws(()=>enrollPendingWake(f.b,f.binding),/binding changed/);
+});
+test('a competing receipt or STOP at commit cannot advance a pending digest twice',async t=>{
+  const f=await staged(t);
+  const {readPendingWake}=await import('../dist/pending-wake.js');
+  const one=readPendingWake(f.b,f.thread),two=readPendingWake(f.b,f.thread);
+  one.commit();
+  assert.throws(()=>two.commit(),/consumed|replaced/);
+  const progress=getNotificationProgress(f.b);
+  const task=as(f.s,'a',()=>addTask(f.s,{title:'Later task',forRole:'b'}));
+  const idle={role:'b',reason:'open-work',cursor:f.latest(),task:task.id,tasks:[task.id]};
+  stagePendingWake(f.b,f.epoch,progress,idle);
+  const pending=readPendingWake(f.b,f.thread);
+  assert.deepEqual(pending.result.tasks,[task.id]);
+  requestStop(f.s,['b']);
+  assert.throws(()=>pending.commit(),/STOP/);
+  assert.deepEqual(getNotificationProgress(f.b),progress);
+});
+test('a configured stop file observed on receipt closes its enrollment durably',async t=>{
+  const f=await staged(t);
+  setWorkspaceSettings(f.s,{stop_file:f.stopFile});
+  writeFileSync(f.stopFile,'');
+  assert.match(pendingCli(f).stdout,/STOP: the stop file/);
+  rmSync(f.stopFile);
+  assert.equal(pendingCli(f).status,4);
+  assert.deepEqual(getNotificationProgress(f.b),f.progress);
+});
