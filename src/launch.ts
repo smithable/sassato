@@ -224,7 +224,7 @@ function lockHeld(path:string,role:string):Error {
   } catch {}
   return new Error(`Launch lock exists for ${role}. ${detail}`);
 }
-function acquire(store:Store,role:string,options:{dispatch?:StartupRequest;adopt?:StartupRequest}={}):()=>void {
+export function acquireLaunchLock(store:Store,role:string,options:{dispatch?:StartupRequest;adopt?:StartupRequest}={}):()=>void {
   const path=lockPath(store,role),token=options.adopt?.token??options.dispatch?.token??randomUUID(),identity=processIdentity(process.pid);
   // Serialize both acquiring and explicitly removing locks with SQLite's same writer lock.
   // Otherwise two stale-unlock calls could remove a new launcher's replacement lock.
@@ -292,7 +292,7 @@ async function terminateUnconfirmed(child:ReturnType<typeof spawn>,exited:Promis
 async function runNative(store:Store,plan:LaunchPlan,options:LaunchOptions,runtime?:LaunchRuntime):Promise<void> {
   check(store.path!==':memory:','Launching requires a persistent database');
   check(process.platform==='linux','Verified native launch currently requires Linux/WSL. On other systems, launch the provider manually and run sassato context.',3);
-  const release=acquire(store,plan.role,{adopt:runtime?.startup});
+  const release=acquireLaunchLock(store,plan.role,{adopt:runtime?.startup});
   let environment:ReturnType<typeof runtimeEnvironment>|undefined;
   try {
     check(!plan.stopFile||!existsSync(plan.stopFile),`Stop signal exists at ${plan.stopFile}; leave it intact until the operator clears it`,4);
@@ -381,7 +381,7 @@ async function launchInternal(store:Store,roles:string[],options:LaunchOptions,r
       let release:(()=>void)|undefined;
       try {
         // Reserve before dispatch, not only when the terminal's native child starts.
-        release=acquire(store,plan.role,{dispatch:startup});
+        release=acquireLaunchLock(store,plan.role,{dispatch:startup});
         // Transport a resolved provider and the caller's PATH through an encoded payload.
         // wsl.exe --exec need not load a login shell and no path becomes shell source.
         const childRuntime:LaunchRuntime={provider:plan.provider,executable:plan.executable,path:process.env.PATH??'',startup};

@@ -1,3 +1,4 @@
+import { launchWatch, reconcileWatch, watchStatus } from './launch-watch.js';
 import { wake as wakeCommand } from './wake.js';
 import { formatDigest } from './wait-digest.js';
 import { parseArgs } from 'node:util';
@@ -95,6 +96,7 @@ Migration:  import --backlog FILE --wip FILE --actions DIR --sessions FILE
             export NEW_DIRECTORY
 Launch:     launch ROLE [--fresh|--resume] [--dry-run] [--no-prompt]
             [--terminal native|windows-terminal] [--new-window] [--all] | launch-unlock ROLE
+            launch-watch ROLE --remote unix:///PATH --session-id UUID | watch-status ROLE | watch-close ROLE --epoch N
 Maintenance: migrate | doctor | backup NEW_FILE --as HUMAN | restore BACKUP --db NEW_FILE
              machine (system load only)
 
@@ -104,7 +106,7 @@ select workspace when not explicit. Writes require --as; human actions require a
 Lists default to bounded results; --limit N. Context never consumes inbox receipts.
 Exit codes: 0 success/no matches; 1 storage/runtime; 2 input; 3 identity/access; 4 conflict; 5 mail-wait timeout.
 `;
-const strings = ['role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes','digest-skip','ack','autocompact'];
+const strings = ['remote','epoch','role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes','digest-skip','ack','autocompact'];
 const booleans = ['pending','unread','attended','now','json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','wait','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
 const globalFlags = ['db','workspace','as','json','help'];
 const allowed: Record<string,string[]> = {
@@ -120,7 +122,7 @@ const allowed: Record<string,string[]> = {
   'supervise attended':['attended','role'],'supervise enroll':['role','file'],'supervise attach':['role'],'supervise assignment':[],'supervise reconcile':['session-id'],'supervise ready':['file','expect'],'supervise status':[],'supervise ping':[],'supervise ack':['generation'],
   'checkout register':['dir'],'checkout list':[],'checkout show':[],'checkout bind':['dir','task','provider','session-id','mode'],'checkout resolve':['task'],'checkout release':[],'brief save':['file','expect'],'brief show':[],
   'checkpoint show':[], 'checkpoint save':['current','next','notes','expect','evidence'], 'progress show':[], 'progress save':['cursor','expect'],
-  import:['backlog','wip','actions','sessions','dry-run','confirm','repair'],export:[],launch:['fresh','resume','dry-run','no-prompt','terminal','distro','window','stop-file','all','new-window'],'launch-unlock':[],migrate:[],doctor:[],backup:[],restore:[],machine:[]
+  import:['backlog','wip','actions','sessions','dry-run','confirm','repair'],export:[],launch:['fresh','resume','dry-run','no-prompt','terminal','distro','window','stop-file','all','new-window'],'launch-watch':['remote','session-id'],'watch-status':[],'watch-close':['epoch'],'launch-unlock':[],migrate:[],doctor:[],backup:[],restore:[],machine:[]
 };
 function checkpointEvidence(path: string | undefined): unknown {
   if (path===undefined) return undefined;
@@ -294,7 +296,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     else if(command==='restore') {const source=arg('backup');empty();check(str('db'),'Restore requires explicit --db NEW_FILE');result=await a.restoreDatabase(source,db);}
     else if(command==='machine') {empty();result=a.machine();}
     else {
-      const reads=['supervise assignment','supervise status','checkout list','checkout show','checkout resolve','brief show','job list','job stats','tasks','show','blockers','humans','outbox','sent','fact get','fact history','facts','wip show','sessions','roles','workspace settings','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
+      const reads=['watch-status','supervise assignment','supervise status','checkout list','checkout show','checkout resolve','brief show','job list','job stats','tasks','show','blockers','humans','outbox','sent','fact get','fact history','facts','wip show','sessions','roles','workspace settings','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
       const readonly=reads.includes(command)||command==='retitle'&&!bool('apply')||command==='inbox'&&bool('peek')||['launch','import'].includes(command)&&bool('dry-run');
       store=new Store(db,actor,{readonly,managedWriteMode:command==='supervise reconcile'?'reconcile':command==='supervise ack'?'normal':command==='stopped'?'stop-ack':'normal'});
       const s=store;
@@ -435,6 +437,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'import': empty();{const input={backlog:str('backlog'),wip:str('wip'),actions:str('actions'),sessions:str('sessions'),repair:bool('repair')};check(bool('dry-run')!==!!str('confirm'),'Use --dry-run to preview or --confirm DIGEST to apply');result=bool('dry-run')?m.previewImport(s,input):m.applyImport(s,input,need('confirm'));}break;
         case 'export': {const path=arg('new directory');empty();result=m.exportMarkdown(s,path);break;}
         case 'launch': {jsonLaunch();result=await l.launch(s,p.splice(0),launchOptions);break;}
+        case 'launch-watch': {
+          const role=arg('role');empty();
+          result=await launchWatch(s,role,need('remote'),need('session-id'));
+          break;
+        }
+        case 'watch-status': {const role=arg('role');empty();result=watchStatus(s,role);break;}
+        case 'watch-close': {
+          const role=arg('role');empty();result=reconcileWatch(s,role,integer(need('epoch'),'epoch',1));break;
+        }
         case 'launch-unlock': result=l.unlockLaunch(s,p.splice(0));break;
         case 'doctor': empty();result=a.doctor(s);if(!(result as Row).ok)process.exitCode=1;break;
         case 'backup': {const path=arg('backup destination');empty();result=await a.backupDatabase(s,path);break;}

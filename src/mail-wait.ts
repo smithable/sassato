@@ -210,7 +210,11 @@ function extraDuringDigest(s:Store,actor:string,event:Row):DigestEntry|undefined
   return undefined;
 }
 /** Read-only, non-consuming waiter. Save progress only after handling the returned notification. */
-export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitResult> {
+export interface WaitObserver {
+  inspect:()=>void;
+  deliveredMail:ReadonlySet<string>;
+}
+export async function waitForWork(s:Store, options:WaitOptions={}, observer?:WaitObserver):Promise<WaitResult> {
   const actor=s.requireActor(),timeout=integer(options.timeout??0,'timeout seconds',0,2_147_483);
   const settle=integer(options.settle??(s.role(actor).kind==='human'?0:120),'settle seconds',0,3600),settleMax=integer(options.settleMax??600,'settle maximum seconds',1,3600);
   const window=new DigestWindow(settle,settleMax),entries=new Map<string,DigestEntry>();
@@ -241,6 +245,7 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
   let cursor=initial.cursor,omitted=false;let priority:WaitResult|undefined;
   const skip=new Set(workspaceSettings(s).digest_skip?.[actor]??[]);
   const add=(entry:DigestEntry):boolean=>{
+    if(observer?.deliveredMail.has(entry.id))return true;
     // Kinds this role never acts on (digest_skip, T977) are passed over: they neither wake it nor fill its digest.
     if(skip.has(entry.kind))return true;
     const key=entry.id.startsWith('M')?entry.id:entry.event_id??`${entry.id}:${entry.kind}`;
@@ -261,6 +266,7 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
   for(;;) {
     priority=undefined;
     if(stopFile&&existsSync(stopFile))return digest('immediate',{reason:'stop',role:actor,cursor,stop:{file:stopFile}});
+    observer?.inspect();
     let more=false;
     const result=s.snapshot(():WaitResult|undefined=>{
       const stop=s.get('SELECT id,acknowledged_at FROM stop_requests WHERE workspace_id=? AND role=? AND cleared_at IS NULL',s.ws,actor);
@@ -270,7 +276,8 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
       const messages=s.all(`SELECT m.id,m.sender,substr(m.body,1,2000) AS body,length(m.body)>2000 AS truncated,m.reply,m.task_id,${MESSAGE_NOW_SQL} AS wake_now
         FROM receipts r JOIN messages m ON m.workspace_id=r.workspace_id AND m.id=r.message_id
         WHERE r.workspace_id=? AND r.recipient=? AND r.state IN ('unread','read') AND m.urgent=1 AND m.sender!=?
-        ORDER BY wake_now DESC,m.id LIMIT ?`,s.ws,actor,actor,DIGEST_LIMIT+1);
+        ${observer?.deliveredMail.size?"AND m.id NOT IN (SELECT value FROM json_each(?))":""}
+        ORDER BY wake_now DESC,m.id LIMIT ?`,s.ws,actor,actor,...(observer?.deliveredMail.size?[JSON.stringify(Array.from(observer.deliveredMail,id=>Number(id.slice(1))))]:[]),DIGEST_LIMIT+1);
       for(const message of messages) {
         const wake:WaitResult={reason:'urgent',role:actor,cursor,...(message.task_id?{task:`T${message.task_id}`}:{}) ,message:{id:`M${message.id}`,sender:message.sender,summary:String(message.body).replace(/[\x00-\x1f\x7f]/g,' ').replace(/\s+/g,' ').trim(),truncated:!!message.truncated,reply:!!message.reply,now:!!message.wake_now,...(message.truncated?{inbox_command:`sassato inbox --peek --as ${actor} --workspace ${s.workspace}`}:{})}};
         if(!settle)return wake;
@@ -297,7 +304,7 @@ export async function waitForWork(s:Store, options:WaitOptions={}):Promise<WaitR
     if(result)return result;
     if(idle&&performance.now()-idleSince>=idle) {
       const own=s.snapshot(()=>{
-        const wrote=s.get("SELECT max(id) AS id FROM events WHERE workspace_id=? AND id>? AND actor=? AND entity NOT IN ('session','notification-progress','wake-enrollment','wake-delivery')",s.ws,idleFrom,actor)?.id;
+        const wrote=s.get("SELECT max(id) AS id FROM events WHERE workspace_id=? AND id>? AND actor=? AND entity NOT IN ('session','notification-progress','wake-enrollment','wake-delivery','watch-dispatch')",s.ws,idleFrom,actor)?.id;
         if(wrote){idleFrom=wrote;return undefined;}
         const doing=s.all("SELECT id FROM tasks WHERE workspace_id=? AND owner=? AND status='doing' ORDER BY priority DESC,id LIMIT 20",s.ws,actor).map(r=>`T${r.id}`);
         if(doing.length)return {reason:'own-work' as const,tasks:doing};

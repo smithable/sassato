@@ -55,7 +55,7 @@ function lastStop(s: Store): number {
     s.ws,s.requireActor())?.id);
 }
 
-function enrollment(s: Store, epoch: number): Binding {
+export function enrollment(s: Store, epoch: number): Binding {
   const row = latest(s,'wake-enrollment');
   check(row?.id === epoch && row.action === 'opened','Waiter enrollment changed',4);
   const binding: Binding & {stopGeneration:number} = JSON.parse(row.detail);
