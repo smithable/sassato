@@ -716,3 +716,61 @@ A crash before commit permits replay. STOP takes precedence and leaves the curso
 in place. A duplicate command after consumption exits with a conflict unless a
 new digest is pending. The pending mode takes no wait or acknowledgement options.
 The consumer alone does not start or enable a launcher.
+
+### Launcher-owned Codex waiter (Linux, Codex 0.167.0)
+
+A human can enroll one **existing remote session** in a foreground launcher.
+Use the same workspace and registry as the worker. First verify the human terminal
+is attached to the intended thread, the daemon is running, approvals are visible
+there, and the thread’s normal model and permissions apply. The supported TUI
+invocation is `codex --remote unix:///absolute/socket resume UUID` (or the
+same remote option after the UUID). The registry must name that live TUI PID
+and its UUID, the socket must belong to the current OS user, and the worker
+must already have reconciled and saved notification progress.
+
+In a separate terminal, run:
+
+    sas launch-watch ROLE --session-id UUID --remote unix:///absolute/socket --workspace TEAM --as HUMAN
+
+Enrollment is explicit on every start. The launcher holds the ordinary role
+launch lock and refuses managed/attended roles. An existing launcher holding
+that lock precludes enrollment. The launcher checks the registered process,
+its startup arguments, socket identity and configured role settings. The human
+verifies the currently displayed conversation; startup arguments alone cannot
+attest what is on screen. Dedicated local daemon, attached TUI and human
+approval handling are prerequisites. The command never starts a provider or
+supplies model, sandbox or approval overrides.
+
+Local waits use the standard digest and a 50-minute eligible-work wake. A quiet
+wait makes zero model calls. A work digest is staged before the queue client
+receives a fixed instruction to run `sas wake --pending`. Worker receipt starts
+the next wait from saved progress. Unacknowledged urgent mail already delivered
+by this enrollment is suppressed while other work can still wake the worker.
+An overdue acknowledgement sends one reminder per receipt to the operator.
+
+A queue warning (even with exit zero), a changed binding or five minutes
+without consumption suspends dispatch and alerts the enrolling human. An
+approval prompt may account for the delay. Check the human terminal. STOP
+preempts the wait, queues at most one fixed stop notice to the same eligible
+session, and ends enrollment. The worker checkpoints and acknowledges STOP.
+
+After interruption, reboot or an uncertain delivery, inspect:
+
+    sas watch-status ROLE --workspace TEAM --as HUMAN
+
+An open epoch is durable even if the launcher has gone. A pending event number
+identifies a digest the bound worker can consume. If its original session is
+unavailable, reconcile the inbox, work and saved progress first. Once the old
+launcher has exited, a human can close exactly that epoch (use its numeric ID):
+
+    sas watch-close ROLE --epoch N --workspace TEAM --as HUMAN
+
+This preserves worker progress. Start a fresh enrollment explicitly after
+reconciling. A stale same-boot launch lock follows ordinary `launch-unlock`
+recovery. Do not end a live session or replay an uncertain queue command to
+clear a lock. A process killed outright cannot send an alert; its open epoch
+and pending intent remain visible in `watch-status`.
+
+After explicit reconciliation, eligible mail still awaiting acknowledgement can
+wake the new enrollment again. A stopped epoch leaves unconsumed notifications
+available from the worker’s last committed cursor.
