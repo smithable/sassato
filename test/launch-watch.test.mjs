@@ -31,7 +31,7 @@ if(args[0]==='--version')console.log('codex-cli 0.167.0');
 else if(args.includes('--help'))console.log('--thread --remote --resume --message');
 else if(args[0]==='queue'){
  fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(args)+'\\n');
- if(${JSON.stringify(mode)}==='warning' || (${JSON.stringify(mode)}==='stop-warning' && args.join(' ').includes('Check Sassato STOP')))console.error('resume unavailable');
+ if(${JSON.stringify(mode)}==='warning' || (${JSON.stringify(mode)}==='stop-warning' && args.join(' ').includes('Check Sassato STOP'))){console.error('resume unavailable');setTimeout(()=>{},350);}
  console.log('Queued message ${thread} for thread ${thread}.');
 }else {fs.writeFileSync(${JSON.stringify(join(dir,'up'))},'1');setInterval(()=>{},1000)}
 `,{mode:0o700});
@@ -134,6 +134,8 @@ test('failed STOP notification still closes the epoch and preserves the unconsum
   const run=launchWatch(f.operator,'b',f.remote,thread);run.catch(()=>{});
   await until(()=>f.calls().length===1);
   requestStop(f.operator,['b']);
+  await until(()=>f.calls().length===2);
+  assert.equal(JSON.parse(f.cli('watch-status','b').stdout).epoch,null);
   await assert.rejects(run,/uncertain/);
   assert.equal(f.calls().length,2);
   assert.equal(getNotificationProgress(f.worker).cursor,0);

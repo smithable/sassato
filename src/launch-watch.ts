@@ -126,14 +126,11 @@ async function observe(s:Store,human:string,remote:string,thread:string,clock:()
   let stopping=false;
   const stop=async()=>{
     stopping=true;
-    try {
-      const request=s.get('SELECT acknowledged_at FROM stop_requests WHERE workspace_id=? AND role=? AND cleared_at IS NULL',s.ws,role);
-      if(!request?.acknowledged_at)await queue(true);
-    } finally {
-      // The worker may already have closed this epoch on observing the stop file.
-      const last=s.get("SELECT id,action FROM events WHERE workspace_id=? AND entity='wake-enrollment' AND entity_id=? ORDER BY id DESC LIMIT 1",s.ws,role);
-      if(last?.id===epoch)closePendingWake(s,epoch);
-    }
+    // Fence outstanding work before the external STOP notice can block or fail.
+    const last=s.get("SELECT id FROM events WHERE workspace_id=? AND entity='wake-enrollment' AND entity_id=? ORDER BY id DESC LIMIT 1",s.ws,role);
+    if(last?.id===epoch)closePendingWake(s,epoch);
+    const request=s.get('SELECT acknowledged_at FROM stop_requests WHERE workspace_id=? AND role=? AND cleared_at IS NULL',s.ws,role);
+    if(!request?.acknowledged_at)await queue(true);
     return {role,epoch,reason:'stopped'};
   };
   try {
