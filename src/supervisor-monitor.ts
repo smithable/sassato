@@ -3,13 +3,22 @@ import type { Store,Row } from './storage.js';
 import { check,integer,name,now,text } from './errors.js';
 import { processIdentity,sessions } from './coordination.js';
 import { getCheckpoint } from './checkpoints.js';
-import { assertWorkAllowed } from './control.js';
+import { activeStop, assertWorkAllowed } from './control.js';
+import { roleWakePolicy, workspaceSettings } from './workspace-settings.js';
+import { effectiveWakePolicy } from './wake-policy.js';
 
 export const PING_INTERVAL_MS=60_000,PING_DEADLINE_MS=120_000;
 function generation(s:Store,role:string):number {
   return Number(s.get('SELECT generation FROM managed_workers WHERE workspace_id=? AND role=?',s.ws,role)?.generation??0);
 }
 const acting=(worker:Row|undefined)=>!worker || ['running','draining'].includes(worker.state);
+function checkpointDue(s:Store,role:string,clock:number,minutes:number):boolean {
+  const checkpoint=getCheckpoint(s,role);
+  if(!checkpoint || !checkpoint.own_changes_since || clock-Date.parse(checkpoint.saved_at)<minutes*60_000)return false;
+  return !activeStop(s,[role]) &&
+    !s.get("SELECT 1 FROM jobs WHERE role=? AND status IN ('waiting','running')",role) &&
+    Boolean(s.get("SELECT 1 FROM tasks WHERE workspace_id=? AND owner=? AND status='doing' LIMIT 1",s.ws,role));
+}
 export function requestSupervisorPing(s:Store,target:string,clock=Date.now()):Row {
   const role=name(target);check(s.role(role).kind==='agent','Only agent roles receive supervisor pings');
   return s.tx(()=>{
@@ -19,10 +28,15 @@ export function requestSupervisorPing(s:Store,target:string,clock=Date.now()):Ro
     if(!acting(worker))return {role,generation:gen,state:'suspended',lifecycle_state:worker!.state,prior_ping:prior??null};
     // A fresh cadence must never hide an older unanswered deadline. Keep the
     // epoch's outstanding obligation until answered, even when already overdue.
-    if(prior && (!prior.acknowledged_at || clock-Date.parse(prior.requested_at)<PING_INTERVAL_MS))return prior;
+    const settings=workspaceSettings(s);
+    const policy=settings.wake_mode==='scored'?effectiveWakePolicy(settings.speed,roleWakePolicy(settings,role)):null;
+    const interval=policy?policy.ping_minutes*60_000:PING_INTERVAL_MS;
+    if(prior && (!prior.acknowledged_at || clock-Date.parse(prior.requested_at)<interval))return prior;
+    const checkpoint_requested=policy?checkpointDue(s,role,clock,policy.checkpoint_minutes):false;
     const ping={id:randomUUID(),workspace_id:s.ws,role,generation:gen,ping_epoch:epoch,nonce:randomUUID(),requested_at:new Date(clock).toISOString(),deadline:new Date(clock+PING_DEADLINE_MS).toISOString(),acknowledged_at:null};
     s.run('INSERT INTO supervisor_pings(id,workspace_id,role,generation,nonce,requested_at,deadline,acknowledged_at,ping_epoch) VALUES(?,?,?,?,?,?,?,?,?)',ping.id,s.ws,role,gen,ping.nonce,ping.requested_at,ping.deadline,null,epoch);
-    s.event('supervisor-ping',role,'requested',{nonce:ping.nonce,generation:gen,deadline:ping.deadline});return ping;
+    s.event('supervisor-ping',role,'requested',{nonce:ping.nonce,generation:gen,deadline:ping.deadline,...(checkpoint_requested?{checkpoint_requested:true}:{})});
+    return checkpoint_requested?{...ping,checkpoint_requested:true}:ping;
   });
 }
 export function acknowledgeSupervisorPing(s:Store,nonce:string,expectedGeneration:number,clock=Date.now()):Row {

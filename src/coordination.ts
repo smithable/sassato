@@ -20,7 +20,7 @@ function date(value: string, label: string): string {
   return normalized;
 }
 function limit(value: number | undefined, fallback = 20): number { return integer(value ?? fallback, 'limit', 1, 100); }
-function publicMessage(row: Row, immediate=false): Row { return { ...row, now:immediate, urgent:Boolean(row.urgent), reply:Boolean(row.reply), id: `M${row.id}`, task_id: row.task_id === null ? null : `T${row.task_id}` }; }
+function publicMessage(row: Row, immediate=false): Row { return { ...row, urgency:row.urgency??(row.urgent?5:row.reply?3:1), now:immediate, urgent:Boolean(row.urgent), reply:Boolean(row.reply), id: `M${row.id}`, task_id: row.task_id === null ? null : `T${row.task_id}` }; }
 function publicFact(row: Row): Row { return { ...row, id: `F${row.id}` }; }
 function externalId(value: string | undefined): string | null {
   if (value === undefined) return null;
@@ -182,19 +182,37 @@ export function endSession(s: Store, external?: string): Row {
   });
 }
 
-export function send(s: Store, recipients: string[] | 'all', body: string, options: { task?: string; urgent?: boolean; needsReply?: boolean; now?: boolean } = {}): Row {
+export function send(s: Store, recipients: string[] | 'all', body: string, options: { task?: string; urgent?: boolean; needsReply?: boolean; now?: boolean; urgency?: string | number; reason?: string } = {}): Row {
   const actor = s.requireActor(), content = text(body,'message');
+  const urgency=options.urgency===undefined?(options.urgent?5:options.needsReply?3:1):integer(options.urgency,'urgency',0,10);
+  check(!options.urgent||urgency===5,'--urgent conflicts with --urgency other than 5');
+  const reason=options.reason===undefined?null:text(options.reason,'urgency reason',240).trim();
+  check(!reason||!/[\x00-\x1f\x7f]/.test(reason),'urgency reason must fit on one line');
   return s.tx(() => {
+    check(urgency<6||reason||s.role(actor).kind==='human','Agents must give --reason for urgency 6–10');
     const targets = [...new Set(recipients === 'all' ? roles(s).map(r => r.name as string).filter(r => r !== actor) : recipients.map(name))];
     check(targets.length > 0 && targets.length <= 100,'Choose 1–100 message recipients');
     targets.forEach(role => s.role(role));
     const task = options.task ? s.task(options.task).id : null, at = now();
-    const n = s.run('INSERT INTO messages(workspace_id,sender,body,task_id,created_at,urgent,reply) VALUES(?,?,?,?,?,?,?)',s.ws,actor,content,task,at,options.urgent||options.now?1:0,options.needsReply?1:0).lastInsertRowid;
+    const n = s.run('INSERT INTO messages(workspace_id,sender,body,task_id,created_at,urgent,reply,urgency,urgency_reason,immediate) VALUES(?,?,?,?,?,?,?,?,?,?)',s.ws,actor,content,task,at,options.urgent||options.now?1:0,options.needsReply?1:0,urgency,reason,options.now?1:0).lastInsertRowid;
     for (const recipient of targets) s.run('INSERT INTO receipts(workspace_id,message_id,recipient) VALUES(?,?,?)',s.ws,n,recipient);
     s.index('message',`M${n}`,`${actor} → ${targets.join(', ')}`,content,{role:actor,updated_at:at});
-    s.event('message',`M${n}`,'sent',{ recipients: targets, task: options.task ?? null, urgent:!!(options.urgent||options.now), reply:!!options.needsReply, now:!!options.now });
-    return { id:`M${n}`,sender:actor,recipients:targets,urgent:!!(options.urgent||options.now),reply:!!options.needsReply,now:!!options.now,body:content,task_id:options.task ?? null,created_at:at };
+    s.event('message',`M${n}`,'sent',{ recipients: targets, task: options.task ?? null, urgent:!!(options.urgent||options.now), reply:!!options.needsReply, now:!!options.now, urgency, reason });
+    return { id:`M${n}`,sender:actor,recipients:targets,urgent:!!(options.urgent||options.now),reply:!!options.needsReply,now:!!options.now,urgency,urgency_reason:reason,body:content,task_id:options.task ?? null,created_at:at };
   });
+}
+/** Recent high scores and repeated bypasses, without exposing message bodies. */
+export function wakeAudit(s:Store,count?:number):Row {
+  s.requireHuman();
+  const cap=limit(count);
+  return s.snapshot(()=>({
+    high_scores:s.all(`SELECT 'M'||m.id AS message,m.sender,m.urgency,m.urgency_reason AS reason,m.created_at
+      FROM messages m WHERE m.workspace_id=? AND m.urgency>=6 ORDER BY m.id DESC LIMIT ?`,s.ws,cap),
+    repeated_now:s.all(`SELECT actor AS sender,count(*) AS uses FROM events
+      WHERE workspace_id=? AND entity='message' AND action='sent'
+      AND CASE WHEN json_valid(detail) THEN json_type(detail,'$.now')='true' ELSE 0 END
+      GROUP BY actor HAVING count(*)>1 ORDER BY uses DESC,actor LIMIT ?`,s.ws,cap),
+  }));
 }
 export interface InboxOptions { peek?: boolean; state?: 'unread' | 'read' | 'done' | 'pending' | 'all'; limit?: number }
 export function inbox(s: Store, options: InboxOptions = {}): Row[] {

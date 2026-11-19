@@ -72,7 +72,7 @@ sassato doctor --db "$PROBE_DB" --workspace smithable --as "$LIVE_HUMAN" --json
 ```
 
 Save the version/build, migration and doctor output. Confirm doctor reports
-`"ok": true` and `"schema": 10` for `PROBE_DB` before continuing. The version
+`"ok": true` and `"schema": 11` for `PROBE_DB` before continuing. The version
 command reports the CLI schema; doctor reads the database schema. Perform the
 planned WSL restart from the Windows terminal (`wsl --shutdown`) only after jobs
 have stopped. Reopen the operator and assistant terminals. The human alone reconciles and clears their own prior STOP
