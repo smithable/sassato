@@ -185,8 +185,9 @@ test('a socket given by its symlink path (Codex 0.167) is watched',async t=>{
   assert.equal(f.calls()[0][f.calls()[0].indexOf('--remote')+1],'unix://'+realpathSync(join(f.dir,'server')));
   requestStop(f.operator,['b']);
   assert.equal((await run).reason,'stopped');
-  // The socket may be a shared Codex daemon's: ending the watch leaves the link, the socket and its folder alone.
+  // The socket may be a shared Codex daemon's: ending the watch leaves the link and the socket in place.
   assert.ok(lstatSync(join(f.dir,'server.sock')).isSymbolicLink());
+  assert.equal(realpathSync(join(f.dir,'server.sock')),realpathSync(join(f.dir,'server')));
   assert.ok(statSync(join(f.dir,'server')).isSocket());
 });
 test('a symlink to something other than a socket is refused',async t=>{
