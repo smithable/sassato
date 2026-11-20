@@ -373,6 +373,10 @@ test('Claude bootstrap snapshots then arms one role-scoped background waiter bef
   assert.match(prompt,/On STOP, do not rearm until a human resumes/);
   assert.equal(plan.args.filter(arg=>arg.includes(context)).length,1,'all bootstrap text remains one literal provider argv value');
   assert(!plan.args.includes('--since'),'watcher flags are instructions, not provider CLI flags');
+  setWorkspaceSettings(f.s,{wake_mode:'scored',speed:'fast'});
+  const scored=planLaunch(f.s,['a'],{fresh:true})[0].args.at(-1);
+  assert.match(scored,/sassato wake --since CURSOR --as a --workspace test/);
+  assert.doesNotMatch(scored,/--idle-minutes/);
 });
 
 test('Codex bootstrap remains pull-based and no-prompt omits all startup instructions',t=>{

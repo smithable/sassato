@@ -11,7 +11,7 @@ import { addTask, blockTask, handoffTask, takeTask, noteTask, updateTask } from 
 import { waitForWork } from '../dist/mail-wait.js';
 import { wake } from '../dist/wake.js';
 import { enrollPendingWake, readPendingWake, stagePendingWake } from '../dist/pending-wake.js';
-import { getNotificationProgress, saveNotificationProgress } from '../dist/notification-progress.js';
+import { getNotificationProgress, lastIdleDelivery, saveNotificationProgress } from '../dist/notification-progress.js';
 import { requestSupervisorPing, acknowledgeSupervisorPing } from '../dist/supervisor-monitor.js';
 import { setWorkspaceSettings, workspaceSettings } from '../dist/workspace-settings.js';
 import { effectiveWakePolicy } from '../dist/wake-policy.js';
@@ -290,4 +290,93 @@ test('a replacement route and observed mail cannot contribute their old wake eve
   assert.equal(out.reason,'task-assigned');
   assert.equal(out.digest.score.total,3);
   assert.deepEqual(out.digest.entries.map(entry=>entry.event_id),[`E${replaced}`]);
+});
+
+for(const mode of ['legacy','scored'])test(`${mode} idle wakes repeat with durable back-off, then reset on changed task or role activity`,async t=>{
+  const f=fixture(t);
+  if(mode==='scored')f.opt({speed:'fast'});
+  const task=addTask(f.a,{title:'Waiting for b',forRole:'b'});
+  saveNotificationProgress(f.b,{cursor:f.latest(),expected_version:1});
+  const minute=60_000;
+  let wall=f.base;
+  const next=async(expectedMinutes)=>{
+    const clock=controlled(wall,{jump:minute});
+    const outcome=await wake(f.b,{idleMinutes:1,clock,...(mode==='legacy'?{settle:0}:{})});
+    assert.equal(clock.monotonic(),expectedMinutes*minute);
+    wall=clock.now();
+    return outcome;
+  };
+  const first=await next(1);
+  assert.equal(first.result.reason,'open-work');
+  assert.doesNotMatch(first.text,/nothing new: re-arm only/);
+  assert.equal(first.text.includes('--idle-minutes 1'),mode==='legacy');
+  assert.equal(first.commit().saved,true);
+  saveCheckpoint(f.b,{current:'Looking at open work',next:'Wait',notes:'Housekeeping does not reset idle'});
+  const repeat=await next(1);
+  assert.match(repeat.text,/nothing new: re-arm only · unchanged since .* · T\d+ version 1/);
+  assert.doesNotMatch(repeat.text,/checkpoint/);
+  assert.equal(repeat.commit().saved,true);
+  const second=await next(2);
+  assert.equal(second.commit().saved,true);
+  assert.equal(lastIdleDelivery(f.b,getNotificationProgress(f.b)).repeats,2);
+  noteTask(f.a,task.id,'New information from the task creator');
+  const changed=await next(1);
+  assert.doesNotMatch(changed.text,/unchanged since/);
+  assert.equal(changed.commit().saved,true);
+  assert.equal((await next(1)).commit().saved,true);
+  send(f.b,['a'],'My activity resets the idle delay');
+  const active=await next(1);
+  assert.doesNotMatch(active.text,/unchanged since/);
+  assert.equal(active.commit().saved,true);
+});
+
+test('the idle interval doubles up to one day and launcher staging does not consume it',async t=>{
+  const f=fixture(t);
+  const thread='211a70d9-399a-4a54-8dd4-3a156d04a1bb';
+  const session=registerSession(f.b,{provider:'codex',external_id:thread});
+  const epoch=enrollPendingWake(f.b,{session:Number(session.id.slice(1)),thread});
+  takeTask(f.b,addTask(f.b,{title:'Long-running task'}).id);
+  const halfDay=12*60*60_000;
+  let wall=f.base;
+  for(const [n,hours] of [12,12,24,24].entries()){
+    const progress=getNotificationProgress(f.b);
+    const clock=controlled(wall,{jump:halfDay});
+    const result=await waitForWork(f.b,{since:progress.cursor,settle:0,idleMinutes:720,clock});
+    assert.equal(clock.monotonic(),hours*60*60_000);
+    assert.equal(result.idle.repeats,n);
+    stagePendingWake(f.b,epoch,progress,result);
+    assert.deepEqual(getNotificationProgress(f.b),progress);
+    assert.equal(lastIdleDelivery(f.b,progress)?.repeats,n?n-1:undefined);
+    assert.equal(readPendingWake(f.b,thread).commit().saved,true);
+    wall=clock.now();
+  }
+});
+
+test('legacy scripts can commit a bounded idle receipt from a raw wait',async t=>{
+  const f=fixture(t);
+  for(let i=0;i<21;i++)addTask(f.a,{title:`Task ${i}`,forRole:'b'});
+  const before=saveNotificationProgress(f.b,{cursor:f.latest(),expected_version:1});
+  const result=await waitForWork(f.b,{idleMinutes:1,settle:0,clock:controlled(f.base,{jump:60_000})});
+  assert.equal(result.idle.tasks.length,20);
+  assert.deepEqual(getNotificationProgress(f.b),before);
+  const args=['bin/sassato.js','progress','save','--cursor',String(result.cursor),'--expect',String(before.version),
+    '--idle-receipt',JSON.stringify(result.idle),'--db',f.b.path,'--workspace','team','--as','b','--json'];
+  const output=spawnSync(process.execPath,args,{encoding:'utf8'});
+  assert.equal(output.status,0,output.stderr);
+  const repeat=await waitForWork(f.b,{idleMinutes:1,settle:0,clock:controlled(f.base+60_000,{jump:60_000})});
+  assert.equal(repeat.idle.repeats,1);
+  assert.equal(repeat.idle.since,result.idle.since);
+});
+
+test('real mail in a scored idle digest keeps the normal work instructions',async t=>{
+  const f=fixture(t);f.opt();
+  takeTask(f.b,addTask(f.b,{title:'Same task'}).id);
+  const first=await wake(f.b,{idleMinutes:1,clock:controlled(f.base,{jump:60_000})});
+  first.commit();
+  const mail=f.mail();
+  const mixed=await wake(f.b,{idleMinutes:1,clock:controlled(f.base+60_000,{jump:60_000})});
+  assert.ok(mixed.result.digest.entries.some(entry=>entry.id===mail.id));
+  assert.match(mixed.text,/unchanged since/);
+  assert.match(mixed.text,/one checkpoint/);
+  assert.doesNotMatch(mixed.text,/nothing new: re-arm only/);
 });

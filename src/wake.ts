@@ -10,9 +10,10 @@ import type { Row, Store } from './storage.js';
 import { waitWithManagedObservation } from './managed-wait.js';
 import { getNotificationProgress, saveNotificationProgress } from './notification-progress.js';
 import { acknowledgeMany } from './coordination.js';
-import type { WaitOptions, WaitResult } from './mail-wait.js';
+import { unchangedIdleText, type WaitOptions, type WaitResult } from './mail-wait.js';
 import { DIGEST_GROUPS, scoreExplanation, type DigestEntry } from './wait-digest.js';
 import { AppError, check } from './errors.js';
+import { workspaceSettings } from './workspace-settings.js';
 
 export const WAKE_TEXT_LIMIT = 1500;
 export interface WakeOptions extends WaitOptions { pending?: boolean; ack?: string[] }
@@ -93,7 +94,7 @@ function formatWake(s: Store, options: WakeOptions, since: number, result: WaitR
   const actor=s.requireActor();
   const quote = (value: string) => /^[\w./~:@%+=,-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
   const stopFlag = options.stopFile ? ` --stop-file ${quote(options.stopFile)}` : '';
-  const idleFlag = options.idleMinutes!==undefined ? ` --idle-minutes ${options.idleMinutes}` : '';
+  const idleFlag = options.idleMinutes!==undefined && workspaceSettings(s).wake_mode!=='scored' ? ` --idle-minutes ${options.idleMinutes}` : '';
   const rearm = (ack: string[]) => `sassato wake --since ${result.cursor}${idleFlag} --as ${actor} --workspace ${s.workspace}${stopFlag}${ack.length ? ` --ack ${ack.join(',')}` : ''}`;
   const lines: string[] = [];
   if (acknowledged.length) lines.push(`Acknowledged ${acknowledged.join(', ')}.`);
@@ -109,9 +110,13 @@ function formatWake(s: Store, options: WakeOptions, since: number, result: WaitR
   const shown = new Set([...entries.map((entry) => entry.id), ...(result.message ? [String(result.message.id)] : [])]);
   const { rows: left, more: leftMore } = waiting(s, actor, shown);
   const quiet = !entries.length && !left.length && result.reason === 'timeout';
+  const idle=result.idle??result.scored?.idle;
+  const unchanged=unchangedIdleText(idle);
+  const idleOnly=unchanged&&!left.length&&!result.digest?.has_more&&entries.every(entry=>entry.unchanged)&&
+    (result.reason===idle?.kind||result.reason==='digest');
   const body: string[] = [];
-  if (!result.digest && result.reason !== 'timeout') body.push(`${result.reason}${result.task ? ` ${result.task}` : ''}${result.message ? ` ${result.message.id} from ${result.message.sender}:\n${indent(wakeText(result.message.summary, result.message.id))}` : ''}`);
-  if(options.pending && !result.digest && result.tasks) {
+  if (!result.digest && result.reason !== 'timeout') body.push(unchanged??`${result.reason}${result.task ? ` ${result.task}` : ''}${result.message ? ` ${result.message.id} from ${result.message.sender}:\n${indent(wakeText(result.message.summary, result.message.id))}` : ''}`);
+  if(options.pending && !result.digest && result.tasks && !unchanged) {
     for(const task of result.tasks) body.push(indent(detail(s,{id:task,task,from:actor,kind:result.reason,group:'other',summary:task},since,result.cursor)));
   }
   if(result.digest?.score)body.push(scoreExplanation(result.digest.score));
@@ -126,7 +131,8 @@ function formatWake(s: Store, options: WakeOptions, since: number, result: WaitR
     if(group!=='scored')body.push(`${group}:`);
     for (const { entry, from } of inGroup.values()) {
       body.push(`  ${entry.id} · from ${from.join(', ')} · ${entry.kind}${entry.task && entry.task !== entry.id ? ` · ${entry.task}` : ''}`);
-      if((options.pending||result.scored) && entry.tasks?.length) {
+      if(entry.unchanged)body.push(indent(entry.summary));
+      else if((options.pending||result.scored) && entry.tasks?.length) {
         for(const task of entry.tasks) body.push(indent(detail(s,{...entry,id:task,task},since,result.cursor)));
       } else body.push(indent(detail(s, entry, since, result.cursor)));
     }
@@ -146,7 +152,7 @@ function formatWake(s: Store, options: WakeOptions, since: number, result: WaitR
     try {
       const saved=s.tx(()=>{
         if(activeStop(s,[actor],options.stopFile))return false;
-        saveNotificationProgress(s,{cursor:result.cursor,expected_version:version,scored:result.scored});
+        saveNotificationProgress(s,{cursor:result.cursor,expected_version:version,scored:result.scored,idle:result.idle});
         return true;
       });
       return saved?{saved,line:`Cursor ${result.cursor} saved.`}:
@@ -160,6 +166,10 @@ function formatWake(s: Store, options: WakeOptions, since: number, result: WaitR
   if (quiet) {
     lines.push(`Nothing new for ${actor} · cursor ${result.cursor} · re-arm: ${rearm([])}`);
     return { text: lines.join('\n'), result, acknowledged, commit };
+  }
+  if(idleOnly){
+    lines.push(`nothing new: re-arm only · ${unchanged} · ${options.pending?'The launcher owns the waiter.':rearm([])}`);
+    return {text:lines.join('\n'),result,acknowledged,commit};
   }
   lines.push(`Wake for ${actor}: ${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}${result.digest ? ` (${result.digest.flush})` : ''} · cursor ${result.cursor}`, ...body);
   if (options.pending) {

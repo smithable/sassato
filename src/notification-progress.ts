@@ -10,8 +10,34 @@ export interface NotificationProgress {
   version: number;
   saved_at: string;
 }
-export interface ScoredDelivery { event_ids:number[]; through?:number; score:WakeScore }
-export interface NotificationProgressInput { cursor: number; expected_version: number; scored?:ScoredDelivery }
+export interface IdleDelivery {
+  kind:'own-work'|'open-work'; tasks:{id:string;version:number}[];
+  observed:number; since:number; delivered:number; repeats:number;
+}
+export interface ScoredDelivery { event_ids:number[]; through?:number; score:WakeScore; idle?:IdleDelivery }
+export interface NotificationProgressInput { cursor: number; expected_version: number; scored?:ScoredDelivery; idle?:IdleDelivery }
+export const IDLE_TASK_LIMIT=20;
+
+function validIdle(value: unknown): value is IdleDelivery {
+  const i=value as IdleDelivery|undefined;
+  return !!i && (i.kind==='own-work'||i.kind==='open-work') && Array.isArray(i.tasks) && i.tasks.length>0 && i.tasks.length<=IDLE_TASK_LIMIT &&
+    i.tasks.every(task=>task && typeof task.id==='string' && /^T[1-9][0-9]*$/.test(task.id) && Number.isSafeInteger(task.version) && task.version>0) &&
+    Number.isSafeInteger(i.observed) && i.observed>=0 && Number.isSafeInteger(i.repeats) && i.repeats>=0 &&
+    Number.isSafeInteger(i.since) && i.since>=0 && Number.isSafeInteger(i.delivered) && i.delivered>=i.since && i.delivered<=8_640_000_000_000_000;
+}
+
+function validateIdle(value:unknown):IdleDelivery {
+  check(validIdle(value),'Invalid idle wake receipt');
+  const {kind,tasks,observed,since,delivered,repeats}=value;
+  return {kind,tasks:tasks.map(({id,version})=>({id,version})),observed,since,delivered,repeats};
+}
+
+export function parseIdleReceipt(json:string):IdleDelivery {
+  check(json.length<=8192,'--idle-receipt is too long');
+  let value:unknown;
+  try {value=JSON.parse(json);} catch {check(false,'--idle-receipt must be valid JSON');}
+  return validateIdle(value);
+}
 
 /** Accept the compact scored receipt from `wait --json`, without copying the digest into the audit. */
 export function parseScoredReceipt(json:string):ScoredDelivery {
@@ -25,13 +51,22 @@ export function parseScoredReceipt(json:string):ScoredDelivery {
   const {trigger,immediate_cause,age_limit_seconds}=score;
   check(trigger===undefined||typeof trigger==='string'&&/^(?:[A-Z][0-9]+|[a-z][a-z0-9_-]{0,63})$/.test(trigger),'Invalid scored receipt trigger');
   check(immediate_cause===undefined||['supervisor-ping','answer','now'].includes(immediate_cause),'Invalid immediate wake reason');
+  const idle=value.idle===undefined?undefined:validateIdle(value.idle);
   return {
     event_ids:value.event_ids.map((id:unknown)=>integer(id,'delivered event',1)),
     ...(value.through===undefined?{}:{through:integer(value.through,'scored batch boundary')}),
+    ...(idle===undefined?{}:{idle}),
     score:{reason:score.reason,speed:score.speed,total:integer(score.total,'total'),threshold:integer(score.threshold,'threshold',1),
       ...(trigger===undefined?{}:{trigger}),...(immediate_cause===undefined?{}:{immediate_cause}),
       ...(age_limit_seconds===undefined?{}:{age_limit_seconds:integer(age_limit_seconds,'age limit',1)})},
   };
+}
+
+export function lastIdleDelivery(s:Store,progress:NotificationProgress|null):IdleDelivery|undefined {
+  if(!progress)return undefined;
+  const event=s.get('SELECT detail FROM events WHERE workspace_id=? AND id=?',s.ws,Number(progress.id.slice(1)))!;
+  const idle:unknown=JSON.parse(event.detail).idle_delivery;
+  return validIdle(idle)?idle:undefined;
 }
 
 /** A page can deliver newer urgent items before older ones. Keep those receipts with the
@@ -68,11 +103,14 @@ export function saveNotificationProgress(s: Store, input: NotificationProgressIn
   const cursor=integer(input.cursor,'notification cursor'), expected=integer(input.expected_version,'expected progress version');
   return s.tx(()=>{
     const role=s.requireActor(), old=getNotificationProgress(s);
-    if (!input.scored && old && cursor===old.cursor && (expected===old.version || expected===old.version-1)) return old;
+    const delivery=input.idle??input.scored?.idle;
+    if (!input.scored && !delivery && old && cursor===old.cursor && (expected===old.version || expected===old.version-1)) return old;
     check(expected===(old?.version??0),'Notification progress changed; read it and retry with --expect',4);
     check(!old || cursor>=old.cursor,'Notification cursor cannot move backwards; use wait --since for an explicit replay',4);
     const latest=Number(s.get('SELECT coalesce(max(id),0) AS n FROM events WHERE workspace_id=?',s.ws)!.n);
     check(cursor<=latest,'Notification cursor is ahead of this workspace; use a safely handled cursor from this workspace',4);
+    if(delivery)check(validIdle(delivery)&&delivery.observed<=latest,'Invalid idle wake receipt');
+    const idle=delivery??lastIdleDelivery(s,old);
     const scored=input.scored;
     const through=scored?.through;
     if (through!==undefined) integer(through,'scored batch boundary',cursor,latest);
@@ -84,7 +122,8 @@ export function saveNotificationProgress(s: Store, input: NotificationProgressIn
     }
     s.run('DELETE FROM scored_wake_delivery WHERE workspace_id=? AND role=? AND event_id<=?',s.ws,role,cursor);
     const version=(old?.version??0)+1;
-    const event=s.event('notification-progress',role,'saved',{format:1,cursor,version,...(through===undefined?{}:{scored_through:through}),...(scored?{scored_score:scored.score}:{})});
+    const event=s.event('notification-progress',role,'saved',{format:1,cursor,version,...(through===undefined?{}:{scored_through:through}),
+      ...(scored?{scored_score:scored.score}:{}),...(idle?{idle_delivery:idle}:{})});
     const saved=s.get('SELECT created_at FROM events WHERE workspace_id=? AND id=?',s.ws,event)!;
     return {id:`E${event}`,role,cursor,version,saved_at:saved.created_at};
   });
