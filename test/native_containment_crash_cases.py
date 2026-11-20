@@ -167,6 +167,40 @@ while True:
             with self.assertRaises(ChildProcessError):
                 os.waitpid(report["pid"], os.WNOHANG)
 
+    def test_startup_waits_out_an_unset_cmdline_but_never_accepts_another(self):
+        import subprocess
+        argv = [lab.PYTHON, "-B", "-c", "import time; time.sleep(5)"]
+        process = subprocess.Popen(argv, stdin=subprocess.DEVNULL)
+        try:
+            start = native.fingerprint(process.pid)
+            raw = [os.fsencode(part) for part in argv]
+            # Right after Popen the kernel may not have set the argument area yet (the T906 race itself).
+            deadline = time.monotonic() + 2
+            while not lab.cmdline(process.pid) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(lab.cmdline(process.pid), raw)
+            with patch.object(lab, "cmdline", side_effect=[[], [], raw]):
+                lab.verify_process(process, argv, start, settle=2)
+            with patch.object(lab, "cmdline", side_effect=[[], [b"other"]]), self.assertRaisesRegex(native.UnknownScope, "executable changed"):
+                lab.verify_process(process, argv, start, settle=2)
+            with patch.object(lab, "cmdline", return_value=[]), self.assertRaisesRegex(native.UnknownScope, "executable changed"):
+                lab.verify_process(process, argv, start)
+            # A replacement character never stands in for other bytes.
+            with patch.object(lab, "cmdline", return_value=[*raw[:-1], b"\xff"]), self.assertRaisesRegex(native.UnknownScope, "executable changed"):
+                lab.verify_process(process, [*argv[:-1], "\ufffd"], start)
+            # The wait is bounded by settle on the lab's own clock.
+            clock = [0.0]
+            fake = SimpleNamespace(monotonic=lambda: clock[0], sleep=lambda s: clock.__setitem__(0, clock[0] + s))
+            reads = []
+            with patch.object(lab, "time", fake), patch.object(lab, "cmdline", side_effect=lambda pid: reads.append(pid) or []), self.assertRaisesRegex(native.UnknownScope, "executable changed"):
+                lab.verify_process(process, argv, start, settle=0.2)
+            self.assertGreaterEqual(clock[0], 0.2)
+            self.assertLess(clock[0], 0.25)
+            self.assertLessEqual(len(reads), 22)
+        finally:
+            process.kill()
+            process.wait()
+
     def test_parent_primary_failure_and_secondary_preservation_error_are_both_saved(self):
         with tempfile.TemporaryDirectory(prefix="sassato-parent-failure-") as name:
             path = Path(name)
