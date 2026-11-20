@@ -31,8 +31,11 @@ function session(s: Store, thread: string, remote: string) {
   check(JSON.stringify(tail)===JSON.stringify(['--remote',remote,'resume',thread]) ||
     JSON.stringify(tail)===JSON.stringify(['resume',thread,'--remote',remote]),
     'Expected a Codex TUI attached with --remote ENDPOINT resume UUID',4);
-  const endpoint=lstatSync(remote.slice(7),{bigint:true});
-  check(endpoint.isSocket() && Number(endpoint.uid)===process.getuid?.(),'Expected a local Unix socket owned by the current user',4);
+  // Codex 0.167 links the given path to its real socket: follow one owned link, bind the identity to the socket itself.
+  const given=remote.slice(7),uid=process.getuid?.(),link=lstatSync(given,{bigint:true});
+  check(Number(link.uid)===uid,'Expected a local Unix socket owned by the current user',4);
+  const endpoint=link.isSymbolicLink()?statSync(realpathSync(given),{bigint:true}):link;
+  check(endpoint.isSocket() && Number(endpoint.uid)===uid,'Expected a local Unix socket owned by the current user',4);
   return {session:row.id as number,thread,pid:row.pid,start:row.process_start,
     socket:`${endpoint.dev}:${endpoint.ino}:${endpoint.ctimeNs}`,cwd:realpathSync(config.working_dir),
     policy:JSON.stringify([config.model,config.reasoning_effort,config.sandbox_mode,config.approval_policy,config.permission_mode,workspaceSettings(s).stop_file])};

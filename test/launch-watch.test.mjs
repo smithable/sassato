@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join,resolve } from 'node:path';
-import { mkdtempSync,readFileSync,rmSync,writeFileSync,existsSync } from 'node:fs';
+import { mkdtempSync,readFileSync,rmSync,writeFileSync,existsSync,symlinkSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Store } from '../dist/storage.js';
 import { initWorkspace } from '../dist/admin.js';
@@ -20,10 +20,11 @@ async function until(fn) {
   for(let i=0;i<150;i++){if(fn())return;await delay(40);}
   throw Error('Fixture condition timed out');
 }
-async function fixture(t,mode='success') {
+async function fixture(t,mode='success',link=false) {
   const dir=mkdtempSync(join(tmpdir(),'sas-lwatch-')), db=join(dir,'db'),log=join(dir,'calls');
   const endpoint=join(dir,'server'),server=createServer();server.listen(endpoint);await once(server,'listening');
-  const remote='unix://'+endpoint;
+  if(link)symlinkSync(endpoint,join(dir,'server.sock'));
+  const remote='unix://'+(link?join(dir,'server.sock'):endpoint);
   const provider=join(dir,'codex');
   writeFileSync(provider,`#!/usr/bin/env node
 const fs=require('fs'),args=process.argv.slice(2);
@@ -175,4 +176,18 @@ test('the 50-minute eligible-work result survives dispatch with its original tas
     const read=JSON.parse(f.cli('wake','--pending','--json').stdout);
     assert.ok(read.result.digest.entries.some(e=>e.kind==='open-work' && e.tasks.includes(task.id)));
   }finally{performance.now=real;requestStop(f.operator,['b']);await run;}
+});
+test('a socket given by its symlink path (Codex 0.167) is watched',async t=>{
+  const f=await fixture(t,'success',true);
+  const run=launchWatch(f.operator,'b',f.remote,thread);run.catch(()=>{});
+  send(f.operator,['b'],'Linked',{now:true});
+  await until(()=>f.calls().length===1);
+  assert.equal(f.calls()[0][f.calls()[0].indexOf('--remote')+1],f.remote);
+  requestStop(f.operator,['b']);
+  assert.equal((await run).reason,'stopped');
+});
+test('a symlink to something other than a socket is refused',async t=>{
+  const f=await fixture(t,'success',true);
+  const sock=f.remote.slice(7);rmSync(sock);writeFileSync(join(f.dir,'plain'),'x');symlinkSync(join(f.dir,'plain'),sock);
+  await assert.rejects(launchWatch(f.operator,'b',f.remote,thread),/Unix socket/);
 });

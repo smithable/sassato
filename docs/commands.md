@@ -725,7 +725,9 @@ is attached to the intended thread, the daemon is running, approvals are visible
 there, and the thread’s normal model and permissions apply. The supported TUI
 invocation is `codex --remote unix:///absolute/socket resume UUID` (or the
 same remote option after the UUID). The registry must name that live TUI PID
-and its UUID, the socket must belong to the current OS user, and the worker
+and its UUID, the socket must belong to the current OS user (a path that is a
+symlink to it, as Codex 0.167 makes, is followed when the link is the user’s too;
+the identity is the socket’s own), and the worker
 must already have reconciled and saved notification progress.
 
 In a separate terminal, run:
