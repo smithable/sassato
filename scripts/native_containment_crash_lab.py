@@ -179,7 +179,9 @@ def child(path, mode):
 
 
 def cmdline(pid):
-    return [part.decode(errors="replace") for part in Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0") if part]
+    """Raw argument bytes; only the trailing NUL delimiter is dropped, so an empty read is []."""
+    parts = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    return parts[:-1] if parts and parts[-1] == b"" else parts
 
 
 def verify_process(process, argv, start, settle=0):
@@ -193,7 +195,8 @@ def verify_process(process, argv, start, settle=0):
     while not actual and time.monotonic() < settle_until:
         time.sleep(0.01)
         actual = cmdline(process.pid)
-    native.require(actual == argv, f"Controller executable changed: {actual!r}")
+    native.require(actual == [os.fsencode(part) for part in argv], f"Controller executable changed: {actual!r}")
+    native.require(native.fingerprint(process.pid) == start, "Controller start changed")
     status = Path(f"/proc/{process.pid}/status").read_text().splitlines()
     uids = next(line.split()[1:] for line in status if line.startswith("Uid:"))
     native.require(uids and all(int(uid) == os.getuid() for uid in uids), "Controller actual UID changed")
