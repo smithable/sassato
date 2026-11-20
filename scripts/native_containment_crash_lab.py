@@ -23,6 +23,7 @@ CASES = {"binding-intent": 81, "sealed": 82}
 CONTROLLER_SECONDS = 35
 REAP_SECONDS = 2
 MIN_STARTUP_SECONDS = 1
+STARTUP_CMDLINE_SECONDS = 2
 
 
 def wait_for(predicate, deadline, message):
@@ -177,10 +178,22 @@ def child(path, mode):
         reconcile(path, state)
 
 
-def verify_process(process, argv, start):
+def cmdline(pid):
+    return [part.decode(errors="replace") for part in Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0") if part]
+
+
+def verify_process(process, argv, start, settle=0):
     native.require(native.fingerprint(process.pid) == start, "Controller start changed")
-    actual = Path(f"/proc/{process.pid}/cmdline").read_bytes().split(b"\0")
-    native.require([part.decode() for part in actual if part] == argv, "Controller executable changed")
+    # Popen returns once exec has replaced the memory map, but the kernel sets
+    # the new argument area a moment later: an empty cmdline is not yet known,
+    # never a match. Only the startup check waits for it; any other value
+    # must match exactly.
+    settle_until = time.monotonic() + settle
+    actual = cmdline(process.pid)
+    while not actual and time.monotonic() < settle_until:
+        time.sleep(0.01)
+        actual = cmdline(process.pid)
+    native.require(actual == argv, f"Controller executable changed: {actual!r}")
     status = Path(f"/proc/{process.pid}/status").read_text().splitlines()
     uids = next(line.split()[1:] for line in status if line.startswith("Uid:"))
     native.require(uids and all(int(uid) == os.getuid() for uid in uids), "Controller actual UID changed")
@@ -239,7 +252,7 @@ def run_controller(path, mode, deadline):
             report["start"] = native.fingerprint(process.pid)
             # The startup handshake precedes all fixture work. A hung startup is
             # still an owned new process once actual executable identity matches.
-            verify_process(process, argv, report["start"])
+            verify_process(process, argv, report["start"], settle=STARTUP_CMDLINE_SECONDS)
             report["verified_ownership"] = True
             native.atomic_json(path / (mode + "-owned.json"), report)
             wait_for(lambda: (path / (mode + "-controller.json")).exists(), min(work_deadline, time.monotonic() + 5), "Controller did not register")

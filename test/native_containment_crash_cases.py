@@ -167,6 +167,26 @@ while True:
             with self.assertRaises(ChildProcessError):
                 os.waitpid(report["pid"], os.WNOHANG)
 
+    def test_startup_waits_out_an_unset_cmdline_but_never_accepts_another(self):
+        import subprocess
+        argv = [lab.PYTHON, "-B", "-c", "import time; time.sleep(5)"]
+        process = subprocess.Popen(argv, stdin=subprocess.DEVNULL)
+        try:
+            start = native.fingerprint(process.pid)
+            with patch.object(lab, "cmdline", side_effect=[[], [], argv]):
+                lab.verify_process(process, argv, start, settle=2)
+            with patch.object(lab, "cmdline", side_effect=[[], ["other"]]), self.assertRaisesRegex(native.UnknownScope, "executable changed"):
+                lab.verify_process(process, argv, start, settle=2)
+            with patch.object(lab, "cmdline", return_value=[]), self.assertRaisesRegex(native.UnknownScope, "executable changed"):
+                lab.verify_process(process, argv, start)
+            began = time.monotonic()
+            with patch.object(lab, "cmdline", return_value=[]), self.assertRaisesRegex(native.UnknownScope, "executable changed"):
+                lab.verify_process(process, argv, start, settle=0.2)
+            self.assertLess(time.monotonic() - began, 1)
+        finally:
+            process.kill()
+            process.wait()
+
     def test_parent_primary_failure_and_secondary_preservation_error_are_both_saved(self):
         with tempfile.TemporaryDirectory(prefix="sassato-parent-failure-") as name:
             path = Path(name)
