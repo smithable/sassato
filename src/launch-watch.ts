@@ -18,6 +18,14 @@ import { workspaceSettings } from './workspace-settings.js';
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const deadlineMs=300_000;
 
+// Every folder from this one up to the root is the user's or root's, and only those can replace its entries:
+// not writable by group or others unless sticky (as /tmp is).
+function guarded(dir:string,uid:number|undefined):boolean {
+  const st=statSync(dir,{bigint:true});
+  const safe=(Number(st.uid)===uid || st.uid===0n) && ((st.mode & 0o022n)===0n || (st.mode & 0o1000n)!==0n);
+  return safe && (dir==='/' || guarded(dirname(dir),uid));
+}
+
 function session(s: Store, thread: string, remote: string) {
   const role=s.requireActor();
   assertOrdinaryLaunchAllowed(s,role);
@@ -35,10 +43,9 @@ function session(s: Store, thread: string, remote: string) {
   // Codex 0.167 links the given path to its real socket. Follow the user's own link only through folders no one
   // else can change, bind the identity to the socket itself, and send the queue calls to that resolved path.
   const given=remote.slice(7),uid=process.getuid?.(),link=lstatSync(given,{bigint:true});
-  const target=link.isSymbolicLink()?realpathSync(given):given,endpoint=statSync(target,{bigint:true});
-  const owned=(st:{uid:bigint,mode:bigint})=>Number(st.uid)===uid && (st.mode & 0o022n)===0n;
+  const target=realpathSync(given),endpoint=statSync(target,{bigint:true});
   check(Number(link.uid)===uid && endpoint.isSocket() && Number(endpoint.uid)===uid &&
-    owned(statSync(dirname(given),{bigint:true})) && owned(statSync(dirname(target),{bigint:true})),
+    guarded(realpathSync(dirname(given)),uid) && guarded(dirname(target),uid),
     'Expected a local Unix socket owned by the current user, in a folder only that user can change',4);
   return {session:row.id as number,thread,pid:row.pid,start:row.process_start,
     socket:`${endpoint.dev}:${endpoint.ino}:${endpoint.ctimeNs}`,endpoint:`unix://${target}`,cwd:realpathSync(config.working_dir),

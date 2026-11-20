@@ -727,7 +727,8 @@ invocation is `codex --remote unix:///absolute/socket resume UUID` (or the
 same remote option after the UUID). The registry must name that live TUI PID
 and its UUID, the socket must belong to the current OS user (a path that is a
 symlink to it, as Codex 0.167 makes, is followed when the link is the user’s too;
-both folders must be the user’s and not writable by others; the identity and
+every folder up to the root must be the user’s or root’s and not writable by others
+unless sticky; the identity and
 the queue calls use the socket’s resolved path), and the worker
 must already have reconciled and saved notification progress.
 
