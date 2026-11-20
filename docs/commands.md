@@ -233,6 +233,7 @@ not to a Git commit: `done --ref` is recorded evidence, not verified artifact id
 sas after T2 T1                       # T2 waits until T1 is done; cycles refused
 sas unafter T2 T1
 sas block T1 'Need callback endpoint' --kind agent --waits-on b
+sas block T3 'Parked until the hardening pass' --kind other --waits-on fable  # parking: wakes nobody
 sas block T2 --on T1                  # same as after: e.g. T1 is the human-only task holding the decision
 sas blockers                         # explicit and derived open blockers
 sas blockers --task T1
@@ -245,6 +246,10 @@ sas answer H1 2 --as alice
 sas answer T1 'Free-text decision' --as alice
 sas withdraw H1 'Asked again as H2'   # the asker, the task's creator or a human
 ```
+
+A blocker of kind `agent` or `human` wakes the role it waits on (as a decision to make) when it is
+opened; `other` and `external` wake nobody. So a task parked for later is blocked with `--kind other`
+(`--waits-on` still names who sets it in the order); `agent` is for a question someone must answer now.
 
 `ask-human` sends the question and notification to the human selected with `--for`.
 Without `--for`, it uses the configured default human, the sole human, or the calling
