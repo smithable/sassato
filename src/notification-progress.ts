@@ -16,13 +16,27 @@ export interface IdleDelivery {
 }
 export interface ScoredDelivery { event_ids:number[]; through?:number; score:WakeScore; idle?:IdleDelivery }
 export interface NotificationProgressInput { cursor: number; expected_version: number; scored?:ScoredDelivery; idle?:IdleDelivery }
+export const IDLE_TASK_LIMIT=20;
 
 function validIdle(value: unknown): value is IdleDelivery {
   const i=value as IdleDelivery|undefined;
-  return !!i && (i.kind==='own-work'||i.kind==='open-work') && Array.isArray(i.tasks) && i.tasks.length>0 && i.tasks.length<=20 &&
+  return !!i && (i.kind==='own-work'||i.kind==='open-work') && Array.isArray(i.tasks) && i.tasks.length>0 && i.tasks.length<=IDLE_TASK_LIMIT &&
     i.tasks.every(task=>task && typeof task.id==='string' && /^T[1-9][0-9]*$/.test(task.id) && Number.isSafeInteger(task.version) && task.version>0) &&
     Number.isSafeInteger(i.observed) && i.observed>=0 && Number.isSafeInteger(i.repeats) && i.repeats>=0 &&
     Number.isSafeInteger(i.since) && i.since>=0 && Number.isSafeInteger(i.delivered) && i.delivered>=i.since && i.delivered<=8_640_000_000_000_000;
+}
+
+function validateIdle(value:unknown):IdleDelivery {
+  check(validIdle(value),'Invalid idle wake receipt');
+  const {kind,tasks,observed,since,delivered,repeats}=value;
+  return {kind,tasks:tasks.map(({id,version})=>({id,version})),observed,since,delivered,repeats};
+}
+
+export function parseIdleReceipt(json:string):IdleDelivery {
+  check(json.length<=8192,'--idle-receipt is too long');
+  let value:unknown;
+  try {value=JSON.parse(json);} catch {check(false,'--idle-receipt must be valid JSON');}
+  return validateIdle(value);
 }
 
 /** Accept the compact scored receipt from `wait --json`, without copying the digest into the audit. */
@@ -37,13 +51,11 @@ export function parseScoredReceipt(json:string):ScoredDelivery {
   const {trigger,immediate_cause,age_limit_seconds}=score;
   check(trigger===undefined||typeof trigger==='string'&&/^(?:[A-Z][0-9]+|[a-z][a-z0-9_-]{0,63})$/.test(trigger),'Invalid scored receipt trigger');
   check(immediate_cause===undefined||['supervisor-ping','answer','now'].includes(immediate_cause),'Invalid immediate wake reason');
-  const idle:unknown=value.idle;
-  check(idle===undefined||validIdle(idle),'Invalid idle wake receipt');
+  const idle=value.idle===undefined?undefined:validateIdle(value.idle);
   return {
     event_ids:value.event_ids.map((id:unknown)=>integer(id,'delivered event',1)),
     ...(value.through===undefined?{}:{through:integer(value.through,'scored batch boundary')}),
-    ...(idle===undefined?{}:{idle:{kind:idle.kind,tasks:idle.tasks.map(({id,version})=>({id,version})),observed:idle.observed,
-      since:idle.since,delivered:idle.delivered,repeats:idle.repeats}}),
+    ...(idle===undefined?{}:{idle}),
     score:{reason:score.reason,speed:score.speed,total:integer(score.total,'total'),threshold:integer(score.threshold,'threshold',1),
       ...(trigger===undefined?{}:{trigger}),...(immediate_cause===undefined?{}:{immediate_cause}),
       ...(age_limit_seconds===undefined?{}:{age_limit_seconds:integer(age_limit_seconds,'age limit',1)})},

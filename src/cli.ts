@@ -19,7 +19,7 @@ import { workspaceSettings, setWorkspaceSettings, setRoleAutocompact, roleAutoco
 import * as control from './control.js';
 import { stop } from './stop.js';
 import { getCheckpoint } from './checkpoints.js';
-import { getNotificationProgress, parseScoredReceipt, saveNotificationProgress } from './notification-progress.js';
+import { getNotificationProgress, parseIdleReceipt, parseScoredReceipt, saveNotificationProgress } from './notification-progress.js';
 import { saveCheckpoint } from './recovery-write.js';
 import * as jobs from './jobs.js';
 import * as supervisor from './supervisor-monitor.js';
@@ -70,7 +70,7 @@ WIP:        wip [show ROLE] | wip set --current TEXT --next TEXT --notes TEXT
             (updates require --expect VERSION)
 Recovery:   checkpoint show [ROLE]
             checkpoint save --current TEXT --next TEXT --notes TEXT [--expect WIP_VERSION] [--evidence FILE]
-            progress show [ROLE] | progress save --cursor N --expect VERSION [--scored-receipt JSON]
+            progress show [ROLE] | progress save --cursor N --expect VERSION [--scored-receipt JSON | --idle-receipt JSON]
 Checkouts:  checkout register --dir PATH | checkout list | checkout show ID
             checkout bind ID --dir PATH --task T1 --provider NAME --session-id ID [--mode coding|review]
             checkout resolve PATH [--task T1] | checkout release
@@ -107,7 +107,7 @@ select workspace when not explicit. Writes require --as; human actions require a
 Lists default to bounded results; --limit N. Context never consumes inbox receipts.
 Exit codes: 0 success/no matches; 1 storage/runtime; 2 input; 3 identity/access; 4 conflict; 5 mail-wait timeout.
 `;
-const strings = ['remote','epoch','role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes','digest-skip','ack','autocompact','wake-mode','speed','wake-roles','urgency','reason','scored-receipt'];
+const strings = ['remote','epoch','role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes','digest-skip','ack','autocompact','wake-mode','speed','wake-roles','urgency','reason','scored-receipt','idle-receipt'];
 const booleans = ['pending','unread','attended','now','json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','wait','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
 const globalFlags = ['db','workspace','as','json','help'];
 const allowed: Record<string,string[]> = {
@@ -122,7 +122,7 @@ const allowed: Record<string,string[]> = {
   context:['brief','since','limit','line-length'],status:['line-length'],'job run':['kind','wait','no-wait','job-version','load','mem'],'job list':[],'job stats':[],search:['type','owner','status','since','limit','phrase','prefix'],
   'supervise attended':['attended','role'],'supervise enroll':['role','file'],'supervise attach':['role'],'supervise assignment':[],'supervise reconcile':['session-id'],'supervise ready':['file','expect'],'supervise status':[],'supervise ping':[],'supervise ack':['generation'],
   'checkout register':['dir'],'checkout list':[],'checkout show':[],'checkout bind':['dir','task','provider','session-id','mode'],'checkout resolve':['task'],'checkout release':[],'brief save':['file','expect'],'brief show':[],
-  'checkpoint show':[], 'checkpoint save':['current','next','notes','expect','evidence'], 'progress show':[], 'progress save':['cursor','expect','scored-receipt','stop-file'],
+  'checkpoint show':[], 'checkpoint save':['current','next','notes','expect','evidence'], 'progress show':[], 'progress save':['cursor','expect','scored-receipt','idle-receipt','stop-file'],
   import:['backlog','wip','actions','sessions','dry-run','confirm','repair'],export:[],launch:['fresh','resume','dry-run','no-prompt','terminal','distro','window','stop-file','all','new-window'],'launch-watch':['remote','session-id'],'watch-status':[],'watch-close':['epoch'],'launch-unlock':[],migrate:[],doctor:[],backup:[],restore:[],machine:[]
 };
 function checkpointEvidence(path: string | undefined): unknown {
@@ -452,13 +452,16 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           const cursor=integer(need('cursor'),'cursor'),expected_version=integer(expectNum(),'expect');
           const receipt=str('scored-receipt');
           const scored=receipt===undefined?undefined:parseScoredReceipt(receipt);
-          if(scored){
+          const idleJson=str('idle-receipt');
+          check(receipt===undefined||idleJson===undefined,'Choose a scored or legacy idle receipt');
+          const idle=idleJson===undefined?undefined:parseIdleReceipt(idleJson);
+          if(scored||idle){
             result=s.tx(()=>{
-              check(!control.activeStop(s,[s.requireActor()],str('stop-file')),'STOP requested; scored receipt not saved',4);
-              return saveNotificationProgress(s,{cursor,expected_version,scored});
+              check(!control.activeStop(s,[s.requireActor()],str('stop-file')),'STOP requested; wake receipt not saved',4);
+              return saveNotificationProgress(s,{cursor,expected_version,scored,idle});
             });
           }else{
-            check(str('stop-file')===undefined,'--stop-file requires a scored receipt');
+            check(str('stop-file')===undefined,'--stop-file requires a wake receipt');
             result=saveNotificationProgress(s,{cursor,expected_version});
           }
           break;

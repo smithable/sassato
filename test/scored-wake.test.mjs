@@ -352,6 +352,22 @@ test('the idle interval doubles up to one day and launcher staging does not cons
   }
 });
 
+test('legacy scripts can commit a bounded idle receipt from a raw wait',async t=>{
+  const f=fixture(t);
+  for(let i=0;i<21;i++)addTask(f.a,{title:`Task ${i}`,forRole:'b'});
+  const before=saveNotificationProgress(f.b,{cursor:f.latest(),expected_version:1});
+  const result=await waitForWork(f.b,{idleMinutes:1,settle:0,clock:controlled(f.base,{jump:60_000})});
+  assert.equal(result.idle.tasks.length,20);
+  assert.deepEqual(getNotificationProgress(f.b),before);
+  const args=['bin/sassato.js','progress','save','--cursor',String(result.cursor),'--expect',String(before.version),
+    '--idle-receipt',JSON.stringify(result.idle),'--db',f.b.path,'--workspace','team','--as','b','--json'];
+  const output=spawnSync(process.execPath,args,{encoding:'utf8'});
+  assert.equal(output.status,0,output.stderr);
+  const repeat=await waitForWork(f.b,{idleMinutes:1,settle:0,clock:controlled(f.base+60_000,{jump:60_000})});
+  assert.equal(repeat.idle.repeats,1);
+  assert.equal(repeat.idle.since,result.idle.since);
+});
+
 test('real mail in a scored idle digest keeps the normal work instructions',async t=>{
   const f=fixture(t);f.opt();
   takeTask(f.b,addTask(f.b,{title:'Same task'}).id);

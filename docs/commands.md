@@ -801,15 +801,18 @@ Scripts using `wait --json` can handle the page and then call
 result's `cursor` as `N` and the compact JSON value of its `scored` field as
 `JSON`. Capture the progress version before waiting. The receipt preserves
 delivered events beyond the cursor and allows the next page to return immediately.
-If `wait` used `--stop-file`, pass the same path to `progress save`.
+For a legacy idle result, pass the top-level `idle` value as
+`--idle-receipt JSON` instead. If `wait` used `--stop-file`, pass the same
+path to `progress save` when saving either kind of receipt.
+
 In either mode, unchanged idle work repeats after the idle interval, then doubles
 the delay up to one day. Task changes and the role’s own work reset the delay.
 Checkpoint and WIP bookkeeping leave it intact. A wake with only unchanged idle
 work prints `nothing new: re-arm only`. Direct and launcher wakes save this state
 with the notification receipt. Scored launch and re-arm commands use the profile’s
-idle interval.
+idle interval. An explicit `--idle-minutes` applies to the current invocation.
 
-For scored JSON output use the exit status and `progress show` to verify the
+For a scored or idle JSON `wake`, use the exit status and `progress show` to verify the
 receipt. An omitted page remains available on re-arm. A delivered message
 stays in inbox until acknowledged. The progress audit records the wake
 reason, score and speed without copying message text.
