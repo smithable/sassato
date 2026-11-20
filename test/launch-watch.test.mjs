@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join,resolve } from 'node:path';
-import { mkdtempSync,readFileSync,rmSync,writeFileSync,existsSync,symlinkSync,realpathSync,chmodSync } from 'node:fs';
+import { mkdtempSync,readFileSync,rmSync,writeFileSync,existsSync,symlinkSync,realpathSync,chmodSync,lstatSync,statSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Store } from '../dist/storage.js';
 import { initWorkspace } from '../dist/admin.js';
@@ -185,6 +185,9 @@ test('a socket given by its symlink path (Codex 0.167) is watched',async t=>{
   assert.equal(f.calls()[0][f.calls()[0].indexOf('--remote')+1],'unix://'+realpathSync(join(f.dir,'server')));
   requestStop(f.operator,['b']);
   assert.equal((await run).reason,'stopped');
+  // The socket may be a shared Codex daemon's: ending the watch leaves the link, the socket and its folder alone.
+  assert.ok(lstatSync(join(f.dir,'server.sock')).isSymbolicLink());
+  assert.ok(statSync(join(f.dir,'server')).isSocket());
 });
 test('a symlink to something other than a socket is refused',async t=>{
   const f=await fixture(t,'success',true);
