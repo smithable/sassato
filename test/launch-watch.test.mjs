@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join,resolve } from 'node:path';
-import { mkdtempSync,readFileSync,rmSync,writeFileSync,existsSync,symlinkSync } from 'node:fs';
+import { mkdtempSync,readFileSync,rmSync,writeFileSync,existsSync,symlinkSync,realpathSync,chmodSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Store } from '../dist/storage.js';
 import { initWorkspace } from '../dist/admin.js';
@@ -182,7 +182,7 @@ test('a socket given by its symlink path (Codex 0.167) is watched',async t=>{
   const run=launchWatch(f.operator,'b',f.remote,thread);run.catch(()=>{});
   send(f.operator,['b'],'Linked',{now:true});
   await until(()=>f.calls().length===1);
-  assert.equal(f.calls()[0][f.calls()[0].indexOf('--remote')+1],f.remote);
+  assert.equal(f.calls()[0][f.calls()[0].indexOf('--remote')+1],'unix://'+realpathSync(join(f.dir,'server')));
   requestStop(f.operator,['b']);
   assert.equal((await run).reason,'stopped');
 });
@@ -190,4 +190,19 @@ test('a symlink to something other than a socket is refused',async t=>{
   const f=await fixture(t,'success',true);
   const sock=f.remote.slice(7);rmSync(sock);writeFileSync(join(f.dir,'plain'),'x');symlinkSync(join(f.dir,'plain'),sock);
   await assert.rejects(launchWatch(f.operator,'b',f.remote,thread),/Unix socket/);
+});
+test('a link retargeted to another socket after enrollment stops the watch before dispatch',async t=>{
+  const f=await fixture(t,'success',true);
+  const run=launchWatch(f.operator,'b',f.remote,thread);run.catch(()=>{});
+  await delay(300);
+  const other=join(f.dir,'other'),server=createServer();server.listen(other);await once(server,'listening');t.after(()=>server.close());
+  rmSync(f.remote.slice(7));symlinkSync(other,f.remote.slice(7));
+  send(f.operator,['b'],'After the swap',{now:true});
+  await assert.rejects(run);
+  assert.equal(f.calls().length,0);
+});
+test('a socket in a folder others can write is refused',async t=>{
+  const f=await fixture(t,'success',true);
+  chmodSync(f.dir,0o777);
+  await assert.rejects(launchWatch(f.operator,'b',f.remote,thread),/folder only that user/);
 });
