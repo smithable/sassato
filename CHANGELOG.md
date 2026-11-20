@@ -12,6 +12,10 @@
   highest priority and oldest first, so it takes one. A role with no open task is still not woken.
 - Unchanged idle work repeats with increasing delays in both wake modes. A wake with only those reminders
   re-arms without a checkpoint. Scored launch and re-arm commands inherit the workspace speed profile.
+- `launch-watch` accepts a `--remote` path that is the user’s own symlink to the user’s socket (Codex 0.167
+  creates one), when every folder up to the root is the user’s or root’s and not writable by others unless
+  sticky, and binds the watch and its
+  queue calls to the socket it points at.
 - If STOP arrives during `wake` output, the cursor save is refused in legacy mode as well as scored mode.
 - `job run --kind KIND -- COMMAND` (schema 8): a heavy job asks before it starts, waits
   while the machine has no room (memory first, then cores, in turn by role), runs, and

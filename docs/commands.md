@@ -725,8 +725,19 @@ is attached to the intended thread, the daemon is running, approvals are visible
 there, and the thread’s normal model and permissions apply. The supported TUI
 invocation is `codex --remote unix:///absolute/socket resume UUID` (or the
 same remote option after the UUID). The registry must name that live TUI PID
-and its UUID, the socket must belong to the current OS user, and the worker
+and its UUID, the socket must belong to the current OS user (a path that is a
+symlink to it, as Codex 0.167 makes, is followed when the link is the user’s too;
+every folder up to the root must be the user’s or root’s and not writable by others
+unless sticky; the identity and
+the queue calls use the socket’s resolved path), and the worker
 must already have reconciled and saved notification progress.
+
+Start the app server from a shell where `sas --version` works: the worker runs
+`sas wake --pending` in the server’s environment (a terminal opened before fnm or
+the PATH is set up cannot find it). Sassato never starts, stops or removes the
+server or its socket. Stopping a dedicated Codex 0.167 app server can remove
+Codex’s shared `/tmp/codex-daemon-UID` folder, where the managed daemon’s socket
+lives too; new Codex launches then fail until that daemon is restarted.
 
 In a separate terminal, run:
 

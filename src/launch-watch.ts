@@ -1,6 +1,7 @@
 // An explicit human enrollment of an already-attached Codex thread. No provider launch,
 // transcript access, approval forwarding or automatic re-enrollment.
 import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { setTimeout as delay } from 'node:timers/promises';
 import { check, name } from './errors.js';
@@ -17,6 +18,14 @@ import { workspaceSettings } from './workspace-settings.js';
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const deadlineMs=300_000;
 
+// Every folder from this one up to the root is the user's or root's, and only those can replace its entries:
+// not writable by group or others unless sticky (as /tmp is).
+function guarded(dir:string,uid:number|undefined):boolean {
+  const st=statSync(dir,{bigint:true});
+  const safe=(Number(st.uid)===uid || st.uid===0n) && ((st.mode & 0o022n)===0n || (st.mode & 0o1000n)!==0n);
+  return safe && (dir==='/' || guarded(dirname(dir),uid));
+}
+
 function session(s: Store, thread: string, remote: string) {
   const role=s.requireActor();
   assertOrdinaryLaunchAllowed(s,role);
@@ -31,10 +40,15 @@ function session(s: Store, thread: string, remote: string) {
   check(JSON.stringify(tail)===JSON.stringify(['--remote',remote,'resume',thread]) ||
     JSON.stringify(tail)===JSON.stringify(['resume',thread,'--remote',remote]),
     'Expected a Codex TUI attached with --remote ENDPOINT resume UUID',4);
-  const endpoint=lstatSync(remote.slice(7),{bigint:true});
-  check(endpoint.isSocket() && Number(endpoint.uid)===process.getuid?.(),'Expected a local Unix socket owned by the current user',4);
+  // Codex 0.167 links the given path to its real socket. Follow the user's own link only through folders no one
+  // else can change, bind the identity to the socket itself, and send the queue calls to that resolved path.
+  const given=remote.slice(7),uid=process.getuid?.(),link=lstatSync(given,{bigint:true});
+  const target=realpathSync(given),endpoint=statSync(target,{bigint:true});
+  check(Number(link.uid)===uid && endpoint.isSocket() && Number(endpoint.uid)===uid &&
+    guarded(realpathSync(dirname(given)),uid) && guarded(dirname(target),uid),
+    'Expected a local Unix socket owned by the current user, in a folder only that user can change',4);
   return {session:row.id as number,thread,pid:row.pid,start:row.process_start,
-    socket:`${endpoint.dev}:${endpoint.ino}:${endpoint.ctimeNs}`,cwd:realpathSync(config.working_dir),
+    socket:`${endpoint.dev}:${endpoint.ino}:${endpoint.ctimeNs}`,endpoint:`unix://${target}`,cwd:realpathSync(config.working_dir),
     policy:JSON.stringify([config.model,config.reasoning_effort,config.sandbox_mode,config.approval_policy,config.permission_mode,workspaceSettings(s).stop_file])};
 }
 
@@ -112,7 +126,7 @@ async function observe(s:Store,human:string,remote:string,thread:string,clock:()
     if(!stopping)enrollment(s,epoch);
     const message=stopping?`Check Sassato STOP for ${role}. Run sas context --as ${role} --workspace ${s.workspace}; follow the stop instructions and do not re-arm.`:
       `Run sas wake --pending --as ${role} --workspace ${s.workspace}.`;
-    const args=['queue','--thread',thread,'--remote',remote,'--message',message,'--resume'];
+    const args=['queue','--thread',thread,'--remote',bound.endpoint,'--message',message,'--resume'];
     // Staging is the durable intent for work. Record STOP intent too, before crossing processes.
     if(stopping)s.event('watch-dispatch',role,'stop-intent',{epoch});
     const result=await queueClient(client,args,{...options,signal:controller.signal});
