@@ -5,7 +5,7 @@ import { performance } from 'node:perf_hooks';
 import { Store, type Row, type Param } from './storage.js';
 import { AppError, check, integer } from './errors.js';
 import { roleWakePolicy, workspaceSettings, type WorkspaceSettings } from './workspace-settings.js';
-import { getNotificationProgress, scoredDeliveryState, type ScoredDelivery } from './notification-progress.js';
+import { getNotificationProgress, lastIdleDelivery, scoredDeliveryState, type IdleDelivery, type ScoredDelivery } from './notification-progress.js';
 import { effectiveWakePolicy, scoredWake, WORKFLOW_WAKE_POINTS, type ScoredItem, type WakeScore } from './wake-policy.js';
 
 export interface WaitResult {
@@ -19,6 +19,7 @@ export interface WaitResult {
   digest?:WaitDigest;
   mode?:'scored';
   scored?:ScoredDelivery;
+  idle?:IdleDelivery;
 }
 export interface WaitClock { now():number; monotonic():number; sleep(ms:number):Promise<void> }
 const systemClock:WaitClock={now:Date.now,monotonic:()=>performance.now(),sleep:ms=>new Promise(resolve=>setTimeout(resolve,ms))};
@@ -202,7 +203,8 @@ function entryFor(s:Store,wake:WaitResult,event?:Row):DigestEntry {
   if(!summary&&wake.question) {const row=s.get('SELECT question,answer,task_id FROM questions WHERE workspace_id=? AND id=?',s.ws,Number(wake.question.slice(1)));summary=row?`${row.question}: ${row.answer??''}`:wake.question;task??=row?`T${row.task_id}`:undefined;}
   if(!summary&&wake.task)summary=s.get('SELECT title FROM tasks WHERE workspace_id=? AND id=?',s.ws,Number(wake.task.slice(1)))?.title;
   if(!summary)summary=(wake.tasks??[]).join(', ')||wake.reason;
-  return {id,...(source?{event_id:`E${source.id}`}:{}) ,from:String(wake.message?.sender??source?.actor??wake.role),kind,...(task?{task}:{}),...(wake.tasks?{tasks:wake.tasks}:{}),summary:digestText(summary),group:digestGroup(kind)};
+  const unchanged=unchangedIdleText(wake.idle);
+  return {id,...(source?{event_id:`E${source.id}`}:{}) ,from:String(wake.message?.sender??source?.actor??wake.role),kind,...(task?{task}:{}),...(wake.tasks?{tasks:wake.tasks}:{}),summary:unchanged??digestText(summary),group:digestGroup(kind),...(unchanged?{unchanged:true}:{})};
 }
 /** Once a wake is collecting, include relevant ordinary mail and completed work too. */
 function extraDuringDigest(s:Store,actor:string,event:Row):DigestEntry|undefined {
@@ -224,6 +226,7 @@ export interface WaitObserver {
 }
 export async function waitForWork(s:Store, options:WaitOptions={}, observer?:WaitObserver):Promise<WaitResult> {
   const actor=s.requireActor(),timeout=integer(options.timeout??0,'timeout seconds',0,2_147_483);
+  const clock=options.clock??systemClock;
   const settle=integer(options.settle??(s.role(actor).kind==='human'?0:120),'settle seconds',0,3600),settleMax=integer(options.settleMax??600,'settle maximum seconds',1,3600);
   const window=new DigestWindow(settle,settleMax),entries=new Map<string,DigestEntry>();
   const configuredStopFile=options.stopFile??workspaceSettings(s).stop_file;
@@ -250,7 +253,7 @@ export async function waitForWork(s:Store, options:WaitOptions={}, observer?:Wai
     return {latest,cursor,stopped};
   });
   const latest=initial.latest;
-  let cursor=initial.cursor,omitted=false;let priority:WaitResult|undefined;
+  let cursor=initial.cursor,omitted=false;let priority:WaitResult|undefined,idleReceipt:IdleDelivery|undefined;
   const skip=new Set(workspaceSettings(s).digest_skip?.[actor]??[]);
   const add=(entry:DigestEntry):boolean=>{
     if(observer?.deliveredMail.has(entry.id))return true;
@@ -259,20 +262,21 @@ export async function waitForWork(s:Store, options:WaitOptions={}, observer?:Wai
     const key=entry.id.startsWith('M')?entry.id:entry.event_id??`${entry.id}:${entry.kind}`;
     if(entries.has(key))return true;
     if(entries.size>=DIGEST_LIMIT){omitted=true;return false;}
-    entries.set(key,entry);window.add(performance.now());return true;
+    entries.set(key,entry);window.add(clock.monotonic());return true;
   };
   const digest=(flush:WaitDigest['flush'],immediate?:WaitResult):WaitResult=>({...(immediate??{reason:'digest' as const,role:actor}),cursor,
+    ...(idleReceipt&&immediate?.reason!=='stop'?{idle:idleReceipt}:{}),
     ...(entries.size?{digest:{entries:[...entries.values()],total:entries.size,flush,settle,settle_max:settleMax,has_more:omitted||Boolean(priority&&priority.cursor>cursor)}}:{})});
   check(cursor<=latest,`Event cursor ${cursor} is ahead of this workspace's latest event ${latest}; use a cursor from this workspace`,4);
   if(initial.stopped)return {reason:'stop',role:actor,cursor,stop:initial.stopped};
   if(options.settle===undefined&&options.settleMax===undefined&&workspaceSettings(s).wake_mode==='scored')
     return waitForScoredWork(s,actor,cursor,latest,timeout,options,observer);
-  const deadline=timeout?performance.now()+timeout*1000:Infinity;
+  const deadline=timeout?clock.monotonic()+timeout*1000:Infinity;
   // --idle-minutes: a role that holds doing tasks and has written nothing for that long is woken
   // with its own work (T660); one with none doing but open tasks of its own (its owner's or for it)
   // that it can take now is woken with those, to take one (T763). Any write of its own starts the period again.
   const idle=integer(options.idleMinutes??options.defaultIdleMinutes??0,'idle minutes',0,10_080)*60_000;
-  let idleSince=performance.now(),idleFrom=latest;
+  const idleState={next:clock.monotonic()+idle,from:latest};
   for(;;) {
     priority=undefined;
     if(stopFile&&existsSync(stopFile))return digest('immediate',{reason:'stop',role:actor,cursor,stop:{file:stopFile}});
@@ -295,7 +299,7 @@ export async function waitForWork(s:Store, options:WaitOptions={}, observer?:Wai
         if(message.wake_now)return digest('immediate',wake);
         if(!included)return priority?digest('immediate',priority):digest('capacity');
       }
-      if(entries.size&&window.reason(performance.now())==='max')return priority?digest('immediate',priority):digest('max');
+      if(entries.size&&window.reason(clock.monotonic())==='max')return priority?digest('immediate',priority):digest('max');
       const events=s.all('SELECT id,entity,entity_id,actor,action,detail FROM events WHERE workspace_id=? AND id>? ORDER BY id LIMIT 200',s.ws,cursor);
       more=events.length===200;
       for(const event of events) {
@@ -312,25 +316,22 @@ export async function waitForWork(s:Store, options:WaitOptions={}, observer?:Wai
       return priority?digest('immediate',priority):undefined;
     });
     if(result)return result;
-    if(idle&&performance.now()-idleSince>=idle) {
-      const own=s.snapshot(()=>{
-        const wrote=s.get("SELECT max(id) AS id FROM events WHERE workspace_id=? AND id>? AND actor=? AND entity NOT IN ('session','notification-progress','wake-enrollment','wake-delivery','watch-dispatch')",s.ws,idleFrom,actor)?.id;
-        if(wrote){idleFrom=wrote;return undefined;}
-        return idleWork(s,actor);
-      });
-      if(own) {
-        const wake:WaitResult={reason:own.reason,role:actor,cursor,task:own.tasks[0],tasks:own.tasks};
-        if(!settle&&!skip.has(own.reason))return wake;
+    if(idle&&!idleReceipt&&clock.monotonic()>=idleState.next) {
+      const receipt=s.snapshot(()=>scanIdle(s,actor,clock,idle,idleState,skip));
+      if(receipt) {
+        const wake=idleResult(actor,cursor,receipt);
+        if(!settle)return wake;
         if(!add(entryFor(s,wake)))return digest('capacity');
+        idleReceipt=receipt;
       }
-      idleSince=performance.now();
     }
-    const at=performance.now(),flush=window.reason(at);
+    const at=clock.monotonic(),flush=window.reason(at);
     if(entries.size&&flush)return digest(flush);
     const remaining=deadline-at;
     if(remaining<=0)return entries.size?digest('deadline'):{reason:'timeout',role:actor,cursor};
     // A bounded snapshot permits writers and checkpoints between batches and sleeps.
-    await new Promise(resolve=>setTimeout(resolve,nextPause(more,remaining,window.deadline()-performance.now())));
+    const idleDelay=idle&&!idleReceipt?idleState.next-at:Infinity;
+    await clock.sleep(nextPause(more,remaining,Math.min(window.deadline()-at,idleDelay)));
   }
 }
 function idleWork(s:Store,actor:string) {
@@ -338,6 +339,52 @@ function idleWork(s:Store,actor:string) {
   if(doing.length)return {reason:'own-work' as const,tasks:doing};
   const open=idleOpenWork(s,actor);
   return open.length?{reason:'open-work' as const,tasks:open}:undefined;
+}
+
+const DAY=24*60*60_000;
+const idleActivity=(s:Store,actor:string,since:number)=>s.get(`SELECT id,created_at FROM events WHERE workspace_id=? AND id>? AND actor=?
+  AND entity NOT IN ('wip','checkpoint','session','notification-progress','wake-enrollment','wake-delivery','watch-dispatch','supervisor-ping')
+  ORDER BY id DESC LIMIT 1`,s.ws,since,actor);
+
+function scanIdle(s:Store,actor:string,clock:WaitClock,interval:number,state:{next:number;from:number},skip:Set<string>):IdleDelivery|undefined {
+  const now=clock.monotonic(), wall=Math.floor(clock.now());
+  const activity=idleActivity(s,actor,state.from);
+  if(activity) {
+    state.from=activity.id;
+    const age=Math.max(0,wall-Date.parse(activity.created_at))||0;
+    state.next=now+Math.max(0,interval-age);
+    if(state.next>now)return undefined;
+  }
+  state.next=now+interval;
+  const work=idleWork(s,actor);
+  if(!work||skip.has(work.reason))return undefined;
+  const tasks=work.tasks.map(id=>({id,version:Number(s.get('SELECT version FROM tasks WHERE workspace_id=? AND id=?',s.ws,Number(id.slice(1)))!.version)}));
+  let previous:IdleDelivery|undefined;
+  try {previous=lastIdleDelivery(s,getNotificationProgress(s,actor));}
+  catch(error) {
+    // An explicit preview can replay even when its stored progress cannot be read.
+    if(!(error instanceof AppError)||error.code!==4)throw error;
+  }
+  if(previous?.kind===work.reason && previous.delivered<=wall && tasks.length===previous.tasks.length &&
+    tasks.every(task=>previous.tasks.some(old=>old.id===task.id&&old.version===task.version)) && !idleActivity(s,actor,previous.observed)) {
+    const delay=Math.min(DAY,interval*2**Math.min(previous.repeats,16));
+    if(wall<previous.delivered+delay) {
+      state.next=Math.min(state.next,now+previous.delivered+delay-wall);
+      return undefined;
+    }
+    return {kind:work.reason,tasks,observed:maximum(s),since:previous.since,delivered:wall,repeats:Math.min(previous.repeats+1,16)};
+  }
+  return {kind:work.reason,tasks,observed:maximum(s),since:wall,delivered:wall,repeats:0};
+}
+
+export function unchangedIdleText(idle:IdleDelivery|undefined):string|undefined {
+  if(!idle?.repeats)return undefined;
+  return `unchanged since ${new Date(idle.since).toISOString()} · ${idle.tasks.map(task=>`${task.id} version ${task.version}`).join(', ')}`;
+}
+
+function idleResult(role:string,cursor:number,idle:IdleDelivery):WaitResult {
+  const tasks=idle.tasks.map(task=>task.id);
+  return {role,cursor,reason:idle.kind,task:tasks[0],tasks,idle};
 }
 
 interface ScoredEntry extends ScoredItem {
@@ -419,7 +466,8 @@ async function waitForScoredWork(s:Store,actor:string,cursor:number,initialLates
   const clock=options.clock??systemClock;
   const deadline=timeout?clock.monotonic()+timeout*1000:Infinity;
   const idleOverride=options.idleMinutes===undefined?undefined:integer(options.idleMinutes,'idle minutes',0,10_080);
-  let idleSince=clock.monotonic(),idleFrom=initialLatest;
+  const idleState={next:clock.monotonic(),from:initialLatest};
+  let previousInterval=0;
   const stopResult=(settings:WorkspaceSettings):WaitResult|undefined=>{
     const file=options.stopFile??settings.stop_file;
     if(file&&existsSync(resolve(file)))return {reason:'stop',role:actor,cursor,stop:{file:resolve(file)}};
@@ -441,29 +489,22 @@ async function waitForScoredWork(s:Store,actor:string,cursor:number,initialLates
       const policy=effectiveWakePolicy(settings.speed,roleWakePolicy(settings,actor));
       const scored=scoredWake(pending,policy,clock.now());
       const idle=(idleOverride??(s.role(actor).kind==='agent'?policy.idle_minutes:0))*60_000;
-      const write=idle?s.get(`SELECT id,created_at FROM events WHERE workspace_id=? AND id>? AND actor=?
-        AND entity NOT IN ('session','notification-progress','wake-enrollment','wake-delivery','watch-dispatch','supervisor-ping')
-        ORDER BY id DESC LIMIT 1`,s.ws,idleFrom,actor):undefined;
-      if(write) {
-        idleFrom=write.id;
-        idleSince=Math.max(idleSince,clock.monotonic()-Math.max(0,clock.now()-Date.parse(write.created_at)));
+      if(idle!==previousInterval) {
+        idleState.next=previousInterval?idleState.next+idle-previousInterval:clock.monotonic()+idle;
+        previousInterval=idle;
       }
-      let work:ReturnType<typeof idleWork>;
-      if(idle&&clock.monotonic()-idleSince>=idle) {
-        work=idleWork(s,actor);
-        if(work&&settings.digest_skip?.[actor]?.includes(work.reason))work=undefined;
-        if(!work)idleSince=clock.monotonic();
-      }
+      const receipt=idle&&clock.monotonic()>=idleState.next?scanIdle(s,actor,clock,idle,idleState,new Set(settings.digest_skip?.[actor])):undefined;
+      const work=receipt?idleResult(actor,cursor,receipt):undefined;
       const cause=scored.reason??(through!==undefined&&pending.some(item=>item.event<=through)?'continuation':work?'idle':undefined);
-      if(!cause)return {sleep:Math.min(scored.due-clock.now(),idle?idleSince+idle-clock.monotonic():Infinity)};
+      if(!cause)return {sleep:Math.min(scored.due-clock.now(),idle?idleState.next-clock.monotonic():Infinity)};
       const order=(item:ScoredEntry)=>item.immediate==='supervisor-ping'?0:item.immediate?1:item===scored.trigger?2:3;
       pending.sort((a,b)=>order(a)-order(b)||b.weight-a.weight||a.at-b.at||a.event-b.event);
       const room=work?DIGEST_LIMIT-1:DIGEST_LIMIT;
       const page=pending.slice(0,room),omitted=pending.slice(room);
       const boundary=omitted.reduce((first,item)=>Math.min(first,item.event-1),latest);
-      const signal=scored.trigger?.signal??(work?{...work,role:actor,cursor,task:work.tasks[0]}:undefined);
+      const signal=scored.trigger?.signal??(work?{reason:work.reason,role:actor,cursor,task:work.task,tasks:work.tasks}:undefined);
       const entries:DigestEntry[]=page.map(item=>({...item.entry,weight:item.weight}));
-      if(work)entries.push(entryFor(s,{...work,role:actor,cursor,task:work.tasks[0]}));
+      if(work)entries.push(entryFor(s,work));
       const score:WakeScore={
         reason:cause,total:scored.total,threshold:scored.threshold,speed:settings.speed,
         ...(scored.trigger?{trigger:scored.trigger.entry.id}:{}),
@@ -471,7 +512,7 @@ async function waitForScoredWork(s:Store,actor:string,cursor:number,initialLates
         ...(cause==='age'&&scored.trigger?{age_limit_seconds:scored.trigger.weight>=5?policy.urgent_seconds:policy.reply_seconds}:{}),
       };
       const result:WaitResult={...(signal??{reason:'digest',role:actor}),mode:'scored',cursor:boundary,
-        scored:{score,event_ids:page.filter(item=>item.event>boundary).map(item=>item.event),...(omitted.length?{through:latest}:{})},
+        scored:{score,event_ids:page.filter(item=>item.event>boundary).map(item=>item.event),...(omitted.length?{through:latest}:{}),...(receipt?{idle:receipt}:{})},
         digest:{
           entries,total:entries.length,flush:cause==='immediate'?'immediate':'scored',settle:0,settle_max:0,has_more:!!omitted.length,
           score,

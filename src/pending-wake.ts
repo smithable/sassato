@@ -118,7 +118,7 @@ export function readPendingWake(s: Store, thread: string | undefined) {
       check(latest(s,'wake-delivery')?.id===row.id,'Pending wake already consumed or replaced',4);
       originalProgress(s,pending.progress);
       if (workerStop(s,thread)) return {saved:false,line:'STOP requested during delivery; checkpoint and do not start work.'};
-      saveNotificationProgress(s,{cursor:pending.result.cursor,expected_version:pending.progress.version,scored:pending.result.scored});
+      saveNotificationProgress(s,{cursor:pending.result.cursor,expected_version:pending.progress.version,scored:pending.result.scored,idle:pending.result.idle});
       s.event('wake-delivery',s.requireActor(),'consumed',{epoch:pending.epoch,pending:row.id});
       return {saved:true,line:`Cursor ${pending.result.cursor} saved. Pending wake consumed.`};
     });

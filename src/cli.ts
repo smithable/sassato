@@ -3,7 +3,7 @@ import { wake as wakeCommand } from './wake.js';
 import { formatDigest } from './wait-digest.js';
 import { parseArgs } from 'node:util';
 import { readFileSync, openSync, fstatSync, readSync, closeSync, constants } from 'node:fs';
-import { waitForWork, type WaitResult } from './mail-wait.js';
+import { unchangedIdleText, waitForWork, type WaitResult } from './mail-wait.js';
 import { Store, databasePath, SCHEMA_VERSION, type Row } from './storage.js';
 import { AppError, check, integer } from './errors.js';
 import * as a from './admin.js';
@@ -173,7 +173,9 @@ function humanOutput(value: unknown, command?: string): string {
     const event=value as WaitResult;
     let summary:string;
     if(event.reason==='digest')return formatDigest(event.digest!,event.cursor);
-    if(event.reason==='supervisor-ping') summary=`PING generation ${event.generation}, nonce ${event.nonce}: acknowledge through sassato supervise ack NONCE --generation GENERATION after reconciling current state`;
+    const unchanged=unchangedIdleText(event.idle??event.scored?.idle);
+    if(unchanged&&(event.reason==='own-work'||event.reason==='open-work'))summary=unchanged;
+    else if(event.reason==='supervisor-ping') summary=`PING generation ${event.generation}, nonce ${event.nonce}: acknowledge through sassato supervise ack NONCE --generation GENERATION after reconciling current state`;
     else if(event.reason==='urgent') summary=`URGENT ${event.message!.id} from ${event.message!.sender}: ${event.message!.summary}`;
     else if(event.reason==='reply-needed') summary=`REPLY ${event.message!.id} from ${event.message!.sender} asks for your reply: ${event.message!.summary}`;
     else if(event.reason==='open-work') summary=`OPEN WORK ${(event.tasks??[]).slice(0,8).join(', ')} for ${event.role}, none taken, with nothing written for a while: take one (sassato take ${(event.tasks??[])[0]}), or say why not.`;
@@ -374,7 +376,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
             if(receipt && !bool('json'))console.log(receipt.line);
             return;
           }
-          if(out.result.scored){
+          if(out.result.scored||out.result.idle){
             const payload=bool('json')?JSON.stringify({...out.result,acknowledged:out.acknowledged,text:out.text}):out.text;
             await new Promise<void>((resolve,reject)=>process.stdout.write(payload+'\n',error=>error?reject(error):resolve()));
             const receipt=out.commit?.();

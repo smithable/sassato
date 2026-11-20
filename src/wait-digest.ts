@@ -4,7 +4,7 @@ import type { Row, Store } from './storage.js';
 export const DIGEST_LIMIT=100;
 export const DIGEST_GROUPS=['needs-a-decision','review-requested','finished','other'] as const;
 export type DigestGroup=typeof DIGEST_GROUPS[number];
-export interface DigestEntry {id:string;event_id?:string;from:string;kind:string;task?:string;tasks?:string[];summary:string;group:DigestGroup;weight?:number;}
+export interface DigestEntry {id:string;event_id?:string;from:string;kind:string;task?:string;tasks?:string[];summary:string;group:DigestGroup;weight?:number;unchanged?:boolean;}
 export interface WaitDigest {entries:DigestEntry[];total:number;flush:'quiet'|'max'|'deadline'|'capacity'|'immediate'|'scored';settle:number;settle_max:number;has_more:boolean;score?:WakeScore;}
 export const digestText=(value:unknown):string=>Array.from(String(value??'').replace(/[\x00-\x1f\x7f]/g,' ').replace(/\s+/g,' ').trim()).slice(0,160).join('');
 /** Monotonic quiet/max policy shared by the runtime and timestamp replay. */
