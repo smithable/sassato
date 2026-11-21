@@ -391,7 +391,12 @@ sha256sum "$PROBE_REPO/attended-sentinel.txt" > "$TRIAL_EVIDENCE/sentinel.sha256
 
 Keep the `.sat-<controller-id-prefix>-<generation>` runtime directories beside the
 database; they hold terminal sockets/logs and are named in transition payloads.
-They are not automatically deleted. Preserve evidence until reviewed. Pass requires
+The terminal files are not automatically deleted.
+Each `terminal.log` keeps the first 8 MiB of provider output. After that, the holder
+continues to drain and relay output, and reattach still replays the latest 64 KiB.
+Input from an attached client waits when the holder's 64 KiB queue is full, so
+a provider that pauses reading cannot block the holder from draining its output.
+Preserve terminal files until reviewed. Pass requires
 two task commits from distinct conversations/generations, one launch per generation,
 correct two-line file, unchanged dirty bytes, saved-cursor mail replay, two positive
 exit records and final reservation release. For STOP/crash trials also retain zero

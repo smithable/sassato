@@ -17,6 +17,10 @@ import tty
 from pathlib import Path
 
 
+INPUT_LIMIT = 65536
+TERMINAL_LOG_LIMIT = 8 * 1024 * 1024
+
+
 def holder():
     directory, node, bootstrap = sys.argv[2:]
     path = str(Path(directory) / "terminal.sock")
@@ -40,17 +44,34 @@ def holder():
         os.environ["SASSATO_ATTENDED_HOLDER_PID"] = str(os.getppid())
         os.execve(node, [node, bootstrap], dict(os.environ))
     os.close(slave)
+    os.set_blocking(master, False)
     for key in ("SASSATO_WORKER_TOKEN", "SASSATO_ATTENDED_LAUNCH_TOKEN"):
         os.environ.pop(key, None)
     client = None
     tail = bytearray()
+    pending = bytearray()
     with open(Path(directory) / "terminal.log", "ab", buffering=0) as log:
+        log_left = max(0, TERMINAL_LOG_LIMIT - log.tell())
         while True:
             reaped, status = os.waitpid(child, os.WNOHANG)
             if reaped:
                 (Path(directory) / "holder-result.json").write_text(json.dumps({"child": child, "wait_status": status, "reaped": True}))
                 break
-            readable, _, _ = select.select([master, listener] + ([client] if client else []), [], [], 0.2)
+            readers = [master, listener]
+            # Leave excess input in the socket so a pasted burst backs up at the sender.
+            if client and len(pending) < INPUT_LIMIT:
+                readers.append(client)
+            readable, writable, _ = select.select(readers, [master] if pending else [], [], 0.2)
+            if master in writable:
+                try:
+                    sent = os.write(master, pending)
+                    del pending[:sent]
+                except BlockingIOError:
+                    pass
+                except OSError as error:
+                    if error.errno == errno.EIO:
+                        break
+                    raise
             if listener in readable:
                 connection, _ = listener.accept()
                 if client:
@@ -66,13 +87,16 @@ def holder():
             if master in readable:
                 try:
                     data = os.read(master, 65536)
+                except BlockingIOError:
+                    continue
                 except OSError as error:
                     if error.errno == errno.EIO:
                         break
                     raise
                 if not data:
                     break
-                log.write(data)
+                if log_left:
+                    log_left -= log.write(data[:log_left])
                 tail.extend(data)
                 if len(tail) > 65536:
                     del tail[:-65536]
@@ -84,9 +108,9 @@ def holder():
                         client = None
             if client and client in readable:
                 try:
-                    data = client.recv(65536)
+                    data = client.recv(INPUT_LIMIT - len(pending))
                     if data:
-                        os.write(master, data)
+                        pending.extend(data)
                     else:
                         client.close()
                         client = None
