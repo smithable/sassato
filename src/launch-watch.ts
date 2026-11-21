@@ -102,7 +102,7 @@ export async function launchWatch(operator:Store,role:string,remote:string,threa
   // Every refused start past this point is recorded and mailed (T663).
   const refused=(error:unknown)=>{
     const reason=reasonOf(error);
-    operator.event('watch-dispatch',role,'refused',{reason});
+    record(operator,role,'refused',{reason});
     warnHuman(operator,human,`The Codex waiter for ${role} did not start: ${reason}.`);
     return error;
   };
@@ -124,6 +124,11 @@ export async function launchWatch(operator:Store,role:string,remote:string,threa
 
 // One urgent mail to the workspace's default human (else the human who started the watch): fixed text, the role
 // and the reason only, so a watcher that stops is seen by someone and not only in a terminal tab (T663).
+/** A watcher event on a failure path: a failed write (a busy database) must not replace the failure or stop the mail. */
+function record(s:Store,role:string,action:string,detail:Record<string,unknown>) {
+  try {s.event('watch-dispatch',role,action,detail);}
+  catch(error) {console.error(`Could not record the watcher's ${action}: ${error instanceof Error?error.message:error}`);}
+}
 function warnHuman(s:Store,human:string,text:string) {
   try {send(s,[workspaceSettings(s).default_human??human],text,{urgent:true});}
   catch(error) {console.error(`Could not send the urgent mail: ${error instanceof Error?error.message:error}`);}
@@ -157,7 +162,7 @@ async function observe(s:Store,human:string,remote:string,thread:string,clock:()
   const alert=(message:string)=>send(s,[human],`Waiter for ${role}, enrollment E${epoch}: ${message}`);
   const exited=(error:unknown)=>{
     const reason=reasonOf(error);
-    s.event('watch-dispatch',role,'exited',{epoch,reason});
+    record(s,role,'exited',{epoch,reason});
     warnHuman(s,human,`The Codex waiter for ${role} stopped: ${reason}. Nothing wakes ${role} until it is started again; sassato watch-status ${role} shows enrollment E${epoch}.`);
   };
   const inspect=()=>{

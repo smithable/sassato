@@ -285,3 +285,12 @@ test('a queue call that times out is tried once more after a pause (T663)',async
   assert.equal((await run).reason,'stopped');
   assert.equal(f.worker.get("SELECT count(*) n FROM messages WHERE urgent=1 AND body LIKE 'The Codex waiter%'").n,0);
 });
+
+test('status says an enrolled watcher whose launcher left no word is not running (T663)',async t=>{
+  const f=await fixture(t);
+  f.operator.event('wake-enrollment','b','opened',{});
+  const watcher=status(f.worker).watcher;
+  assert.equal(watcher.state,'enrolled');
+  assert.equal(watcher.launcher_running,false);
+  assert.match(renderStatus(status(f.worker)),/watcher enrolled E\d+, launcher not running/);
+});

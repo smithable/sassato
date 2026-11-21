@@ -8,6 +8,7 @@ import { dirname, resolve } from 'node:path';
 import { cpus, freemem, loadavg, totalmem, uptime } from 'node:os';
 import { Store, databasePath, SCHEMA_VERSION, type Row, type Param } from './storage.js';
 import { WATCH_REASONS } from './launch-watch.js';
+import { pendingLauncher } from './control.js';
 import { AppError, check, id, integer, name, now, safe, text } from './errors.js';
 import { normalizeOption, ROLE_OPTION_KEYS, validateRoleOptions } from './role-options.js';
 import { loadConfig, workingDirectory } from './config.js';
@@ -89,7 +90,9 @@ export function status(s: Store): Row {
       const reason=String(JSON.parse(row.detail).reason??'');
       return WATCH_REASONS.has(reason)?reason:'see the launcher terminal';
     };
-    const watcher=openEpoch!==null?{state:ended?ended.action:'enrolled',epoch:`E${openEpoch}`,...(ended?{reason:reasonIn(ended)}:{}),...(refusedStart?{start_refused:reasonIn(refusedStart)}:{})}
+    // Events alone cannot see a launcher that ended without writing one (a reboot, kill -9); its launch lock can.
+    const gone=openEpoch!==null&&!ended&&!pendingLauncher(s,actor);
+    const watcher=openEpoch!==null?{state:ended?ended.action:'enrolled',epoch:`E${openEpoch}`,...(gone?{launcher_running:false}:{}),...(ended?{reason:reasonIn(ended)}:{}),...(refusedStart?{start_refused:reasonIn(refusedStart)}:{})}
       :refusedStart?{state:'refused',reason:reasonIn(refusedStart)}:null;
     const replies=s.all("SELECT m.id,m.sender,substr(m.body,1,200) AS text FROM messages m JOIN receipts r ON r.workspace_id=m.workspace_id AND r.message_id=m.id WHERE m.workspace_id=? AND r.recipient=? AND r.state!='done' AND m.reply=1 ORDER BY m.id LIMIT 7",s.ws,actor);
     return {...totals,role:actor,own_tasks:own.slice(0,6).map(row=>({...row,id:`T${row.id}`,title:contextLine(row.title)})),waiting_on_role:waiting.slice(0,6).map(row=>({...row,id:`B${row.id}`,task_id:`T${row.task_id}`})),replies:replies.slice(0,6).map(row=>({...row,id:`M${row.id}`})),more:{tasks:own.length>6,waits:waiting.length>6,replies:replies.length>6},notification_progress:progress?{cursor:progress.cursor,version:progress.version,state:progress.state??'saved'}:{state:'absent'},waiter:{registered:Boolean(waiter),armed:Boolean(worker&&waiter&&identity&&waiter.generation===worker.generation&&identity===waiter.process_start)},...(watcher?{watcher}:{})};
@@ -98,7 +101,7 @@ export function status(s: Store): Row {
 export function renderStatus(data:Row,lineLength=200):string {
   integer(lineLength,'line length',80,500);
   if(!data.role)return JSON.stringify(data,null,2);
-  const lines=[`${data.workspace} / ${data.role} · cursor ${data.notification_progress.cursor??data.notification_progress.state} · latest ${data.cursor} · waiter ${data.waiter.armed?'armed':data.waiter.registered?'stale/unconfirmed':'unregistered'}${data.watcher?` · watcher ${data.watcher.state}${data.watcher.epoch?` ${data.watcher.epoch}`:''}${data.watcher.reason?` (${data.watcher.reason})`:''}${data.watcher.start_refused?`, a restart refused (${data.watcher.start_refused})`:''}`:''}`];
+  const lines=[`${data.workspace} / ${data.role} · cursor ${data.notification_progress.cursor??data.notification_progress.state} · latest ${data.cursor} · waiter ${data.waiter.armed?'armed':data.waiter.registered?'stale/unconfirmed':'unregistered'}${data.watcher?` · watcher ${data.watcher.state}${data.watcher.epoch?` ${data.watcher.epoch}`:''}${data.watcher.launcher_running===false?', launcher not running':''}${data.watcher.reason?` (${data.watcher.reason})`:''}${data.watcher.start_refused?`, a restart refused (${data.watcher.start_refused})`:''}`:''}`];
   for(const stop of data.stop_requests.filter((row:Row)=>row.role===data.role))lines.push(`STOP ${stop.id}: finish safely and checkpoint; inspect sas stop-status.`);
   for(const row of data.own_tasks)lines.push(`${row.id} ${row.status} · ${row.title}`);
   if(!data.own_tasks.length)lines.push('No own active tasks.');

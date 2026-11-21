@@ -858,10 +858,12 @@ A suspended watcher, and any start refused once the role name is valid (the
 launch lock included), also sends one urgent mail to the workspace's default
 human, with a fixed reason and never the provider's output. `sas status` shows
 the role's open enrollment (`watcher enrolled E12`, or `watcher exited E12
-(queue delivery uncertain)` once its launcher has ended) until a human closes
-it, and a start refused since then (`watcher refused (…)`, or `a restart
+(queue delivery uncertain)` once its launcher has ended; `watcher enrolled
+E12, launcher not running` when its launcher ended without a word, as after a
+reboot) until a human closes it, and a start refused since then (`watcher refused (…)`, or `a restart
 refused (…)` beside an open one). Interrupting the launcher (Ctrl-C) is
-recorded (`watcher suspended E12 (interrupted)`) but not mailed. An
+recorded (`watcher suspended E12 (interrupted)`) but not mailed. Each refused
+start mails, so a script that retries a start sends one mail per try. An
 approval prompt may account for the delay. Check the human terminal. STOP
 preempts the wait, queues at most one fixed stop notice to the same eligible
 session, and ends enrollment. The worker checkpoints and acknowledges STOP.
