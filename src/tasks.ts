@@ -410,6 +410,20 @@ export function answerQuestion(s: Store, questionOrTask: string, answer: string,
     return options.close ? { ...result, task_status: 'done' } : result;
   });
 }
+// A question a human answered in a chat before anyone recorded it (T1085): the human records
+// the question, asked by the role that relays it, and its answer in one transaction, on a task
+// or on a new one owned by and for that role, with the same events and notices as ask then answer.
+export function recordAnswered(s: Store, options: { question: string; answer: string; relayedBy: string; task?: string; title?: string; close?: boolean }): Row {
+  return s.tx(() => {
+    const actor = s.requireHuman(); s.role(options.relayedBy); text(options.question, 'question'); text(options.answer, 'answer');
+    check((options.task === undefined) !== (options.title === undefined), 'Give the task the question was about (--on T1) or a title for a new one (--new TITLE)');
+    const task = options.task ?? addTask(s, { title: options.title!, body: options.question, owner: options.relayedBy, forRole: options.relayedBy }).id;
+    const asked = askHuman(s, task, { question: options.question, forRole: actor });
+    s.run('UPDATE questions SET asked_by=? WHERE workspace_id=? AND id=?', options.relayedBy, s.ws, id(asked.id, 'H'));
+    s.event('question', asked.id, 'recorded', { task, relayed_by: options.relayedBy, with_answer: true });
+    return { ...answerQuestion(s, asked.id, options.answer, { close: options.close, relayedBy: options.relayedBy }), asked_by: options.relayedBy, recorded_with_answer: true };
+  });
+}
 // A pending question its asker no longer needs (a reworded one asked again, a decision made
 // elsewhere): the asker, the task's creator or a human withdraws it with a reason, so the human's
 // queue stops showing it. Its blocker is resolved with the reason, as an answer would.
