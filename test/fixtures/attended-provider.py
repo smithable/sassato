@@ -13,7 +13,7 @@ if '--version' in sys.argv:
     version_barrier = os.environ.get('ATTENDED_FIXTURE_VERSION_BARRIER')
     if version_barrier:
         Path(version_barrier + '.ready').write_text('ordinary version check paused')
-        deadline = time.monotonic() + 15
+        deadline = time.monotonic() + 25  # under the launcher's 30 s probe, so this error shows first
         while not Path(version_barrier).exists():
             if time.monotonic() > deadline:
                 raise RuntimeError('Fixture version barrier elapsed')

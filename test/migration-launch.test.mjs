@@ -406,10 +406,14 @@ test('failed registration terminates only its new provider even if SIGTERM is ig
   const f=fixture(t),fake=fakeProvider(f,t),pidFile=join(f.dir,'failed-provider.pid');
   writeFileSync(join(fake.bin,'claude'),`#!/usr/bin/env node
 if(process.argv.includes('--version')){console.log('fixture');process.exit(0);}
-require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));
 process.on('SIGTERM',()=>{});setInterval(()=>{},1000);
+require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));
 `,{mode:0o755});
-  const event=f.s.event.bind(f.s);f.s.event=(entity,id,action,detail)=>{if(entity==='session'&&action==='registered')throw new Error('fixture registration rejected');return event(entity,id,action,detail);};
+  const event=f.s.event.bind(f.s);f.s.event=(entity,id,action,detail)=>{if(entity==='session'&&action==='registered'){
+    // The provider ignores SIGTERM once it has written its PID; reject only then, since launch now stops at the first such error.
+    const until=Date.now()+4000;while(!existsSync(pidFile)&&Date.now()<until){}
+    throw new Error('fixture registration rejected');
+  }return event(entity,id,action,detail);};
   await assert.rejects(()=>launch(f.s,['a'],{fresh:true,noPrompt:true,stopFile:join(f.dir,'no-stop')}),/fixture registration rejected/);
   const pid=Number(readFileSync(pidFile,'utf8'));assert.equal(processIdentity(pid),null);
   assert.equal(f.s.get('SELECT count(*) n FROM sessions').n,0);assert(!existsSync(join(`${f.s.path}.launch`,'test','a.lock')));
