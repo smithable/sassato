@@ -23,5 +23,8 @@ test('submit --reviewer is accepted from the command line', (t) => {
   run(['role', 'set', 'codex', '--provider', 'codex', '--as', 'human']);
   const task = run(['add', 'Fix the parser', '--as', 'a', '--review-required']);
   run(['take', task.id, '--as', 'a']);
+  // The value reaches submit: a reviewer who is no role is refused, and the task stays in doing.
+  assert.notEqual(raw(['submit', task.id, 'Fixed', '--reviewer', 'nobody', '--as', 'a']).status, 0);
+  assert.equal(run(['show', task.id]).status, 'doing');
   assert.equal(run(['submit', task.id, 'Fixed', '--reviewer', 'codex', '--as', 'a']).status, 'review');
 });
