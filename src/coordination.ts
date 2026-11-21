@@ -126,12 +126,14 @@ export function sessionState(row: Row): 'ended' | 'running' | 'stale' | 'unknown
 export function sessions(s: Store): Row[] {
   return s.all('SELECT x.* FROM sessions x WHERE x.workspace_id=? AND x.id=(SELECT max(y.id) FROM sessions y WHERE y.workspace_id=x.workspace_id AND y.role=x.role) ORDER BY x.role',s.ws).map(row => ({ ...row, id: `S${row.id}`, state: sessionState(row), heartbeat_stale: Date.now()-Date.parse(row.last_seen_at) > 15*60_000 }));
 }
+// A process that is not (yet) the provider: a launcher retries this one refusal while its child execs.
+export const UNVERIFIED_PROVIDER = 'PID is not a verifiable running process for this provider';
 export interface SessionInput { provider: string; external_id?: string; pid?: number; replace?: boolean }
 export function registerSession(s: Store, input: SessionInput): Row {
   const actor = s.requireActor(), provider = name(input.provider), external = externalId(input.external_id);
   const pid = input.pid === undefined ? null : integer(input.pid,'pid',1,2**31-1);
   const fingerprint = pid === null ? null : processIdentity(pid);
-  if (pid !== null) check(fingerprint && providerProcess(pid,provider), 'PID is not a verifiable running process for this provider',3);
+  if (pid !== null) check(fingerprint && providerProcess(pid,provider), UNVERIFIED_PROVIDER,3);
   return s.tx(() => {
     const latest = s.get('SELECT * FROM sessions WHERE workspace_id=? AND role=? ORDER BY (ended_at IS NULL) DESC,id DESC LIMIT 1',s.ws,actor);
     const old = latest && (!latest.ended_at || sessionState(latest) === 'running') ? latest : undefined;

@@ -17,7 +17,7 @@ import { launchLockPath } from '../dist/launch-admission.js';
 
 const cli=resolve('bin/sassato.js');
 const delay=()=>new Promise(resolve=>setTimeout(resolve,10));
-async function until(check,label){const deadline=Date.now()+12000;while(!check()){assert.ok(Date.now()<deadline,`Timed out: ${label}`);await delay();}}
+async function until(check,label){const deadline=Date.now()+30000;while(!check()){assert.ok(Date.now()<deadline,`Timed out: ${label}`);await delay();}}
 function started(command,args,env){
   const child=spawn(command,args,{env,stdio:['ignore','pipe','pipe']});let out='',err='';
   child.stdout.on('data',data=>{out+=data;});child.stderr.on('data',data=>{err+=data;});

@@ -10,7 +10,7 @@ import { now } from '../dist/errors.js';
 import { previewImport, applyImport, exportMarkdown } from '../dist/migration.js';
 import { setWorkspaceSettings, setRoleAutocompact, roleAutocompact, workspaceSettings } from '../dist/workspace-settings.js';
 import { planLaunch, launch, unlockLaunch, windowsTerminalArgs, savedCodexSession } from '../dist/launch.js';
-import { registerSession, processIdentity } from '../dist/coordination.js';
+import { registerSession, processIdentity, UNVERIFIED_PROVIDER } from '../dist/coordination.js';
 
 function fixture(t) {
   const dir=mkdtempSync(join(tmpdir(),'sassato-migration-'));
@@ -402,17 +402,31 @@ test('worker setup errors acknowledge failure instead of waiting for startup tim
   assert(Date.now()-started<5000,'failure was delivered promptly');
 });
 
-test('failed registration terminates only its new provider even if SIGTERM is ignored',{timeout:5000},async t=>{
+test('failed registration terminates only its new provider even if SIGTERM is ignored',{timeout:20000},async t=>{
   const f=fixture(t),fake=fakeProvider(f,t),pidFile=join(f.dir,'failed-provider.pid');
   writeFileSync(join(fake.bin,'claude'),`#!/usr/bin/env node
 if(process.argv.includes('--version')){console.log('fixture');process.exit(0);}
-require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));
 process.on('SIGTERM',()=>{});setInterval(()=>{},1000);
+require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));
 `,{mode:0o755});
-  const event=f.s.event.bind(f.s);f.s.event=(entity,id,action,detail)=>{if(entity==='session'&&action==='registered')throw new Error('fixture registration rejected');return event(entity,id,action,detail);};
+  const event=f.s.event.bind(f.s);f.s.event=(entity,id,action,detail)=>{if(entity==='session'&&action==='registered'){
+    // The provider ignores SIGTERM once it has written its PID; reject only then, since launch now stops at the first such error.
+    const until=Date.now()+15000;while(!existsSync(pidFile)&&Date.now()<until){}
+    throw new Error('fixture registration rejected');
+  }return event(entity,id,action,detail);};
   await assert.rejects(()=>launch(f.s,['a'],{fresh:true,noPrompt:true,stopFile:join(f.dir,'no-stop')}),/fixture registration rejected/);
   const pid=Number(readFileSync(pidFile,'utf8'));assert.equal(processIdentity(pid),null);
   assert.equal(f.s.get('SELECT count(*) n FROM sessions').n,0);assert(!existsSync(join(`${f.s.path}.launch`,'test','a.lock')));
+});
+
+test('a provider not yet verifiable is registered once it is, within the window (T1057)',{timeout:20000},async t=>{
+  const f=fixture(t);fakeProvider(f,t,{delay:5000});
+  // Refuse as an unverified provider for two seconds, well past the 25 × 20 ms launch used to wait.
+  const event=f.s.event.bind(f.s),from=Date.now();let refused=0;
+  f.s.event=(entity,id,action,detail)=>{if(entity==='session'&&action==='registered'&&Date.now()-from<2000){refused++;throw new Error(UNVERIFIED_PROVIDER);}return event(entity,id,action,detail);};
+  const plans=await launch(f.s,['a'],{fresh:true,noPrompt:true,stopFile:join(f.dir,'no-stop')});
+  assert(refused>1);assert.equal(plans[0].status,'exited');
+  assert.equal(f.s.get('SELECT count(*) n FROM sessions').n,1);
 });
 
 test('Windows Terminal without a worker acknowledgement times out and cleans its handshake',{timeout:20000},async t=>{

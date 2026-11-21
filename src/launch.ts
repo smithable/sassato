@@ -6,7 +6,7 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from './storage.js';
 import { check, id, name, now, text } from './errors.js';
-import { processIdentity, registerSession, sessionState } from './coordination.js';
+import { processIdentity, registerSession, sessionState, UNVERIFIED_PROVIDER } from './coordination.js';
 import { validateRoleOptions } from './role-options.js';
 import { assertWorkAllowed } from './control.js';
 import { workspaceSettings, roleAutocompact } from './workspace-settings.js';
@@ -282,8 +282,11 @@ export function unlockLaunch(store:Store,roles:string[]):{unlocked:string[]} {
     return {unlocked};
   });
 }
+// A provider that is only slow to answer under load (a busy machine, a cold disk) is not missing: wait long
+// enough for it, since a launch that waits a little longer costs less than a refused one (T1057).
+const VERSION_PROBE_MS=30_000,REGISTER_WINDOW_MS=10_000;
 function verifyExecutable(executable:string,env:NodeJS.ProcessEnv):void {
-  const result=spawnSync(executable,['--version'],{encoding:'utf8',timeout:5000,stdio:['ignore','pipe','pipe'],shell:false,env});
+  const result=spawnSync(executable,['--version'],{encoding:'utf8',timeout:VERSION_PROBE_MS,killSignal:'SIGKILL',stdio:['ignore','pipe','pipe'],shell:false,env});
   check(!result.error&&result.status===0,`Cannot run ${executable}. Install it or use launch --dry-run. ${result.error?.message??''}`,3);
 }
 async function terminateUnconfirmed(child:ReturnType<typeof spawn>,exited:Promise<unknown>):Promise<void> {
@@ -325,10 +328,11 @@ async function runNative(store:Store,plan:LaunchPlan,options:LaunchOptions,runti
     process.on('SIGINT',onInterrupt);process.on('SIGTERM',onTerminate);
     let registered:number|undefined;
     try {
-      // spawn fires before a script's interpreter has necessarily finished exec. Only register
-      // a provider-verified process, with a bounded retry that notices immediate exits.
-      let registrationError:unknown;
-      for(let attempt=0;attempt<25&&child.exitCode===null&&child.signalCode===null;attempt++) {
+      // spawn fires before a script's interpreter has necessarily finished exec, and under load that can
+      // take seconds (T1057). Only register a provider-verified process, retrying that one refusal for a
+      // bounded time and noticing immediate exits; any other error ends the attempts at once.
+      let registrationError:unknown;const registerBy=performance.now()+REGISTER_WINDOW_MS;
+      for(let attempt=0;(attempt===0||performance.now()<registerBy)&&child.exitCode===null&&child.signalCode===null;attempt++) {
         const previousActor=store.actor;store.actor=fresh.role;
         try {
           registered=store.tx(()=>{
@@ -337,7 +341,7 @@ async function runNative(store:Store,plan:LaunchPlan,options:LaunchOptions,runti
             return id(registerSession(store,{provider:fresh.provider,external_id:external,pid:child.pid,replace:true}).id,'S');
           });
           break;
-        }catch(error){registrationError=error;}
+        }catch(error){registrationError=error;if(!(error instanceof Error&&error.message===UNVERIFIED_PROVIDER))break;}
         finally{store.actor=previousActor;}
         await new Promise(resolveDelay=>setTimeout(resolveDelay,20));
       }
