@@ -113,12 +113,24 @@ export function acceptCodexVersion(s:Store,version:string,replace=false):string[
     return setWorkspaceSettings(s,{codex_versions:replace?[version]:before.includes(version)?before:[...before,version]}).codex_versions;
   });
 }
-/** Refuses a Codex CLI whose --version output is not an accepted version, naming the command that accepts it. */
-export function checkCodexVersion(settings:WorkspaceSettings,output:string):string {
+/** The oldest Codex CLI launch and launch-watch start on (T664, Johan's answer to H161): a newer version than the
+ * tested ones starts with a warning, an older one is refused. */
+export const MIN_CODEX_VERSION='0.167.0';
+const versionParts=(version:string)=>version.split('.').map(Number);
+const atLeast=(version:string,floor:string)=>{
+  const a=versionParts(version),b=versionParts(floor);
+  for(let i=0;i<3;i++)if(a[i]!==b[i])return a[i]>b[i];
+  return true;
+};
+/** Reads a Codex CLI's --version output. A tested version (codex_versions) starts silently; a newer untested one
+ * starts with the returned warning, naming the tested versions; one older than MIN_CODEX_VERSION is refused. */
+export function checkCodexVersion(settings:WorkspaceSettings,output:string):{version:string;warning:string|null} {
   const version=/^codex(?:-cli)? ([0-9]+\.[0-9]+\.[0-9]+)$/.exec(output.trim())?.[1];
   check(version!==undefined,`Cannot read the Codex CLI version from "${output.trim().slice(0,80)}"`,4);
-  check(settings.codex_versions.includes(version!),`Codex CLI ${version} is not an accepted version (accepted: ${settings.codex_versions.join(', ')}). A human accepts it with: sassato codex accept ${version}`,4);
-  return version!;
+  // The floor comes first: an old version accepted before T664 is still refused.
+  check(atLeast(version!,MIN_CODEX_VERSION),`Codex CLI ${version} is older than ${MIN_CODEX_VERSION}, the oldest sassato starts (tested: ${settings.codex_versions.join(', ')})`,4);
+  if(settings.codex_versions.includes(version!))return {version:version!,warning:null};
+  return {version:version!,warning:`Warning: Codex CLI ${version} is not a tested version (tested: ${settings.codex_versions.join(', ')}); starting anyway. After a trial, a human marks it tested with: sassato codex accept ${version}`};
 }
 export const DIGEST_SKIPPABLE=['own-work','open-work','spare-work','task-finished','mail'];
 /** Workspace configuration is recorded in its existing append-only audit history. */

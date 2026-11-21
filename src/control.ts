@@ -35,7 +35,7 @@ function selectedRoles(s: Store, selected: string[], options: SelectionOptions, 
   }
   return selectedNames;
 }
-function pendingLauncher(s: Store, role: string): boolean {
+export function pendingLauncher(s: Store, role: string): boolean {
   if (s.path === ':memory:') return false;
   const path = launchLockPath(s,role);
   let lock: {pid?: unknown; identity?: unknown};

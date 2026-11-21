@@ -81,7 +81,8 @@ sanitized JSON result, without transcripts, account details, IDs or machine path
 It exits nonzero when a capability or completion signal cannot be verified. No
 config/auth changes, trust-prompt bypass flags or credential copying are performed.
 The hardened runner accepts only Codex 0.167.0 and Claude Code 2.1.321; other
-versions fail before model requests. Its safeguards have mocked tests, but the live
+versions fail before model requests. (`sassato launch` itself starts any Codex from 0.167.0 on, warning
+on an untested one: see `codex_versions` in commands.md.) Its safeguards have mocked tests, but the live
 observations above predate them. They have not been revalidated with live models.
 
 - Codex starts with read-only sandboxing, on-request approvals answered only by the

@@ -320,8 +320,11 @@ function verifyExecutable(store:Store,plan:LaunchPlan,env:NodeJS.ProcessEnv):voi
   const executable=plan.executable;
   const result=spawnSync(executable,['--version'],{encoding:'utf8',timeout:VERSION_PROBE_MS,killSignal:'SIGKILL',stdio:['ignore','pipe','pipe'],shell:false,env});
   check(!result.error&&result.status===0,`Cannot run ${executable}. Install it or use launch --dry-run. ${result.error?.message??''}`,3);
-  // A Codex role starts only on a version a human has accepted (T1098).
-  if(plan.provider==='codex')checkCodexVersion(workspaceSettings(store),String(result.stdout));
+  // A Codex role starts on a tested version, or with a warning on a newer one; an older one is refused (T1098, T664).
+  if(plan.provider==='codex'){
+    const {warning}=checkCodexVersion(workspaceSettings(store),String(result.stdout));
+    if(warning)console.error(warning);
+  }
 }
 async function terminateUnconfirmed(child:ReturnType<typeof spawn>,exited:Promise<unknown>):Promise<void> {
   child.kill('SIGTERM');
