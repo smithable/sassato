@@ -2,6 +2,10 @@
 
 ## 0.1.3 — unreleased
 
+- A launch lock replaced by a dangling link is no longer taken for a released one: the launcher's own
+  cleanup reports it (keeping the launch's own error) and `launch-unlock` refuses it for manual inspection;
+  both leave the link in place. Only an absent path counts as released.
+
 - `supervise status`, `supervise ping ROLE` and `supervise ack NONCE --generation N`
   separate responsiveness from checkpoints, sessions, waiters and job observations.
   Schema 10 adds generation-fenced writes and an experimental fixture replacement
