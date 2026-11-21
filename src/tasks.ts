@@ -103,7 +103,7 @@ function queryTasks(s: Store, options: ListTaskOptions, fetchLimit: number): Row
     const actor = s.requireActor();
     clauses.push("t.status='open'", '(t.owner IS NULL OR t.owner=?)', '(t.for_role IS NULL OR t.for_role=?)'); params.push(actor, actor);
     if (!human(s)) clauses.push('t.human_only=0');
-    if (options.spare === undefined) clauses.push('t.spare=0');
+    clauses.push('t.spare=0');
     clauses.push("NOT EXISTS (SELECT 1 FROM blockers b WHERE b.workspace_id=t.workspace_id AND b.task_id=t.id AND b.status='open')", "NOT EXISTS (SELECT 1 FROM dependencies d JOIN tasks p ON p.workspace_id=d.workspace_id AND p.id=d.depends_on WHERE d.workspace_id=t.workspace_id AND d.task_id=t.id AND p.status!='done')");
   }
   params.push(fetchLimit);
@@ -119,7 +119,8 @@ export function listTaskPage(s: Store, options: ListTaskOptions = {}): TaskPage 
   const limit = integer(options.limit ?? 50, 'limit', 1, 1000);
   return s.snapshot(() => {
     // Without --spare, spare tasks are listed apart from the rest, so they never pass for ready work (T1102).
-    const split = options.spare === undefined, rows = queryTasks(s, split ? { ...options, spare: false } : options, limit + 1), items = rows.slice(0, limit);
+    check(!(options.available && options.spare), 'Spare tasks are never available work; list them with --spare alone', 2);
+    const split = options.spare === undefined && !options.available, rows = queryTasks(s, split ? { ...options, spare: false } : options, limit + 1), items = rows.slice(0, limit);
     const hasMore = rows.length > limit;
     const page: TaskPage = { items, has_more: hasMore, next_after: hasMore ? items[items.length - 1].id as string : null };
     const spare = split && !options.after ? queryTasks(s, { ...options, spare: true }, SPARE_LIST_LIMIT) : [];

@@ -50,7 +50,7 @@ function available(s:Store,actor:string,condition:string,params:Param[],includeD
   // These are the same gates as tasks --available, applied to event candidates only, except that a
   // task neither owned nor routed wakes only the roles in open_work_roles (every role when unset).
   const roles=workspaceSettings(s).open_work_roles,takesOpen=roles===null||roles.includes(actor)?1:0;
-  return s.all(`SELECT t.id FROM tasks t WHERE t.workspace_id=? AND ((t.status='open' AND t.spare=0)${includeDoing?" OR (t.status='doing' AND t.owner=?)":''})
+  return s.all(`SELECT t.id FROM tasks t WHERE t.workspace_id=? AND t.spare=0 AND (t.status='open'${includeDoing?" OR (t.status='doing' AND t.owner=?)":''})
     AND (t.owner IS NULL OR t.owner=?) AND (t.for_role IS NULL OR t.for_role=?)
     AND (t.human_only=0 OR ?=1) AND (t.owner IS NOT NULL OR t.for_role IS NOT NULL OR ?=1)
     AND NOT EXISTS (SELECT 1 FROM blockers b WHERE b.workspace_id=t.workspace_id AND b.task_id=t.id AND b.status='open')
@@ -166,11 +166,11 @@ function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
   if(event.action==='completed'||(event.action==='import-repaired'&&(detail.after?.task?.status??detail.after?.status)==='done')) {
     tasks=available(s,actor,'EXISTS (SELECT 1 FROM dependencies d WHERE d.workspace_id=t.workspace_id AND d.task_id=t.id AND d.depends_on=?)',[id],true);
   } else {
-    const updated=event.action==='updated'&&['for_role','human_only'].some(key=>Object.hasOwn(detail.after??{},key)&&detail.before?.[key]!==detail.after[key]);
+    const updated=event.action==='updated'&&['for_role','human_only','spare'].some(key=>Object.hasOwn(detail.after??{},key)&&detail.before?.[key]!==detail.after[key]);
     const repaired=event.action==='import-repaired'&&(detail.after?.task?.status??detail.after?.status)==='open';
     if(!updated&&!repaired&&!['created','imported','reopened','released','handed-off','dependency-removed'].includes(event.action))return undefined;
     if(['created','imported','handed-off','updated'].includes(event.action)) {
-      const assigned=s.get("SELECT id FROM tasks WHERE workspace_id=? AND id=? AND status NOT IN ('done','dropped') AND (owner IS NULL OR owner=?) AND (for_role IS NULL OR for_role=?) AND (owner=? OR for_role=?)",s.ws,id,actor,actor,actor,actor);
+      const assigned=s.get("SELECT id FROM tasks WHERE workspace_id=? AND id=? AND spare=0 AND status NOT IN ('done','dropped') AND (owner IS NULL OR owner=?) AND (for_role IS NULL OR for_role=?) AND (owner=? OR for_role=?)",s.ws,id,actor,actor,actor,actor);
       if(assigned)return {...base,reason:'task-assigned',task:event.entity_id,tasks:[event.entity_id]};
     }
     tasks=available(s,actor,'t.id=?',[id],event.action==='dependency-removed');

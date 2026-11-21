@@ -337,7 +337,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           if(str('digest-skip')!==undefined)try{patch.digest_skip=JSON.parse(str('digest-skip')!);}catch{check(false,'--digest-skip must be valid JSON');}
           if(str('open-work-roles')!==undefined)patch.open_work_roles=str('open-work-roles')==='all'?null:str('open-work-roles')!.split(',').map(role=>role.trim()).filter(Boolean);
           if(str('spare-work')!==undefined){check(['on','off'].includes(str('spare-work')!),'--spare-work takes on or off');patch.spare_work=str('spare-work')==='on';}
-          if(str('spare-providers')!==undefined)patch.spare_providers=str('spare-providers')==='any'?[]:str('spare-providers')!.split(',').map(p=>p.trim()).filter(Boolean);
+          if(str('spare-providers')!==undefined){const list=str('spare-providers')==='any'?[]:str('spare-providers')!.split(',').map(p=>p.trim());check(list.every(Boolean),'--spare-providers takes provider names separated by commas, or any');patch.spare_providers=list;}
           if(str('wake-mode')!==undefined)patch.wake_mode=str('wake-mode') as WorkspaceSettings['wake_mode'];
           if(str('speed')!==undefined)patch.speed=str('speed') as WorkspaceSettings['speed'];
           if(str('wake-roles')!==undefined)try{patch.wake_roles=JSON.parse(str('wake-roles')!);}catch{check(false,'--wake-roles must be valid JSON');}
