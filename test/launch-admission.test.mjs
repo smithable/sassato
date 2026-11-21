@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync,mkdirSync,copyFileSync,chmodSync,readFileSync,writeFileSync,rmSync,existsSync,symlinkSync,readdirSync,lstatSync } from 'node:fs';
+import { mkdtempSync,mkdirSync,copyFileSync,chmodSync,readFileSync,writeFileSync,rmSync,existsSync,symlinkSync,readdirSync,lstatSync,unlinkSync,rmdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join,resolve } from 'node:path';
 import { spawn,spawnSync } from 'node:child_process';
@@ -128,4 +128,22 @@ test('an orphan workspace directory blocks managed launch only for the reserved 
   assert.match(result.output,/pending ordinary launcher.*unregistered workspace directory "retired"/);
   assert.equal(f.s.get('SELECT count(*) n FROM managed_workers').n,0);
   assert.equal(readFileSync(path,'utf8'),'unverifiable orphan reservation');
+});
+
+
+test('a non-UTF-8 orphan workspace path is checked as filesystem bytes',{skip:process.platform!=='linux'},t=>{
+  const f=fixture(t);
+  const directory=Buffer.concat([Buffer.from(`${f.s.path}.launch/retired-`),Buffer.from([0xff])]);
+  const lock=Buffer.concat([directory,Buffer.from('/builder.lock')]);
+  mkdirSync(`${f.s.path}.launch`,{recursive:true});
+  mkdirSync(directory);
+  writeFileSync(lock,'preserve byte-named lock');
+  try{
+    assert.throws(()=>f.s.tx(()=>assertNoOrdinaryLauncher(f.s,'builder')),/pending ordinary launcher.*filename bytes 726574697265642dff/);
+    assert.doesNotThrow(()=>f.s.tx(()=>assertNoOrdinaryLauncher(f.s,'other')));
+    assert.equal(readFileSync(lock,'utf8'),'preserve byte-named lock');
+  }finally{
+    unlinkSync(lock);
+    rmdirSync(directory);
+  }
 });
