@@ -39,6 +39,8 @@ try {
   const task=JSON.parse(run('npm',[...npx,'sassato','add','Packed CLI works','--as','builder','--json'],clean,env));
   assert.equal(task.id,'T1');
   const tasks=JSON.parse(run('npm',[...npx,'sas','tasks','--json'],clean,env));assert.equal(tasks.items[0].id,'T1');
+  run('npm',[...npx,'sas','take','T1','--as','builder','--json'],clean,env);
+  const submitted=JSON.parse(run('npm',[...npx,'sas','submit','T1','Packed submit','--reviewer','reviewer','--as','builder','--json'],clean,env));assert.equal(submitted.status,'review');
   const stopped=JSON.parse(run('npm',[...npx,'sas','stop','--as','human','--no-wait','--json'],clean,env));
   assert.equal(stopped.complete,true);assert.ok(stopped.statuses.every(row=>row.state==='inactive'));
   run('npm',[...npx,'sas','resume-work','--as','human','--json'],clean,env);
@@ -54,5 +56,5 @@ try {
   const mailCursor=JSON.parse(run('npm',[...npx,'sas','context','--as','reviewer','--json'],clean,env)).cursor;
   run('npm',[...npx,'sas','send','reviewer','Packed urgent message','--urgent','--as','builder','--json'],clean,env);
   const notification=JSON.parse(run('npm',[...npx,'sas','wait','--settle','0','--since',String(mailCursor),'--urgent','--as','reviewer','--timeout','1','--stop-file',join(clean,'no-stop'),'--json'],clean,env));assert.equal(notification.reason,'urgent');
-  console.log(JSON.stringify({ok:true,tarball:packed.filename,files:packed.files.length,size:packed.size,node:process.version,tests:['unpacked Node CLI','offline npx sassato','offline npx sas alias','packaged stop/resume','build identity','packaged evidence/progress recovery','packaged urgent wait','bundled index compiler and license','ordinary commands without compiler','no runtime npm dependencies']},null,2));
+  console.log(JSON.stringify({ok:true,tarball:packed.filename,files:packed.files.length,size:packed.size,node:process.version,tests:['unpacked Node CLI','offline npx sassato','offline npx sas alias','packaged stop/resume','build identity','packaged evidence/progress recovery','packaged submit --reviewer','packaged urgent wait','bundled index compiler and license','ordinary commands without compiler','no runtime npm dependencies']},null,2));
 }finally{rmSync(dir,{recursive:true,force:true});}

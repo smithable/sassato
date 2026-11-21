@@ -2,6 +2,10 @@
 
 ## 0.1.3 — unreleased
 
+- `submit T1 SUMMARY --reviewer ROLE` works: the option was allowed for `submit` but never declared
+  to the parser, which refused it as unknown. A test now checks every allowed option is declared, and the
+  package smoke runs `submit --reviewer` from the packed tarball.
+
 - `supervise status`, `supervise ping ROLE` and `supervise ack NONCE --generation N`
   separate responsiveness from checkpoints, sessions, waiters and job observations.
   Schema 10 adds generation-fenced writes and an experimental fixture replacement
