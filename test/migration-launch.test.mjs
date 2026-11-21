@@ -285,7 +285,7 @@ test('named-window tabs remain unchanged and new-window conflicts fail clearly',
 });
 
 
-function fakeWindowsTerminal(f,t,{versionCode=0,worker=true,forged=false,missingProvider=false,unknownActor=false}={}) {
+function fakeWindowsTerminal(f,t,{versionCode=0,worker=true,forged=false,missingProvider=false,unknownActor=false,reservation=null}={}) {
   const bin=join(f.dir,'terminal-bin'),log=join(f.dir,'terminal.jsonl'),providerLog=join(f.dir,'provider-environment.json');mkdirSync(bin);
   if(!missingProvider)writeFileSync(join(bin,'claude'),`#!/usr/bin/env node
 if(process.argv.includes('--version')){console.log('fixture-provider');process.exit(${versionCode});}
@@ -298,6 +298,10 @@ setTimeout(()=>{},350);
 const args=process.argv.slice(2),fs=require('node:fs');fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(args)+'\\n');
 const payload=JSON.parse(Buffer.from(args.at(-1),'base64url'));
 ${unknownActor?`payload.actor='missing-role';args[args.length-1]=Buffer.from(JSON.stringify(payload)).toString('base64url');`:''}
+${reservation?`const lockPath=require('node:path').join(require('node:path').dirname(payload.runtime.startup.directory),payload.role+'.lock');
+const lock=JSON.parse(fs.readFileSync(lockPath,'utf8'));
+if(${JSON.stringify(reservation)}==='replaced'){fs.writeFileSync(lockPath,JSON.stringify({token:'replacement'}));process.exit(17);}
+fs.writeFileSync(lockPath,JSON.stringify({...lock,phase:'native',pid:process.pid}));`:''}
 ${forged?`fs.writeFileSync(require('node:path').join(payload.runtime.startup.directory,'response.json'),JSON.stringify({token:payload.runtime.startup.token,status:'started',session_id:'S999999',pid:process.pid,process_start:'fake'}));`:worker?`const at=args.indexOf('--exec');const child=require('node:child_process').spawn(args[at+1],args.slice(at+2),{env:{...process.env,PATH:'/usr/bin:/bin'},stdio:'ignore',detached:true});child.unref();`:''}
 `,{mode:0o755});
   const previousPath=process.env.PATH,previousDistro=process.env.WSL_DISTRO_NAME;
@@ -427,6 +431,25 @@ test('a provider not yet verifiable is registered once it is, within the window 
   const plans=await launch(f.s,['a'],{fresh:true,noPrompt:true,stopFile:join(f.dir,'no-stop')});
   assert(refused>1);assert.equal(plans[0].status,'exited');
   assert.equal(f.s.get('SELECT count(*) n FROM sessions').n,1);
+});
+
+test('terminal dispatch preserves the launch error when lock cleanup refuses a replacement',async t=>{
+  const f=fixture(t),path=join(`${f.s.path}.launch`,'test','a.lock');
+  fakeWindowsTerminal(f,t,{worker:false,reservation:'replaced'});
+  const warning=t.mock.method(console,'error',()=>{});
+  await assert.rejects(()=>launch(f.s,['a'],{newWindow:true,fresh:true,stopFile:join(f.dir,'no-stop')}),/Windows Terminal exited with 17/);
+  assert.match(warning.mock.calls[0].arguments[0],/Launch cleanup also failed: Launch lock was externally replaced/);
+  assert.deepEqual(JSON.parse(readFileSync(path,'utf8')),{token:'replacement'});
+  assert(!readdirSync(join(path,'..')).some(name=>name.startsWith('.startup-')));
+});
+
+test('terminal timeout identifies adoption and leaves the native reservation intact',{timeout:20000},async t=>{
+  const f=fixture(t),path=join(`${f.s.path}.launch`,'test','a.lock');
+  fakeWindowsTerminal(f,t,{worker:false,reservation:'adopted'});
+  await assert.rejects(()=>launch(f.s,['a'],{newWindow:true,fresh:true,stopFile:join(f.dir,'no-stop')}),
+    /No verified startup acknowledgement.*A native launcher adopted the reservation and may still be active/);
+  assert.equal(JSON.parse(readFileSync(path,'utf8')).phase,'native');
+  assert(!readdirSync(join(path,'..')).some(name=>name.startsWith('.startup-')));
 });
 
 test('Windows Terminal without a worker acknowledgement times out and cleans its handshake',{timeout:20000},async t=>{

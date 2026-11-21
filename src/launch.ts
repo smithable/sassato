@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { accessSync, closeSync, constants, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { accessSync, closeSync, constants, existsSync, fstatSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -193,7 +193,13 @@ async function awaitStartup(store:Store,role:string,request:StartupRequest,termi
     }
     await new Promise(resolveDelay=>setTimeout(resolveDelay,50));
   }
-  throw new Error(`No verified startup acknowledgement for ${role} within ${startupTimeoutMs/1000} seconds. Check the new terminal and sassato sessions before retrying.`);
+  let adopted=false;
+  try {
+    const lock=readLaunchLock(lockPath(store,role));
+    adopted=lock.token===request.token&&lock.phase==='native';
+  }catch { /* A missing or unverifiable lock cannot establish adoption. */ }
+  const detail=adopted?' A native launcher adopted the reservation and may still be active.':'';
+  throw new Error(`No verified startup acknowledgement for ${role} within ${startupTimeoutMs/1000} seconds.${detail} Check the new terminal and sassato sessions before retrying.`);
 }
 function runtimeEnvironment(store:Store,role:string,parentPath:string):{directory:string;env:NodeJS.ProcessEnv} {
   const directory=mkdtempSync(join(dirname(lockPath(store,role)),`.runtime-${role}-`));
@@ -203,6 +209,26 @@ function runtimeEnvironment(store:Store,role:string,parentPath:string):{director
   return {directory,env:{...process.env,PATH:[directory,dirname(process.execPath),parentPath].join(':'),SASSATO_DB:store.path,SASSATO_WORKSPACE:store.workspace,SASSATO_ROLE:role}};
 }
 const lockPath=launchLockPath;
+function readLaunchLock(path:string):{token?:string;phase?:string;pid?:number;identity?:string} {
+  const fd=openSync(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+  try {
+    const stat=fstatSync(fd);
+    check(stat.isFile()&&stat.size<=64_000,'Unverifiable launch lock; leaving it intact',4);
+    let lock;
+    try{lock=JSON.parse(readFileSync(fd,'utf8'));}
+    catch{check(false,'Unverifiable launch lock; leaving it intact',4);}
+    check(lock&&typeof lock==='object'&&!Array.isArray(lock),'Unverifiable launch lock; leaving it intact',4);
+    return lock;
+  }finally{closeSync(fd);}
+}
+function finishLaunch(cleanup:()=>void,failed:boolean):void {
+  try{cleanup();}
+  catch(error){
+    if(!failed)throw error;
+    // Keep the original launch exception and exit status.
+    console.error(`Launch cleanup also failed: ${error instanceof Error?error.message:String(error)}`);
+  }
+}
 // A launch lock records its launcher as boot_id:start. One written before the machine last booted
 // cannot belong to a living launcher (a WSL restart ends them all), so it is stale beyond doubt.
 // That holds because launch locks sit beside one machine's database (one host, one boot id).
@@ -260,7 +286,7 @@ export function acquireLaunchLock(store:Store,role:string,options:{dispatch?:Sta
   });
   return ()=>store.tx(()=>{
     if(!existsSync(path))return;
-    const lock=JSON.parse(readFileSync(path,'utf8'));
+    const lock=readLaunchLock(path);
     check(lock.token===token,'Launch lock was externally replaced; leaving the replacement intact',4);
     if(options.dispatch && (lock.pid!==process.pid || lock.identity!==identity))return;
     check(lock.pid===process.pid && lock.identity===identity,'Only the current launcher can release its reservation',4);
@@ -303,7 +329,7 @@ async function runNative(store:Store,plan:LaunchPlan,options:LaunchOptions,runti
   check(store.path!==':memory:','Launching requires a persistent database');
   check(process.platform==='linux','Verified native launch currently requires Linux/WSL. On other systems, launch the provider manually and run sassato context.',3);
   const release=acquireLaunchLock(store,plan.role,{adopt:runtime?.startup});
-  let environment:ReturnType<typeof runtimeEnvironment>|undefined;
+  let environment:ReturnType<typeof runtimeEnvironment>|undefined,failed=false;
   try {
     check(!plan.stopFile||!existsSync(plan.stopFile),`Stop signal exists at ${plan.stopFile}; leave it intact until the operator clears it`,4);
     // Re-plan inside the role lock: two concurrent launchers cannot both pass this check.
@@ -374,7 +400,13 @@ async function runNative(store:Store,plan:LaunchPlan,options:LaunchOptions,runti
       plan.status='exited';
       check(!result.error&&result.code===0,`${fresh.provider} exited with ${result.code??'a signal'}. The role's work is intact; check its saved session or use --fresh.`,4);
     }finally{process.off('SIGINT',onInterrupt);process.off('SIGTERM',onTerminate);}
-  } finally {if(environment)rmSync(environment.directory,{recursive:true,force:true});release();}
+  }catch(error){failed=true;throw error;}
+  finally {
+    finishLaunch(()=>{
+      try{if(environment)rmSync(environment.directory,{recursive:true,force:true});}
+      finally{release();}
+    },failed);
+  }
 }
 export async function launch(store:Store,roles:string[],options:LaunchOptions={}):Promise<LaunchPlan[]> {return launchInternal(store,roles,options);}
 async function launchInternal(store:Store,roles:string[],options:LaunchOptions,runtime?:LaunchRuntime):Promise<LaunchPlan[]> {
@@ -389,7 +421,7 @@ async function launchInternal(store:Store,roles:string[],options:LaunchOptions,r
       check(process.platform==='linux'&&!!process.env.WSL_DISTRO_NAME,'Windows Terminal launch must run inside WSL',3);
       plan.executable=resolveExecutable(plan.provider,true);
       const startup=startupRequest(store,plan.role);
-      let release:(()=>void)|undefined;
+      let release:(()=>void)|undefined,failed=false;
       try {
         // Reserve before dispatch, not only when the terminal's native child starts.
         release=acquireLaunchLock(store,plan.role,{dispatch:startup});
@@ -402,7 +434,13 @@ async function launchInternal(store:Store,roles:string[],options:LaunchOptions,r
         child.unref();
         const response=await awaitStartup(store,plan.role,startup,child);
         plan.status=response.status as 'started'|'already-running';plan.runtimeSessionId=response.session_id;plan.pid=response.pid;
-      } finally {try{release?.();}finally{rmSync(startup.directory,{recursive:true,force:true});}}
+      }catch(error){failed=true;throw error;}
+      finally {
+        finishLaunch(()=>{
+          try{release?.();}
+          finally{rmSync(startup.directory,{recursive:true,force:true});}
+        },failed);
+      }
     }
   }
   return plans;
