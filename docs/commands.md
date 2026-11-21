@@ -744,7 +744,23 @@ in place. A duplicate command after consumption exits with a conflict unless a
 new digest is pending. The pending mode takes no wait or acknowledgement options.
 The consumer alone does not start or enable a launcher.
 
-### Launcher-owned Codex waiter (Linux, Codex 0.167.0)
+### Accepted Codex versions (T1098)
+
+`sassato launch` for a Codex role and `sassato launch-watch` run `codex --version` first and
+start only on a version in the workspace setting `codex_versions` (default `0.167.0`). Any other
+version is refused with exit 4, naming the version and the command that accepts it:
+
+```text
+Codex CLI 0.168.0 is not an accepted version (accepted: 0.167.0). A human accepts it with: sassato codex accept 0.168.0
+```
+
+- `sassato codex versions`: the accepted list (read-only, any role).
+- `sassato codex accept VERSION --as HUMAN`: adds an exact version (`MAJOR.MINOR.PATCH`);
+  `--replace` makes it the only one. An agent is refused ("Only a human accepts a Codex version").
+  The change is a settings event, so the workspace history shows who accepted which version and when.
+  At most 16 versions are kept. Claude roles are not checked.
+
+### Launcher-owned Codex waiter (Linux, accepted Codex versions)
 
 A human can enroll one **existing remote session** in a foreground launcher.
 Use the same workspace and registry as the worker. First verify the human terminal

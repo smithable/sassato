@@ -9,7 +9,7 @@ import { check, id, name, now, text } from './errors.js';
 import { processIdentity, registerSession, sessionState, UNVERIFIED_PROVIDER } from './coordination.js';
 import { validateRoleOptions } from './role-options.js';
 import { assertWorkAllowed } from './control.js';
-import { workspaceSettings, roleAutocompact } from './workspace-settings.js';
+import { workspaceSettings, roleAutocompact, checkCodexVersion } from './workspace-settings.js';
 import { assertOrdinaryLaunchAllowed,launchLockPath,launchDirectory } from './launch-admission.js';
 
 export interface LaunchOptions {
@@ -285,9 +285,12 @@ export function unlockLaunch(store:Store,roles:string[]):{unlocked:string[]} {
 // A provider that is only slow to answer under load (a busy machine, a cold disk) is not missing: wait long
 // enough for it, since a launch that waits a little longer costs less than a refused one (T1057).
 const VERSION_PROBE_MS=30_000,REGISTER_WINDOW_MS=10_000;
-function verifyExecutable(executable:string,env:NodeJS.ProcessEnv):void {
+function verifyExecutable(store:Store,plan:LaunchPlan,env:NodeJS.ProcessEnv):void {
+  const executable=plan.executable;
   const result=spawnSync(executable,['--version'],{encoding:'utf8',timeout:VERSION_PROBE_MS,killSignal:'SIGKILL',stdio:['ignore','pipe','pipe'],shell:false,env});
   check(!result.error&&result.status===0,`Cannot run ${executable}. Install it or use launch --dry-run. ${result.error?.message??''}`,3);
+  // A Codex role starts only on a version a human has accepted (T1098).
+  if(plan.provider==='codex')checkCodexVersion(workspaceSettings(store),String(result.stdout));
 }
 async function terminateUnconfirmed(child:ReturnType<typeof spawn>,exited:Promise<unknown>):Promise<void> {
   child.kill('SIGTERM');
@@ -313,7 +316,7 @@ async function runNative(store:Store,plan:LaunchPlan,options:LaunchOptions,runti
     check(!runtime||runtime.provider===fresh.provider,'Provider configuration changed during launch; retry the preview',4);
     fresh.executable=resolveExecutable(runtime?.executable??fresh.executable,true);plan.executable=fresh.executable;
     environment=runtimeEnvironment(store,plan.role,runtime?.path??process.env.PATH??'');
-    verifyExecutable(fresh.executable,environment.env);
+    verifyExecutable(store,fresh,environment.env);
     const child=store.tx(()=>{
       assertWorkAllowed(store,fresh.role);
       assertOrdinaryLaunchAllowed(store,fresh.role);

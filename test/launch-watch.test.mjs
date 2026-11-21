@@ -14,13 +14,14 @@ import { requestStop } from '../dist/control.js';
 import { saveNotificationProgress,getNotificationProgress } from '../dist/notification-progress.js';
 import { launchWatch,reconcileWatch } from '../dist/launch-watch.js';
 import { launchLockPath } from '../dist/launch-admission.js';
+import { acceptCodexVersion,workspaceSettings } from '../dist/workspace-settings.js';
 
 const thread='f837a924-bc2e-472b-9bca-07b93cc531ae';
 async function until(fn) {
   for(let i=0;i<150;i++){if(fn())return;await delay(40);}
   throw Error('Fixture condition timed out');
 }
-async function fixture(t,mode='success',link=false) {
+async function fixture(t,mode='success',link=false,version='0.167.0') {
   const dir=mkdtempSync(join(tmpdir(),'sas-lwatch-')), db=join(dir,'db'),log=join(dir,'calls');
   const endpoint=join(dir,'server'),server=createServer();server.listen(endpoint);await once(server,'listening');
   if(link)symlinkSync(endpoint,join(dir,'server.sock'));
@@ -28,7 +29,7 @@ async function fixture(t,mode='success',link=false) {
   const provider=join(dir,'codex');
   writeFileSync(provider,`#!/usr/bin/env node
 const fs=require('fs'),args=process.argv.slice(2);
-if(args[0]==='--version')console.log('codex-cli 0.167.0');
+if(args[0]==='--version')console.log('codex-cli '+${JSON.stringify(version)});
 else if(args.includes('--help'))console.log('--thread --remote --resume --message');
 else if(args[0]==='queue'){
  fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(args)+'\\n');
@@ -209,4 +210,25 @@ test('a socket in a folder others can write is refused',async t=>{
   const f=await fixture(t,'success',true);
   chmodSync(f.dir,0o777);
   await assert.rejects(launchWatch(f.operator,'b',f.remote,thread),/folder only that user/);
+});
+test('an unaccepted Codex version is refused until a human accepts it (T1098)',async t=>{
+  const f=await fixture(t,'success',false,'0.168.0');
+  assert.deepEqual(workspaceSettings(f.operator).codex_versions,['0.167.0']);
+  await assert.rejects(launchWatch(f.operator,'b',f.remote,thread),/Codex CLI 0\.168\.0 is not an accepted version \(accepted: 0\.167\.0\)\. A human accepts it with: sassato codex accept 0\.168\.0/);
+  assert.throws(()=>acceptCodexVersion(f.worker,'0.168.0'),/Only a human accepts a Codex version/);
+  const refused=f.cli('codex','accept','0.168.0');assert.notEqual(refused.status,0);assert.match(refused.stderr,/Only a human/);
+  assert.deepEqual(acceptCodexVersion(f.operator,'0.168.0'),['0.167.0','0.168.0']);
+  const listed=f.cli('codex','versions','--json');assert.equal(listed.status,0,listed.stderr);
+  assert.deepEqual(JSON.parse(listed.stdout).accepted,['0.167.0','0.168.0']);
+  assert.deepEqual(acceptCodexVersion(f.operator,'0.168.0',true),['0.168.0']);
+  for(let i=1;i<16;i++)acceptCodexVersion(f.operator,`1.0.${i}`);
+  assert.equal(acceptCodexVersion(f.operator,'1.0.3').length,16);
+  assert.throws(()=>acceptCodexVersion(f.operator,'2.0.0'),/1 to 16/);
+  acceptCodexVersion(f.operator,'0.168.0',true);
+  assert.throws(()=>acceptCodexVersion(f.operator,'latest'),/exact Codex version/);
+  const run=launchWatch(f.operator,'b',f.remote,thread);run.catch(()=>{});
+  send(f.operator,['b'],'First',{now:true});
+  await until(()=>f.calls().length===1);
+  requestStop(f.operator,['b']);
+  assert.equal((await run).reason,'stopped');
 });
