@@ -70,6 +70,7 @@ function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
   const base={role:actor,cursor:event.id};
   let detail:Row;try{detail=JSON.parse(event.detail);}catch{return undefined;}
   if(event.entity==='question'&&event.action==='answered') {
+    if(detail.relayed_by===actor)return undefined; // It relayed the answer, so it knows it (T1103).
     const q=s.get("SELECT q.id,q.task_id FROM questions q JOIN tasks t ON t.workspace_id=q.workspace_id AND t.id=q.task_id WHERE q.workspace_id=? AND q.id=? AND q.status='answered' AND (q.asked_by=? OR t.owner=?)",s.ws,Number(String(event.entity_id).slice(1)),actor,actor);
     if(q)return {...base,reason:'answer',question:`H${q.id}`,task:`T${q.task_id}`};
     return undefined;
@@ -181,7 +182,8 @@ export function digestKindOf(s:Store,actor:string,event:Row):{kind:string;wakes:
 function priorityWorkflow(s:Store,actor:string,cursor:number):{wake:WaitResult;event:Row}[] {
   const answer=s.get(`SELECT e.* FROM questions q JOIN tasks t ON t.workspace_id=q.workspace_id AND t.id=q.task_id
     JOIN events e ON e.workspace_id=q.workspace_id AND e.entity='question' AND e.entity_id='H'||q.id AND e.action='answered'
-    WHERE q.workspace_id=? AND q.status='answered' AND (q.asked_by=? OR t.owner=?) AND e.id>? AND e.actor!=? AND json_valid(e.detail) ORDER BY e.id LIMIT 1`,s.ws,actor,actor,cursor,actor);
+    WHERE q.workspace_id=? AND q.status='answered' AND (q.asked_by=? OR t.owner=?) AND e.id>? AND e.actor!=? AND json_valid(e.detail)
+      AND coalesce(json_extract(e.detail,'$.relayed_by'),'')!=? ORDER BY e.id LIMIT 1`,s.ws,actor,actor,cursor,actor,actor);
   const ping=s.get(`SELECT e.* FROM supervisor_pings p LEFT JOIN managed_workers w ON w.workspace_id=p.workspace_id AND w.role=p.role
     JOIN events e ON e.workspace_id=p.workspace_id AND e.entity='supervisor-ping' AND e.entity_id=p.role AND e.action='requested'
       AND CASE WHEN json_valid(e.detail) THEN json_extract(e.detail,'$.nonce')=p.nonce ELSE 0 END
@@ -210,6 +212,9 @@ function entryFor(s:Store,wake:WaitResult,event?:Row):DigestEntry {
 function extraDuringDigest(s:Store,actor:string,event:Row):DigestEntry|undefined {
   if(event.actor===actor)return undefined;
   if(event.entity==='message'&&event.action==='sent') {
+    let detail:Row={};try{detail=JSON.parse(event.detail);}catch{/* no detail */}
+    // An answer's notice: its H entry is the delivery (T1099). Notices written before the mark are known by their words.
+    if(detail.answer||detail.workflow_mirror&&/^H\d+ on T\d+ answered by /.test(String(detail.body??'')))return undefined;
     const row=s.get("SELECT m.id,m.sender,m.body,m.task_id FROM receipts r JOIN messages m ON m.workspace_id=r.workspace_id AND m.id=r.message_id WHERE r.workspace_id=? AND r.recipient=? AND r.state!='done' AND m.id=?",s.ws,actor,Number(String(event.entity_id).slice(1)));
     if(row)return {id:`M${row.id}`,event_id:`E${event.id}`,from:row.sender,kind:'mail',...(row.task_id?{task:`T${row.task_id}`}:{}) ,summary:digestText(row.body),group:'other'};
   }
@@ -311,7 +316,10 @@ export async function waitForWork(s:Store, options:WaitOptions={}, observer?:Wai
           return priority?digest('immediate',priority):digest('capacity'); // Never cross an omitted relevant event.
         }
         cursor=event.id;
-        if(wake&&['answer','supervisor-ping'].includes(wake.reason))return digest('immediate',priority??wake);
+        // A ping returns at once; an answer reads on to the end of the events already there, so answers
+        // given together come in one digest (T1099).
+        if(wake?.reason==='supervisor-ping')return digest('immediate',priority??wake);
+        if(wake?.reason==='answer')priority??=wake;
       }
       return priority?digest('immediate',priority):undefined;
     });

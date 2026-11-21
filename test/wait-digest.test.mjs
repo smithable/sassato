@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { Store } from '../dist/storage.js';
 import { initWorkspace,showRecord } from '../dist/admin.js';
 import { send,inbox,acknowledge,acknowledgeMany } from '../dist/coordination.js';
-import { addTask,takeTask,doneTask,submitTask,askHuman,answerQuestion } from '../dist/tasks.js';
+import { addTask,takeTask,doneTask,submitTask,askHuman,answerQuestion,recordAnswered } from '../dist/tasks.js';
 import { requestSupervisorPing,acknowledgeSupervisorPing } from '../dist/supervisor-monitor.js';
 import { requestStop } from '../dist/control.js';
 import { waitForWork } from '../dist/mail-wait.js';
@@ -160,4 +160,23 @@ test('the pause between looks is never negative (T960)', async () => {
   assert.equal(nextPause(false, 1000, 200), 200);
   assert.equal(nextPause(false, 1000, 9000), 500);
   assert.equal(nextPause(true, 1000, 200), 0);
+});
+test('answers already there come in one digest, each once, without their notice mail (T1099)',async t=>{
+  const f=fixture(t),task=as(f.s,'b',()=>addTask(f.s,{title:'Decisions'}));
+  const qs=['One?','Two?','Three?'].map(question=>as(f.s,'b',()=>askHuman(f.s,task.id,{question})));const since=f.cursor();
+  for(const q of qs)as(f.s,'human',()=>answerQuestion(f.s,q.id,'Yes'));
+  const first=await wait(f,since,{settle:120,settleMax:600});assert.equal(first.reason,'answer');assert.equal(first.digest.flush,'immediate');
+  assert.deepEqual(first.digest.entries.filter(e=>e.kind==='answer').map(e=>e.id),qs.map(q=>q.id));
+  assert.equal(first.digest.entries.filter(e=>e.kind==='mail').length,0);
+  assert.equal(first.cursor,f.cursor());assert.equal(first.digest.has_more,false);
+  const box=as(f.s,'b',()=>inbox(f.s,{peek:true}));assert.equal(box.messages?.length??box.length,3);
+});
+test('an answer a role relayed does not wake that role, and another asker still gets it (T1103)',async t=>{
+  const f=fixture(t),own=as(f.s,'b',()=>addTask(f.s,{title:'Mine'})),since=f.cursor();
+  const relayed=as(f.s,'human',()=>recordAnswered(f.s,{question:'Heard in chat?',answer:'Yes',relayedBy:'b',task:own.id}));
+  const forB=await wait(f,since,{settle:1,settleMax:2,timeout:1});assert.equal(forB.reason,'timeout');
+  const box=as(f.s,'b',()=>inbox(f.s,{peek:true}));assert.equal((box.messages??box).length,0);
+  const task=as(f.s,'b',()=>addTask(f.s,{title:'Asked'})),q=as(f.s,'b',()=>askHuman(f.s,task.id,{question:'Direct?'})),next=f.cursor();
+  as(f.s,'human',()=>answerQuestion(f.s,q.id,'No',{relayedBy:'a'}));
+  const woken=await wait(f,next,{settle:120,settleMax:600});assert.equal(woken.reason,'answer');assert.equal(woken.question,q.id);assert.ok(relayed.id);
 });

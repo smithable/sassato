@@ -566,7 +566,10 @@ sas ack M12 M13 M14 --as builder
 `--now` implies urgency and bypasses settling. Plain `--urgent` collects normally.
 STOP, a human answer and a valid supervisor ping also return immediately, with
 any notifications already collected attached. Supervisor deadlines remain in
-force. The `now` bit is stored with recipients in the canonical send audit event;
+force. A human answer returns after the events already there are read, so answers
+given together arrive in one digest, each once: its notice mail stays in the inbox
+but is not a digest entry. An answer relayed by a role (`--relayed-by`) is not
+delivered back to that role, neither as an entry nor as mail. The `now` bit is stored with recipients in the canonical send audit event;
 old messages without it are false. No schema migration is needed.
 
 A digest groups entries under `needs-a-decision`, `review-requested`, `finished`
