@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync, lstatSync, readlinkSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -192,6 +192,9 @@ test('stale launch locks are explicit and live launcher locks cannot be removed'
   assert.throws(()=>unlockLaunch(f.s,['a']),/still running/);
   writeFileSync(path,JSON.stringify({pid:process.pid,identity:'old-boot:old-start'}));
   assert.deepEqual(unlockLaunch(f.s,['a']),{unlocked:['a']});assert(!existsSync(path));
+  // A dangling link is not an absent lock: it is reported and kept (T1137).
+  symlinkSync(path+'.missing',path);
+  assert.throws(()=>unlockLaunch(f.s,['a']),/not a plain file; inspect/);assert.equal(lstatSync(path).isSymbolicLink(),true);
 });
 
 const linuxBoot=existsSync('/proc/sys/kernel/random/boot_id')?{}:{skip:'needs a Linux boot id'};
@@ -301,6 +304,7 @@ ${unknownActor?`payload.actor='missing-role';args[args.length-1]=Buffer.from(JSO
 ${reservation?`const lockPath=require('node:path').join(require('node:path').dirname(payload.runtime.startup.directory),payload.role+'.lock');
 const lock=JSON.parse(fs.readFileSync(lockPath,'utf8'));
 if(${JSON.stringify(reservation)}==='replaced'){fs.writeFileSync(lockPath,JSON.stringify({token:'replacement'}));process.exit(17);}
+if(${JSON.stringify(reservation)}==='dangling'){fs.unlinkSync(lockPath);fs.symlinkSync(lockPath+'.missing',lockPath);process.exit(17);}
 fs.writeFileSync(lockPath,JSON.stringify({...lock,phase:'native',pid:process.pid}));`:''}
 ${forged?`fs.writeFileSync(require('node:path').join(payload.runtime.startup.directory,'response.json'),JSON.stringify({token:payload.runtime.startup.token,status:'started',session_id:'S999999',pid:process.pid,process_start:'fake'}));`:worker?`const at=args.indexOf('--exec');const child=require('node:child_process').spawn(args[at+1],args.slice(at+2),{env:{...process.env,PATH:'/usr/bin:/bin'},stdio:'ignore',detached:true});child.unref();`:''}
 `,{mode:0o755});
@@ -433,6 +437,14 @@ test('a provider not yet verifiable is registered once it is, within the window 
   assert.equal(f.s.get('SELECT count(*) n FROM sessions').n,1);
 });
 
+test('a reservation replaced by a dangling link is reported and kept, and the launch error stays (T1137)',async t=>{
+  const f=fixture(t),path=join(`${f.s.path}.launch`,'test','a.lock');
+  fakeWindowsTerminal(f,t,{worker:false,reservation:'dangling'});
+  const warning=t.mock.method(console,'error',()=>{});
+  await assert.rejects(()=>launch(f.s,['a'],{newWindow:true,fresh:true,stopFile:join(f.dir,'no-stop')}),/Windows Terminal exited with 17/);
+  assert.match(warning.mock.calls[0].arguments[0],/Launch cleanup also failed: Launch lock was externally replaced/);
+  assert.equal(lstatSync(path).isSymbolicLink(),true);assert.equal(readlinkSync(path),path+'.missing');
+});
 test('terminal dispatch preserves the launch error when lock cleanup refuses a replacement',async t=>{
   const f=fixture(t),path=join(`${f.s.path}.launch`,'test','a.lock');
   fakeWindowsTerminal(f,t,{worker:false,reservation:'replaced'});

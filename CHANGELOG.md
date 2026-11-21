@@ -5,6 +5,9 @@
 - `submit T1 SUMMARY --reviewer ROLE` works: the option was allowed for `submit` but never declared
   to the parser, which refused it as unknown. A test now checks every allowed option is declared, and the
   package smoke runs `submit --reviewer` from the packed tarball.
+- A launch lock replaced by a dangling link is no longer taken for a released one: the launcher's own
+  cleanup reports it (keeping the launch's own error) and `launch-unlock` refuses it for manual inspection;
+  both leave the link in place. Only an absent path counts as released.
 
 - `supervise status`, `supervise ping ROLE` and `supervise ack NONCE --generation N`
   separate responsiveness from checkpoints, sessions, waiters and job observations.

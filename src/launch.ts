@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { accessSync, closeSync, constants, existsSync, fstatSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { accessSync, closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -285,7 +285,10 @@ export function acquireLaunchLock(store:Store,role:string,options:{dispatch?:Sta
     try {writeFileSync(fd,JSON.stringify({pid:process.pid,identity,token,phase:options.dispatch?'dispatch':'native',created_at:now()}));fsyncSync(fd);} finally {closeSync(fd);}
   });
   return ()=>store.tx(()=>{
-    if(!existsSync(path))return;
+    // Not existsSync: it follows a link, so a dangling one would pass for a released lock.
+    const entry=lstatSync(path,{throwIfNoEntry:false});
+    if(!entry)return;
+    check(entry.isFile(),'Launch lock was externally replaced; leaving the replacement intact',4);
     const lock=readLaunchLock(path);
     check(lock.token===token,'Launch lock was externally replaced; leaving the replacement intact',4);
     if(options.dispatch && (lock.pid!==process.pid || lock.identity!==identity))return;
@@ -298,7 +301,9 @@ export function unlockLaunch(store:Store,roles:string[]):{unlocked:string[]} {
   return store.tx(()=>{
     const unlocked:string[]=[];
     for(const role of roles) {
-      store.role(role);const path=lockPath(store,role);if(!existsSync(path))continue;
+      store.role(role);const path=lockPath(store,role),entry=lstatSync(path,{throwIfNoEntry:false});
+      if(!entry)continue;
+      check(entry.isFile(),`Launch lock for ${role} is not a plain file; inspect ${path} manually`,4);
       let lock:{pid?:number;identity?:string};
       try{lock=JSON.parse(readFileSync(path,'utf8'));}catch{throw new Error(`Unreadable launch lock for ${role}; inspect ${path} manually`);}
       check(Number.isInteger(lock.pid)&&!!lock.identity,`Unverifiable lock for ${role}; inspect ${path} manually`,4);
