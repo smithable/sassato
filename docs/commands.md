@@ -784,16 +784,24 @@ The consumer alone does not start or enable a launcher.
 
 ### Accepted Codex versions (T1098)
 
-`sassato launch` for a Codex role and `sassato launch-watch` run `codex --version` first and
-start only on a version in the workspace setting `codex_versions` (default `0.167.0`). Any other
-version is refused with exit 4, naming the version and the command that accepts it:
+`sassato launch` for a Codex role and `sassato launch-watch` run `codex --version` first. The
+workspace setting `codex_versions` (default `0.167.0`) is the list of tested versions (T664):
+
+- a tested version starts silently;
+- a newer version than 0.167.0 that is not on the list starts with a warning on stderr naming the
+  tested versions;
+- a version older than 0.167.0 is refused with exit 4.
 
 ```text
-Codex CLI 0.168.0 is not an accepted version (accepted: 0.167.0). A human accepts it with: sassato codex accept 0.168.0
+Warning: Codex CLI 0.168.0 is not a tested version (tested: 0.167.0); starting anyway. After a trial, a human marks it tested with: sassato codex accept 0.168.0
+Codex CLI 0.166.0 is older than 0.167.0, the oldest sassato starts (tested: 0.167.0)
 ```
 
-- `sassato codex versions`: the accepted list (read-only, any role).
-- `sassato codex accept VERSION --as HUMAN`: adds an exact version (`MAJOR.MINOR.PATCH`);
+`launch-watch` accepts a notice on stderr (an update hint) beside `--version` and `queue --help`
+when their exit and answer are right; the queue call itself stays strict.
+
+- `sassato codex versions`: the tested list (read-only, any role).
+- `sassato codex accept VERSION --as HUMAN`: marks an exact version tested (`MAJOR.MINOR.PATCH`);
   `--replace` makes it the only one. An agent is refused ("Only a human accepts a Codex version").
   The change is a settings event, so the workspace history shows who accepted which version and when.
   At most 16 versions are kept. Claude roles are not checked.
@@ -840,8 +848,15 @@ the next wait from saved progress. Unacknowledged urgent mail already delivered
 by this enrollment is suppressed while other work can still wake the worker.
 An overdue acknowledgement sends one reminder per receipt to the operator.
 
-A queue warning (even with exit zero), a changed binding or five minutes
-without consumption suspends dispatch and alerts the enrolling human. An
+A queue call waits up to 30 seconds; after a timeout it is tried once more
+after a short pause (a timed-out call may still have queued its line, and a
+second line is harmless). A queue warning (even with exit zero), a second
+timeout, a changed binding or five minutes without consumption suspends
+dispatch and alerts the enrolling human. A suspended watcher, and one refused
+at startup, also sends one urgent mail to the workspace's default human
+(fixed text: the role and the reason), and `sas status` shows
+`watcher exited (reason)` or `watcher refused (reason)` for the role until the
+next enrollment. Interrupting the launcher (Ctrl-C) is recorded but not mailed. An
 approval prompt may account for the delay. Check the human terminal. STOP
 preempts the wait, queues at most one fixed stop notice to the same eligible
 session, and ends enrollment. The worker checkpoints and acknowledges STOP.

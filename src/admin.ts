@@ -77,14 +77,17 @@ export function status(s: Store): Row {
     const identity=waiter?processIdentity(waiter.pid):null;
     const own=s.all("SELECT id,title,status,version FROM tasks WHERE workspace_id=? AND owner=? AND status NOT IN ('done','dropped') ORDER BY priority DESC,id LIMIT 7",s.ws,actor);
     const waiting=s.all("SELECT b.id,b.task_id,substr(b.body,1,200) AS text FROM blockers b JOIN tasks t ON t.workspace_id=b.workspace_id AND t.id=b.task_id WHERE b.workspace_id=? AND b.waiting_on=? AND b.status='open' AND t.status NOT IN ('done','dropped') ORDER BY b.id LIMIT 7",s.ws,actor);
+    // The Codex waiter's last word for this role (T663): enrolled, or why it last ended; closed means none.
+    const watch=s.get("SELECT action,detail FROM events WHERE workspace_id=? AND entity_id=? AND (entity='wake-enrollment' OR (entity='watch-dispatch' AND action IN ('exited','refused','suspended'))) ORDER BY id DESC LIMIT 1",s.ws,actor);
+    const watcher=!watch||watch.action==='closed'?null:watch.action==='opened'?{state:'enrolled'}:{state:watch.action,reason:String(JSON.parse(watch.detail).reason??'')};
     const replies=s.all("SELECT m.id,m.sender,substr(m.body,1,200) AS text FROM messages m JOIN receipts r ON r.workspace_id=m.workspace_id AND r.message_id=m.id WHERE m.workspace_id=? AND r.recipient=? AND r.state!='done' AND m.reply=1 ORDER BY m.id LIMIT 7",s.ws,actor);
-    return {...totals,role:actor,own_tasks:own.slice(0,6).map(row=>({...row,id:`T${row.id}`,title:contextLine(row.title)})),waiting_on_role:waiting.slice(0,6).map(row=>({...row,id:`B${row.id}`,task_id:`T${row.task_id}`})),replies:replies.slice(0,6).map(row=>({...row,id:`M${row.id}`})),more:{tasks:own.length>6,waits:waiting.length>6,replies:replies.length>6},notification_progress:progress?{cursor:progress.cursor,version:progress.version,state:progress.state??'saved'}:{state:'absent'},waiter:{registered:Boolean(waiter),armed:Boolean(worker&&waiter&&identity&&waiter.generation===worker.generation&&identity===waiter.process_start)}};
+    return {...totals,role:actor,own_tasks:own.slice(0,6).map(row=>({...row,id:`T${row.id}`,title:contextLine(row.title)})),waiting_on_role:waiting.slice(0,6).map(row=>({...row,id:`B${row.id}`,task_id:`T${row.task_id}`})),replies:replies.slice(0,6).map(row=>({...row,id:`M${row.id}`})),more:{tasks:own.length>6,waits:waiting.length>6,replies:replies.length>6},notification_progress:progress?{cursor:progress.cursor,version:progress.version,state:progress.state??'saved'}:{state:'absent'},waiter:{registered:Boolean(waiter),armed:Boolean(worker&&waiter&&identity&&waiter.generation===worker.generation&&identity===waiter.process_start)},...(watcher?{watcher}:{})};
   });
 }
 export function renderStatus(data:Row,lineLength=200):string {
   integer(lineLength,'line length',80,500);
   if(!data.role)return JSON.stringify(data,null,2);
-  const lines=[`${data.workspace} / ${data.role} · cursor ${data.notification_progress.cursor??data.notification_progress.state} · latest ${data.cursor} · waiter ${data.waiter.armed?'armed':data.waiter.registered?'stale/unconfirmed':'unregistered'}`];
+  const lines=[`${data.workspace} / ${data.role} · cursor ${data.notification_progress.cursor??data.notification_progress.state} · latest ${data.cursor} · waiter ${data.waiter.armed?'armed':data.waiter.registered?'stale/unconfirmed':'unregistered'}${data.watcher?` · watcher ${data.watcher.state}${data.watcher.reason?` (${data.watcher.reason})`:''}`:''}`];
   for(const stop of data.stop_requests.filter((row:Row)=>row.role===data.role))lines.push(`STOP ${stop.id}: finish safely and checkpoint; inspect sas stop-status.`);
   for(const row of data.own_tasks)lines.push(`${row.id} ${row.status} · ${row.title}`);
   if(!data.own_tasks.length)lines.push('No own active tasks.');

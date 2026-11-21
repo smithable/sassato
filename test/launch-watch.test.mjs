@@ -8,13 +8,13 @@ import { join,resolve } from 'node:path';
 import { mkdtempSync,readFileSync,rmSync,writeFileSync,existsSync,symlinkSync,realpathSync,chmodSync,lstatSync,statSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Store } from '../dist/storage.js';
-import { initWorkspace } from '../dist/admin.js';
+import { initWorkspace,status } from '../dist/admin.js';
 import { registerSession,send } from '../dist/coordination.js';
 import { requestStop } from '../dist/control.js';
 import { saveNotificationProgress,getNotificationProgress } from '../dist/notification-progress.js';
 import { launchWatch,reconcileWatch } from '../dist/launch-watch.js';
 import { launchLockPath } from '../dist/launch-admission.js';
-import { acceptCodexVersion,workspaceSettings } from '../dist/workspace-settings.js';
+import { acceptCodexVersion,workspaceSettings,checkCodexVersion } from '../dist/workspace-settings.js';
 
 const thread='f837a924-bc2e-472b-9bca-07b93cc531ae';
 async function until(fn) {
@@ -29,10 +29,11 @@ async function fixture(t,mode='success',link=false,version='0.167.0') {
   const provider=join(dir,'codex');
   writeFileSync(provider,`#!/usr/bin/env node
 const fs=require('fs'),args=process.argv.slice(2);
-if(args[0]==='--version')console.log('codex-cli '+${JSON.stringify(version)});
+if(args[0]==='--version'){console.log('codex-cli '+${JSON.stringify(version)});if(${JSON.stringify(mode)}==='notice')console.error('A newer version is available');}
 else if(args.includes('--help'))console.log('--thread --remote --resume --message');
 else if(args[0]==='queue'){
  fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(args)+'\\n');
+ if(${JSON.stringify(mode)}==='slow' && !fs.existsSync(${JSON.stringify(join(dir,'slow-once'))})){fs.writeFileSync(${JSON.stringify(join(dir,'slow-once'))},'1');setInterval(()=>{},1000);return;}
  if(${JSON.stringify(mode)}==='warning' || (${JSON.stringify(mode)}==='stop-warning' && args.join(' ').includes('Check Sassato STOP'))){console.error('resume unavailable');setTimeout(()=>{},350);}
  console.log('Queued message ${thread} for thread ${thread}.');
 }else {fs.writeFileSync(${JSON.stringify(join(dir,'up'))},'1');setInterval(()=>{},1000)}
@@ -74,11 +75,15 @@ test('warning despite exit zero suspends, preserves pending work, explicit close
   const f=await fixture(t,'warning');
   send(f.operator,['b'],'Deliver once',{now:true});
   await assert.rejects(launchWatch(f.operator,'b',f.remote,thread),/uncertain/);
+  assert.equal(status(f.worker).watcher.state,'exited');assert.match(status(f.worker).watcher.reason,/uncertain/);
   assert.equal(getNotificationProgress(f.worker).cursor,0);
   await assert.rejects(launchWatch(f.operator,'b',f.remote,thread),/Close the existing/);
   assert.equal(f.calls().length,1);
   const epoch=f.worker.get("SELECT id FROM events WHERE entity='wake-enrollment' AND action='opened'").id;
   assert.ok(f.worker.get("SELECT id FROM messages WHERE sender='b' AND body LIKE '%suspended%'"));
+  const urgent=f.worker.all("SELECT body FROM messages WHERE sender='b' AND urgent=1 AND body LIKE 'The Codex waiter for b stopped%'");
+  assert.equal(urgent.length,1);assert.match(urgent[0].body,/dispatch suspended/);assert.doesNotMatch(urgent[0].body,/Deliver once/);
+  assert.equal(status(f.worker).watcher.state,'refused');
   assert.equal(f.cli('wake','--pending').status,0);
   assert.equal(reconcileWatch(f.operator,'b',epoch).closed,epoch);
 });
@@ -211,10 +216,15 @@ test('a socket in a folder others can write is refused',async t=>{
   chmodSync(f.dir,0o777);
   await assert.rejects(launchWatch(f.operator,'b',f.remote,thread),/folder only that user/);
 });
-test('an unaccepted Codex version is refused until a human accepts it (T1098)',async t=>{
+test('a newer untested Codex version starts with a warning, an older one is refused; a human marks one tested (T1098, T664)',async t=>{
   const f=await fixture(t,'success',false,'0.168.0');
   assert.deepEqual(workspaceSettings(f.operator).codex_versions,['0.167.0']);
-  await assert.rejects(launchWatch(f.operator,'b',f.remote,thread),/Codex CLI 0\.168\.0 is not an accepted version \(accepted: 0\.167\.0\)\. A human accepts it with: sassato codex accept 0\.168\.0/);
+  const settings=workspaceSettings(f.operator);
+  assert.deepEqual(checkCodexVersion(settings,'codex-cli 0.167.0'),{version:'0.167.0',warning:null});
+  assert.match(checkCodexVersion(settings,'codex-cli 0.168.0').warning,/Codex CLI 0\.168\.0 is not a tested version \(tested: 0\.167\.0\); starting anyway.*sassato codex accept 0\.168\.0/);
+  assert.match(checkCodexVersion(settings,'codex-cli 1.0.0').warning,/not a tested version/);
+  assert.throws(()=>checkCodexVersion(settings,'codex-cli 0.166.9'),/Codex CLI 0\.166\.9 is older than 0\.167\.0/);
+  assert.throws(()=>checkCodexVersion(settings,'codex-cli 0.99.0'),/older than/);
   assert.throws(()=>acceptCodexVersion(f.worker,'0.168.0'),/Only a human accepts a Codex version/);
   const refused=f.cli('codex','accept','0.168.0');assert.notEqual(refused.status,0);assert.match(refused.stderr,/Only a human/);
   assert.deepEqual(acceptCodexVersion(f.operator,'0.168.0'),['0.167.0','0.168.0']);
@@ -231,4 +241,32 @@ test('an unaccepted Codex version is refused until a human accepts it (T1098)',a
   await until(()=>f.calls().length===1);
   requestStop(f.operator,['b']);
   assert.equal((await run).reason,'stopped');
+});
+test('an older Codex version is refused at startup with one urgent mail and a status line (T663, T664)',async t=>{
+  const f=await fixture(t,'success',false,'0.166.0');
+  await assert.rejects(launchWatch(f.operator,'b',f.remote,thread),/older than 0\.167\.0/);
+  assert.deepEqual(f.calls(),[]);
+  const urgent=f.worker.all("SELECT body FROM messages WHERE urgent=1 AND body LIKE 'The Codex waiter for b did not start%'");
+  assert.equal(urgent.length,1);
+  assert.equal(status(f.worker).watcher.state,'refused');assert.match(status(f.worker).watcher.reason,/older than/);
+});
+test('a notice on stderr beside a good version line is accepted (T664)',async t=>{
+  const f=await fixture(t,'notice');
+  const run=launchWatch(f.operator,'b',f.remote,thread);run.catch(()=>{});
+  send(f.operator,['b'],'Work',{now:true});
+  await until(()=>f.calls().length===1);
+  assert.equal(status(f.worker).watcher.state,'enrolled');
+  requestStop(f.operator,['b']);
+  assert.equal((await run).reason,'stopped');
+  assert.equal(f.worker.get("SELECT count(*) n FROM messages WHERE urgent=1 AND body LIKE 'The Codex waiter%'").n,0);
+});
+test('a queue call that times out is tried once more after a pause (T663)',async t=>{
+  const f=await fixture(t,'slow');
+  const run=launchWatch(f.operator,'b',f.remote,thread,undefined,{queueTimeoutMs:300,retryPauseMs:50});run.catch(()=>{});
+  send(f.operator,['b'],'Work',{now:true});
+  await until(()=>f.calls().length===2);
+  assert.ok(f.worker.get("SELECT id FROM events WHERE entity='watch-dispatch' AND action='retry'"));
+  requestStop(f.operator,['b']);
+  assert.equal((await run).reason,'stopped');
+  assert.equal(f.worker.get("SELECT count(*) n FROM messages WHERE urgent=1 AND body LIKE 'The Codex waiter%'").n,0);
 });

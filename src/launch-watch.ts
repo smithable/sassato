@@ -17,6 +17,11 @@ import { workspaceSettings, checkCodexVersion } from './workspace-settings.js';
 
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const deadlineMs=300_000;
+// A queue call on a loaded machine (a gate running) can take more than ten seconds: wait up to 30, and after a
+// timeout try once more after a short pause (T663). A timed-out call may still have queued its line; a second
+// "run sas wake --pending" line is harmless, since the pending result is consumed once.
+const queueTimeoutMs=30_000,retryPauseMs=2_000;
+const firstLine=(error:unknown)=>String(error instanceof Error?error.message:error).split('\n')[0].slice(0,200);
 
 // Every folder from this one up to the root is the user's or root's, and only those can replace its entries:
 // not writable by group or others unless sticky (as /tmp is).
@@ -75,37 +80,60 @@ export function reconcileWatch(operator:Store,role:string,epoch:number) {
   } finally {release();}
 }
 
-export async function launchWatch(operator:Store,role:string,remote:string,thread:string,clock=()=>performance.now()) {
+export async function launchWatch(operator:Store,role:string,remote:string,thread:string,clock=()=>performance.now(),timing={queueTimeoutMs,retryPauseMs}) {
   const human=operator.requireHuman();name(role);
   check(uuid.test(thread),'A registered Codex thread UUID is required');
   check(/^unix:\/\/\/[^\s\0]+$/.test(remote),'Use an explicit local unix:///absolute/path endpoint');
   const release=acquireLaunchLock(operator,role);
   try {
     const s=new Store(operator.path,role);
-    try {s.use(operator.workspace);return await observe(s,human,remote,thread,clock);}
+    try {s.use(operator.workspace);return await observe(s,human,remote,thread,clock,timing);}
     finally {s.close();}
   } finally {release();}
 }
 
-async function observe(s:Store,human:string,remote:string,thread:string,clock:()=>number) {
-  const role=s.requireActor(),bound=session(s,thread,remote),client=realpathSync(resolveExecutable('codex',true));
+// One urgent mail to the workspace's default human (else the human who started the watch): fixed text, the role
+// and the reason only, so a watcher that stops is seen by someone and not only in a terminal tab (T663).
+function warnHuman(s:Store,human:string,text:string) {
+  const to=workspaceSettings(s).default_human??human;
+  try {send(s,[to],text,{urgent:true});} catch {/* The thrown error still reaches the terminal. */}
+}
+
+async function observe(s:Store,human:string,remote:string,thread:string,clock:()=>number,timing:{queueTimeoutMs:number;retryPauseMs:number}) {
+  const role=s.requireActor();
+  const refused=(error:unknown)=>{
+    s.event('watch-dispatch',role,'refused',{reason:firstLine(error)});
+    warnHuman(s,human,`The Codex waiter for ${role} did not start: ${firstLine(error)}`);
+    return error;
+  };
+  let bound:ReturnType<typeof session>,client:string,pinned:string,options:{cwd:string},epoch:number;
   const clientIdentity=()=>{const st=statSync(client,{bigint:true});return [st.dev,st.ino,st.ctimeNs].join(':');};
-  const pinned=clientIdentity(),options={cwd:bound.cwd};
-  const version=await queueClient(client,['--version'],options);
-  check(version.code===0 && !version.timedOut && !version.stderr.trim(),'Cannot read the Codex CLI version',4);
-  checkCodexVersion(workspaceSettings(s),version.stdout);
-  const help=await queueClient(client,['queue','--help'],options);
-  check(help.code===0 && !help.timedOut && !help.stderr.trim() && ['thread','message','resume','remote'].every(flag=>new RegExp(`--${flag}\\b`).test(help.stdout)),'Required Codex queue interface unavailable',4);
   const identity=()=>check(pinned===clientIdentity() && JSON.stringify(session(s,thread,remote))===JSON.stringify(bound),
     'Watcher session, endpoint or configuration changed',4);
-  identity();
-  check(getNotificationProgress(s),'Reconcile the role’s notification progress before enrollment',4);
-  const epoch=enrollPendingWake(s,{session:bound.session,thread});
+  try {
+    bound=session(s,thread,remote);client=realpathSync(resolveExecutable('codex',true));
+    pinned=clientIdentity();options={cwd:bound.cwd};
+    // A notice on stderr (an update hint) is accepted for these two reads when the exit and the answer are right;
+    // the queue call itself stays strict (T664).
+    const version=await queueClient(client,['--version'],options);
+    check(version.code===0 && !version.timedOut,'Cannot read the Codex CLI version',4);
+    const {warning}=checkCodexVersion(workspaceSettings(s),version.stdout);
+    if(warning)console.error(warning);
+    const help=await queueClient(client,['queue','--help'],options);
+    check(help.code===0 && !help.timedOut && ['thread','message','resume','remote'].every(flag=>new RegExp(`--${flag}\\b`).test(help.stdout)),'Required Codex queue interface unavailable',4);
+    identity();
+    check(getNotificationProgress(s),'Reconcile the role’s notification progress before enrollment',4);
+    epoch=enrollPendingWake(s,{session:bound.session,thread});
+  } catch(error) {throw refused(error);}
   console.error(`Watching ${role} (enrollment E${epoch}). Interrupt to suspend; reconcile explicitly before restarting.`);
   const controller=new AbortController(),cancel=()=>controller.abort();
   process.on('SIGTERM',cancel);process.on('SIGINT',cancel);
   const messages=new Map<string,{at:number;reported:boolean}>(),deliveredMail=new Set<string>();
   const alert=(message:string)=>send(s,[human],`Waiter for ${role}, enrollment E${epoch}: ${message}`);
+  const exited=(reason:string,error:unknown)=>{
+    s.event('watch-dispatch',role,'exited',{epoch,reason:firstLine(error)});
+    warnHuman(s,human,`The Codex waiter for ${role} stopped (${reason}): ${firstLine(error)}. Nothing wakes ${role} until it is started again; sassato watch-status ${role} shows enrollment E${epoch}.`);
+  };
   const inspect=()=>{
     controller.signal.throwIfAborted();identity();
     if(pendingStop(s))return;
@@ -130,7 +158,12 @@ async function observe(s:Store,human:string,remote:string,thread:string,clock:()
     const args=['queue','--thread',thread,'--remote',bound.endpoint,'--message',message,'--resume'];
     // Staging is the durable intent for work. Record STOP intent too, before crossing processes.
     if(stopping)s.event('watch-dispatch',role,'stop-intent',{epoch});
-    const result=await queueClient(client,args,{...options,signal:controller.signal});
+    let result=await queueClient(client,args,{...options,signal:controller.signal,timeoutMs:timing.queueTimeoutMs});
+    if(result.timedOut && !controller.signal.aborted){
+      s.event('watch-dispatch',role,'retry',{epoch,stop:stopping});
+      await delay(timing.retryPauseMs,undefined,{signal:controller.signal});
+      result=await queueClient(client,args,{...options,signal:controller.signal,timeoutMs:timing.queueTimeoutMs});
+    }
     const receipt=new RegExp(`^Queued message ([a-f0-9-]+) for thread ${thread}\\.$`,'i').exec(result.stdout.trim());
     const confirmed=!!receipt && uuid.test(receipt[1]) && !result.stderr.trim() && result.code===0 && !result.timedOut;
     s.event('watch-dispatch',role,'returned',{epoch,stop:stopping,code:result.code,confirmed});
@@ -183,7 +216,10 @@ async function observe(s:Store,human:string,remote:string,thread:string,clock:()
       catch(stopError){alert('STOP observed. Enrollment closed; confirm the worker saw STOP.');throw stopError;}
     }
     if(stopping){alert('STOP observed. Verify the worker saw STOP and check enrollment status.');throw error;}
+    // An interrupt is the human's own act at the terminal: recorded, not mailed.
+    if(controller.signal.aborted){s.event('watch-dispatch',role,'suspended',{epoch,reason:'interrupted'});throw error;}
     alert(`automatic dispatch suspended. Inspect the terminal and pending result; explicitly reconcile epoch ${epoch} before restarting.`);
+    exited('dispatch suspended',error);
     throw error;
   } finally {process.off('SIGTERM',cancel);process.off('SIGINT',cancel);}
 }
