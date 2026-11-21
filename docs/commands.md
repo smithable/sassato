@@ -253,8 +253,11 @@ opened; `other` and `external` wake nobody. So a task parked for later is blocke
 
 `ask-human` sends the question and notification to the human selected with `--for`.
 Without `--for`, it uses the configured default human, the sole human, or the calling
-human. Otherwise an agent must choose explicitly. `humans [--for NAME] [--limit N]`
-lists pending questions and human tasks. Any human may answer; routing is not a private
+human. Otherwise an agent must choose explicitly. `humans [--for NAME] [--limit N] [--untouched]`
+lists pending questions and human tasks, each with who asked (`asked_by`: the asker, or the
+task's creator), its age in days (`age_days`), when it last changed (`touched_at`: the
+question or its task) and `untouched` when that was more than seven days ago; `--untouched`
+lists only those. Any human may answer; routing is not a private
 access boundary. Earlier command names remain documented in [compatibility](compatibility.md).
 
 Blocker kinds: agent, human, external, other. Every blocker names `--waits-on` explicitly.
