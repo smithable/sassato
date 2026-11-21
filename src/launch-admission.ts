@@ -1,10 +1,13 @@
-import { lstatSync,realpathSync,statSync } from 'node:fs';
+import { lstatSync,readdirSync,realpathSync,statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Store } from './storage.js';
 import { check,name } from './errors.js';
 
+function launchRoot(database:string):string {
+  return `${realpathSync(database)}.launch`;
+}
 export function launchDirectory(database:string,workspace:string):string {
-  return join(`${realpathSync(database)}.launch`,name(workspace));
+  return join(launchRoot(database),name(workspace));
 }
 export function launchLockPath(s:Store,role:string,workspace=s.workspace):string {
   return join(launchDirectory(s.path,workspace),`${name(role)}.lock`);
@@ -20,9 +23,19 @@ export function assertOrdinaryLaunchAllowed(s:Store,role:string):void {
  */
 export function assertNoOrdinaryLauncher(s:Store,role:string):void {
   check(statSync(s.path).nlink===1,'Hard-linked coordination databases are unsupported for launch admission',4);
-  for(const workspace of s.all('SELECT name FROM workspaces ORDER BY name')) {
-    try {lstatSync(launchLockPath(s,role,workspace.name));}
+  const root=launchRoot(s.path),file=`${name(role)}.lock`;
+  const registered=new Set(s.all('SELECT name FROM workspaces ORDER BY name').map(row=>name(row.name)));
+  const workspaces=new Set(registered);
+  try {
+    for(const entry of readdirSync(root,{withFileTypes:true})) {
+      if(entry.isDirectory()||entry.isSymbolicLink()) workspaces.add(entry.name);
+    }
+  }catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+  for(const workspace of workspaces) {
+    const path=join(root,workspace,file);
+    try {lstatSync(path);}
     catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')continue;throw error;}
-    check(false,'A pending ordinary launcher reserves this role; reconcile it before managed launch',4);
+    const location=registered.has(workspace)?`workspace ${workspace}`:`unregistered workspace directory ${JSON.stringify(workspace)}`;
+    check(false,`A pending ordinary launcher reserves this role in ${location}; reconcile it before managed launch`,4);
   }
 }

@@ -13,7 +13,7 @@ import { registerCheckout } from '../dist/checkouts.js';
 import { saveNotificationProgress } from '../dist/notification-progress.js';
 import { setWorkspaceSettings } from '../dist/workspace-settings.js';
 import { enrollAttended } from '../dist/attended.js';
-import { launchLockPath } from '../dist/launch-admission.js';
+import { assertNoOrdinaryLauncher,launchLockPath } from '../dist/launch-admission.js';
 
 const cli=resolve('bin/sassato.js');
 const delay=()=>new Promise(resolve=>setTimeout(resolve,10));
@@ -113,4 +113,19 @@ for(const dangling of [false,true])test(`unknown ${dangling?'dangling':'unreadab
   if(dangling)symlinkSync(join(f.dir,'missing'),path);else writeFileSync(path,'not a trustworthy launch record');
   const controller=await f.attended().done;assert.equal(controller.code,0,controller.err);const r=JSON.parse(controller.out);assert.notEqual(r.code,0,r.output);assert.match(r.output,/pending ordinary launcher/);assert.equal(f.s.get('SELECT count(*) n FROM managed_workers').n,0);
   if(dangling)assert.equal(lstatSync(path).isSymbolicLink(),true);else assert.equal(readFileSync(path,'utf8'),'not a trustworthy launch record');
+});
+
+
+test('an orphan workspace directory blocks managed launch only for the reserved role',async t=>{
+  const f=fixture(t),path=launchLockPath(f.s,'builder','retired');
+  mkdirSync(join(path,'..'),{recursive:true});
+  writeFileSync(path,'unverifiable orphan reservation');
+  assert.equal(f.s.get("SELECT count(*) n FROM workspaces WHERE name='retired'").n,0);
+  assert.doesNotThrow(()=>f.s.tx(()=>assertNoOrdinaryLauncher(f.s,'other')));
+  const controller=await f.attended().done;assert.equal(controller.code,0,controller.err);
+  const result=JSON.parse(controller.out);
+  assert.notEqual(result.code,0,result.output);
+  assert.match(result.output,/pending ordinary launcher.*unregistered workspace directory "retired"/);
+  assert.equal(f.s.get('SELECT count(*) n FROM managed_workers').n,0);
+  assert.equal(readFileSync(path,'utf8'),'unverifiable orphan reservation');
 });
