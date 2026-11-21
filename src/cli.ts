@@ -55,7 +55,7 @@ Tasks:      add TITLE [--body TEXT] [--for ROLE] [--owner ROLE] [--human-only]
 Blockers:   block T1 TEXT --kind agent|human|external|other --waits-on NAME
             blockers [--task T1 | --chain T1] | resolve B1 REASON
 Decisions:  ask-human T1 QUESTION [--for HUMAN] [--options 'one|two'] [--recommend TEXT]
-            [--command TEXT] | humans [--for HUMAN] | answer H1 ANSWER (or answer T1 ANSWER) [--close] [--relayed-by ROLE]
+            [--command TEXT] | humans [--for HUMAN] [--untouched] | answer H1 ANSWER (or answer T1 ANSWER) [--close] [--relayed-by ROLE]
             withdraw H1 REASON (the asker, the task's creator or a human)
 Mail:       send ROLE[,ROLE]|all TEXT [--re T1] [--urgency 0..10] [--reason TEXT] [--urgent | --now]
             wait [--since EVENT_CURSOR] [--timeout SECONDS] [--settle SECONDS] [--settle-max SECONDS]
@@ -108,14 +108,14 @@ Lists default to bounded results; --limit N. Context never consumes inbox receip
 Exit codes: 0 success/no matches; 1 storage/runtime; 2 input; 3 identity/access; 4 conflict; 5 mail-wait timeout.
 `;
 const strings = ['remote','epoch','role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes','digest-skip','ack','autocompact','wake-mode','speed','wake-roles','urgency','reason','scored-receipt','idle-receipt'];
-const booleans = ['pending','unread','attended','now','json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','wait','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
+const booleans = ['pending','untouched','unread','attended','now','json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','wait','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
 const globalFlags = ['db','workspace','as','json','help'];
 const allowed: Record<string,string[]> = {
   'index build':['repo','cache'],'index update':['repo','cache','diff'],'index find':['repo','cache','limit'],'index show':['repo','cache','limit'],
   init:['config','humans','interactive','no-interactive','launch','dry-run','fresh','resume','no-prompt','terminal','distro','window','stop-file','new-window'], 'workspace attach':[], 'workspace settings':[], 'workspace wake-audit':['limit'], 'workspace set':['default-human','import-timezone','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','open-work-roles','digest-skip','wake-mode','speed','wake-roles'],roles:[], 'role set':['provider','model','effort','permission-mode','sandbox','approval','dir','kind','autocompact'],
   add:['title','body','for','owner','priority','human-only','review-required'],tasks:['status','owner','for','available','limit','after'],show:['limit','before-event'],
   take:['hours'],renew:['hours'],note:[],update:['expect','title','body','priority','for','human-only','agent-allowed','review-required','no-review'],handoff:['brief-file','expect'],release:[],submit:['reviewer'],review:['approve','reject','note','expect'],done:['ref'],drop:[],reopen:[],after:[],unafter:[],block:['kind','waits-on','on'],blockers:['task','chain','limit','all'],resolve:[],
-  'ask-human':['for','options','recommend','command'],answer:['close','relayed-by'],withdraw:[],humans:['for','limit'],send:['re','urgent','needs-reply','now','urgency','reason'],wait:['urgent','timeout','stop-file','since','idle-minutes','settle','settle-max'],inbox:['peek','state','limit','unread'],wake:['pending','since','ack','timeout','stop-file','idle-minutes','settle','settle-max'],outbox:['limit'],sent:['limit'],retitle:['owner','apply'],ack:[],
+  'ask-human':['for','options','recommend','command'],answer:['close','relayed-by'],withdraw:[],humans:['for','limit','untouched'],send:['re','urgent','needs-reply','now','urgency','reason'],wait:['urgent','timeout','stop-file','since','idle-minutes','settle','settle-max'],inbox:['peek','state','limit','unread'],wake:['pending','since','ack','timeout','stop-file','idle-minutes','settle','settle-max'],outbox:['limit'],sent:['limit'],retitle:['owner','apply'],ack:[],
   'fact set':['source','checked-at','expect','answers'],'fact get':[],'fact history':[],facts:['limit'],
   'wip show':[],'wip set':['current','next','notes','expect'],sessions:[], 'session register':['provider','session-id','pid','replace'],'session heartbeat':['session-id'],'session end':['session-id'],usage:['until'],
   stop:['all','timeout','no-wait','force'],'stop-status':['quiet','stop-file'],stopped:[],'resume-work':['all'],
@@ -229,8 +229,9 @@ function humanOutput(value: unknown, command?: string): string {
     return value.map(row => {
       if (!row || typeof row !== 'object') return String(row);
       const r = row as Row;
-      if (r.kind === 'question' || r.question) return `${r.id} ${r.task_id ?? ''} ${r.question}\n${r.options?.length ? `  Options: ${r.options.map((o: string,i: number)=>`${i+1}. ${o}`).join(' | ')}\n` : ''}${r.recommendation ? `  Recommend: ${r.recommendation}\n` : ''}${r.command ? `  Command: ${r.command}\n` : ''}`;
-      if (r.title || r.body || r.snippet) return [r.id,r.now?'NOW':r.urgent?'URGENT':null,r.status ?? r.state,r.owner ?? r.sender ?? r.role,r.title ?? r.key, String(r.snippet ?? r.body ?? '').replace(/\s+/g,' ').slice(0,220), r.answered_in ? `answered in ${r.answered_in}` : null].filter(v=>v!==null&&v!==undefined&&v!=='').join(' · ');
+      const waited = r.age_days === undefined ? '' : ` (${[r.asked_by ? `asked by ${r.asked_by}` : null, `${r.age_days} d`, r.untouched ? 'untouched' : null].filter(Boolean).join(', ')})`;
+      if (r.kind === 'question' || r.question) return `${r.id} ${r.task_id ?? ''} ${r.question}${waited}\n${r.options?.length ? `  Options: ${r.options.map((o: string,i: number)=>`${i+1}. ${o}`).join(' | ')}\n` : ''}${r.recommendation ? `  Recommend: ${r.recommendation}\n` : ''}${r.command ? `  Command: ${r.command}\n` : ''}`;
+      if (r.title || r.body || r.snippet) return [r.id,r.now?'NOW':r.urgent?'URGENT':null,r.status ?? r.state,r.owner ?? r.sender ?? r.role,r.title ?? r.key, String(r.snippet ?? r.body ?? '').replace(/\s+/g,' ').slice(0,220), r.answered_in ? `answered in ${r.answered_in}` : null, waited ? waited.trim() : null].filter(v=>v!==null&&v!==undefined&&v!=='').join(' · ');
       return JSON.stringify(r);
     }).join('\n');
   }
@@ -358,7 +359,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'ask-human': {const task=arg('task');result=t.askHuman(s,task,{question:rest('question'),forRole:str('for'),options:str('options')?.split('|'),recommendation:str('recommend'),command:str('command')});break;}
         case 'withdraw': {const question=arg('question');result=t.withdrawQuestion(s,question,rest('reason'));break;}
         case 'answer': {const question=arg('question or task');result=t.answerQuestion(s,question,rest('answer'),{close:bool('close'),relayedBy:str('relayed-by')});break;}
-        case 'humans': empty();result=t.humanQueue(s,{limit:num('limit'),forRole:str('for')});break;
+        case 'humans': empty();result=t.humanQueue(s,{limit:num('limit'),forRole:str('for'),untouched:bool('untouched')});break;
         case 'send': {const to=arg('recipient');result=c.send(s,to==='all'?'all':to.split(','),rest('message'),{task:str('re'),urgent:bool('urgent'),needsReply:bool('needs-reply'),now:bool('now'),urgency:str('urgency'),reason:str('reason')});break;}
         case 'wait': {empty();result=await waitWithManagedObservation(s,{timeout:num('timeout'),stopFile:str('stop-file'),since:num('since'),idleMinutes:num('idle-minutes'),settle:num('settle'),settleMax:num('settle-max')});if((result as WaitResult).reason==='timeout')process.exitCode=5;break;}
         case 'inbox': empty();check(!(bool('unread')&&str('state')),'Give --unread or --state, not both');result=c.inbox(s,{peek:bool('peek'),state:(bool('unread')?'unread':str('state')) as 'unread'|'read'|'done'|undefined,limit:num('limit')});break;

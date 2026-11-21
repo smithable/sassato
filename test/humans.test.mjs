@@ -245,3 +245,22 @@ test('the asker, the task creator or a human withdraws a pending question with a
   assert.equal(cli.status,'cancelled');assert.equal(cli.cancel_reason,'settled in chat');assert.equal(cli.cancelled_by,'alice');
   assert.equal(tasks.showTask(s,task.id).status,'open');
 });
+
+test('the human queue says who asked, how long ago, and marks what nobody touched for a week (T1085)',t=>{
+  const {s,db}=fixture(t),old=new Date(Date.now()-9*86_400_000).toISOString();
+  const asked=tasks.addTask(s,{title:'Choose host'}),q=tasks.askHuman(s,asked.id,{question:'Which host?'});
+  const work=tasks.addTask(s,{title:'Sign the form',humanOnly:true}),fresh=tasks.addTask(s,{title:'Read the note',humanOnly:true});
+  s.run('UPDATE questions SET created_at=? WHERE id=?',old,Number(q.id.slice(1)));
+  s.run('UPDATE tasks SET created_at=?,updated_at=? WHERE id IN (?,?)',old,old,Number(asked.id.slice(1)),Number(work.id.slice(1)));
+  const rows=run(db,['--as','alice','humans','--for','alice']),by=id=>rows.find(r=>r.id===id);
+  assert.deepEqual([by(q.id).asked_by,by(q.id).age_days,by(q.id).untouched],['builder',9,true]);
+  assert.deepEqual([by(work.id).asked_by,by(work.id).age_days,by(work.id).untouched],['builder',9,true]);
+  assert.deepEqual([by(fresh.id).age_days,by(fresh.id).untouched],[0,false]);
+  assert.deepEqual(run(db,['--as','alice','humans','--untouched']).map(r=>r.id).sort(),[q.id,work.id].sort());
+  // A change to the question's task counts as touching it.
+  s.run('UPDATE tasks SET updated_at=? WHERE id=?',new Date().toISOString(),Number(asked.id.slice(1)));
+  assert.deepEqual(run(db,['--as','alice','humans','--untouched']).map(r=>r.id),[work.id]);
+  const text=spawnSync(process.execPath,[cli,'--db',db,'--workspace','team','--as','alice','humans'],{encoding:'utf8'}).stdout;
+  assert.match(text,/Sign the form.*\(asked by builder, 9 d, untouched\)/);
+  assert.match(text,/Which host\? \(asked by builder, 9 d\)/);
+});
