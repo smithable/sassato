@@ -371,6 +371,15 @@ export function askHuman(s: Store, task: string, options: AskOptions): Row {
     return { ...questionView(question), for_role: recipient };
   });
 }
+// A question with no task yet (T1085): one transaction makes the task, owned by and for the
+// asker, with the question as its body, and asks the question on it.
+export function askHumanNew(s: Store, title: string, options: AskOptions): Row {
+  return s.tx(() => {
+    const actor = s.requireActor(); text(options.question, 'question');
+    const task = addTask(s, { title, body: options.question, owner: actor, forRole: actor });
+    return { ...askHuman(s, task.id, options), task_title: task.title };
+  });
+}
 export function answerQuestion(s: Store, questionOrTask: string, answer: string, options: { close?: boolean; relayedBy?: string } = {}): Row {
   return s.tx(() => {
     const actor = s.requireHuman(); text(answer, 'answer');

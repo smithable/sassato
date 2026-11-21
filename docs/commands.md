@@ -253,7 +253,10 @@ opened; `other` and `external` wake nobody. So a task parked for later is blocke
 
 `ask-human` sends the question and notification to the human selected with `--for`.
 Without `--for`, it uses the configured default human, the sole human, or the calling
-human. Otherwise an agent must choose explicitly. `humans [--for NAME] [--limit N] [--untouched]`
+human. Otherwise an agent must choose explicitly. `ask-human --new TITLE QUESTION` asks
+a question that has no task yet: it makes the task (owned by and for the asker, the
+question as its body) and asks the question in one step, and prints both ids; a task id
+beside `--new` is refused. `humans [--for NAME] [--limit N] [--untouched]`
 lists pending questions and human tasks, each with who asked (`asked_by`: the asker, or the
 task's creator), its age in days (`age_days`), when it last changed (`touched_at`: the
 question or its task) and `untouched` when that was more than seven days ago; `--untouched`

@@ -276,3 +276,19 @@ test('context shows a role its own open questions with their age and the untouch
   assert.deepEqual([row.age_days,row.untouched],[10,true]);
   assert.match(renderContext(context(s)),new RegExp(`questions: ${q.id} · task=${task.id} · for_role=alice · age_days=10 · untouched=true · question=Which host\\?`));
 });
+
+test('ask-human --new makes the task and asks the question in one step (T1085)',t=>{
+  const {s,db}=fixture(t);
+  const q=run(db,['--as','builder','ask-human','--new','Pick a host','Which host for the beta?','--options','local|hosted']);
+  assert.match(q.id,/^H\d+$/);assert.equal(q.for_role,'alice');assert.equal(q.task_title,'Pick a host');
+  const task=tasks.showTask(s,q.task_id);
+  assert.deepEqual([task.title,task.body,task.owner,task.for_role,task.creator],['Pick a host','Which host for the beta?','builder','builder','builder']);
+  assert.equal(task.blockers[0].waiting_on,'alice');
+  assert.ok(run(db,['--as','alice','humans']).some(r=>r.id===q.id));
+  const both=raw(db,['--as','builder','ask-human','--new','Again',task.id,'Which host?']);
+  assert.equal(both.status,2);assert.match(both.stderr,/either --new TITLE or a task id/);
+  // A refused question leaves no task behind: the two writes share one transaction.
+  const before=s.get('SELECT count(*) AS n FROM tasks').n;
+  const bad=raw(db,['--as','builder','ask-human','--new','Orphan','Which?','--for','nobody']);
+  assert.notEqual(bad.status,0);assert.equal(s.get('SELECT count(*) AS n FROM tasks').n,before);
+});
