@@ -8,7 +8,7 @@ import { assertManagedIdentity,assertManagedWrite,type ManagedCredentials,type M
 // SQLite rows deliberately stay flexible at this small adapter boundary.
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
-export const SCHEMA_VERSION = 12;
+export const SCHEMA_VERSION = 13;
 export function databasePath(value?: string): string {
   const path = resolve(value ?? process.env.SASSATO_DB ?? `${process.env.XDG_DATA_HOME ?? `${homedir()}/.local/share`}/sassato/sassato.db`);
   let ancestor = path;
@@ -141,7 +141,8 @@ export class Store {
       if (current === 8) { this.db.exec(MIGRATION_9); current = 9; }
       if (current === 9) { this.db.exec(MIGRATION_10); current = 10; }
       if (current === 10) { this.db.exec(MIGRATION_11); current = 11; }
-      if (current === 11) this.db.exec(MIGRATION_12);
+      if (current === 11) { this.db.exec(MIGRATION_12); current = 12; }
+      if (current === 12) this.db.exec(MIGRATION_13);
     });
   }
   private cancelClosedQuestions(): void {
@@ -334,4 +335,16 @@ const MIGRATION_12 = `
 ALTER TABLE tasks ADD COLUMN spare INTEGER NOT NULL DEFAULT 0 CHECK(spare IN (0,1));
 INSERT INTO schema_migrations VALUES(12,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 PRAGMA user_version=12;
+`;
+
+// Feedback record (T1113): one line per observation, closed as a task, a fact or a stated no.
+const MIGRATION_13 = `
+CREATE TABLE feedback(id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id INTEGER NOT NULL REFERENCES workspaces(id),
+  kind TEXT NOT NULL CHECK(kind IN ('workflow','tokens','untested','sampleusers','sassato')), body TEXT NOT NULL, task_id INTEGER,
+  author TEXT NOT NULL, created_at TEXT NOT NULL, closed_by TEXT, closed_at TEXT,
+  outcome TEXT CHECK(outcome IN ('task','fact','dropped')), outcome_ref TEXT,
+  CHECK((closed_at IS NULL)=(outcome IS NULL)), FOREIGN KEY(workspace_id,author) REFERENCES roles(workspace_id,name));
+CREATE INDEX feedback_open ON feedback(workspace_id,closed_at,id);
+INSERT INTO schema_migrations VALUES(13,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+PRAGMA user_version=13;
 `;

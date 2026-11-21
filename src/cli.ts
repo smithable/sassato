@@ -10,6 +10,7 @@ import { AppError, check, integer } from './errors.js';
 import * as a from './admin.js';
 import * as t from './tasks.js';
 import * as c from './coordination.js';
+import * as fb from './feedback.js';
 import * as m from './migration.js';
 import * as l from './launch.js';
 import { retitleImportedTasks } from './retitle.js';
@@ -41,6 +42,7 @@ Setup:      init (interactive in a terminal) | init --workspace NAME
             workspace attach PATH --as HUMAN
             workspace settings | workspace set --default-human NAME | --wake-mode legacy|scored | --speed slow|normal|fast
             workspace wake-audit [--limit N] --as HUMAN
+            workspace set --feedback-closers ROLE,ROLE|none --as HUMAN (roles besides humans that close feedback)
             codex versions | codex accept VERSION [--replace] --as HUMAN (the Codex CLI versions launch accepts)
             roles | role set NAME [--provider claude|codex] [--model MODEL] [--dir PATH]
             [--kind human|agent] [--effort LEVEL] [--permission-mode MODE] [--sandbox MODE] [--approval POLICY]
@@ -69,6 +71,9 @@ Mail:       send ROLE[,ROLE]|all TEXT [--re T1] [--urgency 0..10] [--reason TEXT
               (STOP, each entry's full text, mail to acknowledge), save the cursor, and end with the re-arm command
 Knowledge:  fact set KEY TEXT --source LOCATION [--expect VERSION]
             fact get KEY | fact history KEY | facts
+Feedback:   feedback add workflow|tokens|untested|sampleusers|sassato TEXT [--re T1] (one line; wakes nobody)
+            feedback list [--kind K] [--author ROLE] [--all] [--limit N] [--after K1]
+            feedback close K1 --task T1 | --fact KEY | --dropped REASON (a human, or a role in --feedback-closers)
 WIP:        wip [show ROLE] | wip set --current TEXT --next TEXT --notes TEXT
             (updates require --expect VERSION)
 Recovery:   checkpoint show [ROLE]
@@ -94,7 +99,7 @@ Jobs:       job run --kind KIND [--wait | --no-wait] [--job-version TEXT] [--loa
             [--mem MB] -- COMMAND [ARGS...] (heavy work: waits for room, measured)
             job list | job stats
 Read:       context [--brief] [--since EVENT_CURSOR] [--line-length N] | status [--line-length N]
-            search TEXT [--type task,message,fact,event] [--phrase|--prefix]
+            search TEXT [--type task,message,fact,feedback,event] [--phrase|--prefix]
 Migration:  import --backlog FILE --wip FILE --actions DIR --sessions FILE
             --dry-run (preview), then same paths --confirm DIGEST [--repair]
             export NEW_DIRECTORY
@@ -110,16 +115,16 @@ select workspace when not explicit. Writes require --as; human actions require a
 Lists default to bounded results; --limit N. Context never consumes inbox receipts.
 Exit codes: 0 success/no matches; 1 storage/runtime; 2 input; 3 identity/access; 4 conflict; 5 mail-wait timeout.
 `;
-const strings = ['spare-work','spare-providers','new','asked','remote','epoch','role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes','digest-skip','ack','autocompact','wake-mode','speed','wake-roles','urgency','reason','scored-receipt','idle-receipt'];
+const strings = ['feedback-closers','author','fact','dropped','spare-work','spare-providers','new','asked','remote','epoch','role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes','digest-skip','ack','autocompact','wake-mode','speed','wake-roles','urgency','reason','scored-receipt','idle-receipt'];
 const booleans = ['spare','no-spare','pending','untouched','unread','attended','now','json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','wait','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
 const globalFlags = ['db','workspace','as','json','help'];
 const allowed: Record<string,string[]> = {
   'index build':['repo','cache'],'index update':['repo','cache','diff'],'index find':['repo','cache','limit'],'index show':['repo','cache','limit'],
-  init:['config','humans','interactive','no-interactive','launch','dry-run','fresh','resume','no-prompt','terminal','distro','window','stop-file','new-window'], 'workspace attach':[], 'workspace settings':[], 'workspace wake-audit':['limit'], 'workspace set':['default-human','import-timezone','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','open-work-roles','digest-skip','wake-mode','speed','wake-roles','spare-work','spare-providers'],roles:[], 'role set':['provider','model','effort','permission-mode','sandbox','approval','dir','kind','autocompact'],
+  init:['config','humans','interactive','no-interactive','launch','dry-run','fresh','resume','no-prompt','terminal','distro','window','stop-file','new-window'], 'workspace attach':[], 'workspace settings':[], 'workspace wake-audit':['limit'], 'workspace set':['default-human','import-timezone','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','open-work-roles','digest-skip','wake-mode','speed','wake-roles','spare-work','spare-providers','feedback-closers'],roles:[], 'role set':['provider','model','effort','permission-mode','sandbox','approval','dir','kind','autocompact'],
   add:['title','body','for','owner','priority','human-only','review-required','spare'],tasks:['status','owner','for','available','limit','after','spare'],show:['limit','before-event'],
   take:['hours'],renew:['hours'],note:[],update:['expect','title','body','priority','for','human-only','agent-allowed','review-required','no-review','spare','no-spare'],handoff:['brief-file','expect'],release:[],submit:['reviewer'],review:['approve','reject','note','expect'],done:['ref'],drop:[],reopen:[],after:[],unafter:[],block:['kind','waits-on','on'],blockers:['task','chain','limit','all'],resolve:[],
   'ask-human':['for','options','recommend','command','new'],answer:['close','relayed-by','asked','on','new'],withdraw:[],humans:['for','limit','untouched'],send:['re','urgent','needs-reply','now','urgency','reason'],wait:['urgent','timeout','stop-file','since','idle-minutes','settle','settle-max'],inbox:['peek','state','limit','unread'],wake:['pending','since','ack','timeout','stop-file','idle-minutes','settle','settle-max'],outbox:['limit'],sent:['limit'],retitle:['owner','apply'],ack:[],
-  'fact set':['source','checked-at','expect','answers'],'fact get':[],'fact history':[],'codex accept':['replace'],'codex versions':[],facts:['limit'],
+  'fact set':['source','checked-at','expect','answers'],'feedback add':['re'],'feedback list':['kind','author','all','limit','after'],'feedback close':['task','fact','dropped'],'fact get':[],'fact history':[],'codex accept':['replace'],'codex versions':[],facts:['limit'],
   'wip show':[],'wip set':['current','next','notes','expect'],sessions:[], 'session register':['provider','session-id','pid','replace'],'session heartbeat':['session-id'],'session end':['session-id'],usage:['until'],
   stop:['all','timeout','no-wait','force'],'stop-status':['quiet','stop-file'],stopped:[],'resume-work':['all'],
   context:['brief','since','limit','line-length'],status:['line-length'],'job run':['kind','wait','no-wait','job-version','load','mem'],'job list':[],'job stats':[],search:['type','owner','status','since','limit','phrase','prefix'],
@@ -154,6 +159,11 @@ function humanOutput(value: unknown, command?: string): string {
   }
   if(Array.isArray(value)&&command==='retitle') {
     return value.length?value.map((row:Row)=>`${row.id}${row.applied?' updated':' preview'}: ${row.before} → ${row.title}`).join('\n'):'No imported titles need cleanup.';
+  }
+  if(value && typeof value==='object' && command==='feedback list') {
+    const page=value as {items:Row[];has_more:boolean;next_after:string|null};
+    const lines=page.items.map(k=>`${k.id} · ${k.kind} · ${k.author} · ${String(k.created_at).slice(0,16).replace('T',' ')}${k.task_id?` · ${k.task_id}`:''}: ${k.body}${k.open?'':` (closed: ${k.outcome} ${k.outcome_ref})`}`);
+    return (lines.length?lines.join('\n'):'No feedback.')+(page.has_more?`\nMore exist; continue with --after ${page.next_after}.`:'');
   }
   if(value && typeof value==='object' && command==='done') {
     const task=value as Row;
@@ -273,7 +283,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (bool('version')) {const build=JSON.parse(readFileSync(new URL('./build-info.json',import.meta.url),'utf8'));console.log(bool('json')?JSON.stringify({...build,schema:SCHEMA_VERSION}):`${build.version} (build ${build.build})`);return;}
     const p=[...positionals];let command=p.shift()!;
     if (command==='task') command=p.shift()??'tasks';
-    if (['workspace','role','fact','session','job','checkout','brief','index','codex'].includes(command)) command+=' '+(p.shift()??'');
+    if (['workspace','role','fact','feedback','session','job','checkout','brief','index','codex'].includes(command)) command+=' '+(p.shift()??'');
     if (command==='supervise') command+=' '+(p.shift()??(bool('attended')?'attended':'status'));
     if (command==='checkpoint' || command==='progress') command+=' '+(p.shift()??'show');
     // wip get is an alias of wip show, which prints the version that wip set --expect takes.
@@ -314,7 +324,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     else if(command==='restore') {const source=arg('backup');empty();check(str('db'),'Restore requires explicit --db NEW_FILE');result=await a.restoreDatabase(source,db);}
     else if(command==='machine') {empty();result=a.machine();}
     else {
-      const reads=['watch-status','supervise assignment','supervise status','checkout list','checkout show','checkout resolve','brief show','job list','job stats','tasks','show','blockers','humans','outbox','sent','fact get','fact history','codex versions','facts','wip show','sessions','roles','workspace settings','workspace wake-audit','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
+      const reads=['watch-status','supervise assignment','supervise status','checkout list','checkout show','checkout resolve','brief show','job list','job stats','tasks','show','blockers','humans','outbox','sent','fact get','fact history','feedback list','codex versions','facts','wip show','sessions','roles','workspace settings','workspace wake-audit','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
       const readonly=reads.includes(command)||command==='retitle'&&!bool('apply')||command==='inbox'&&bool('peek')||['launch','import'].includes(command)&&bool('dry-run');
       store=new Store(db,actor,{readonly,managedWriteMode:command==='supervise reconcile'?'reconcile':command==='supervise ack'?'normal':command==='stopped'?'stop-ack':'normal'});
       const s=store;
@@ -338,6 +348,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           if(str('open-work-roles')!==undefined)patch.open_work_roles=str('open-work-roles')==='all'?null:str('open-work-roles')!.split(',').map(role=>role.trim()).filter(Boolean);
           if(str('spare-work')!==undefined){check(['on','off'].includes(str('spare-work')!),'--spare-work takes on or off');patch.spare_work=str('spare-work')==='on';}
           if(str('spare-providers')!==undefined){const list=str('spare-providers')==='any'?[]:str('spare-providers')!.split(',').map(p=>p.trim());check(list.every(Boolean),'--spare-providers takes provider names separated by commas, or any');patch.spare_providers=list;}
+          if(str('feedback-closers')!==undefined)patch.feedback_closers=str('feedback-closers')==='none'?[]:str('feedback-closers')!.split(',').map(r=>r.trim());
           if(str('wake-mode')!==undefined)patch.wake_mode=str('wake-mode') as WorkspaceSettings['wake_mode'];
           if(str('speed')!==undefined)patch.speed=str('speed') as WorkspaceSettings['speed'];
           if(str('wake-roles')!==undefined)try{patch.wake_roles=JSON.parse(str('wake-roles')!);}catch{check(false,'--wake-roles must be valid JSON');}
@@ -416,6 +427,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'fact set': {const key=arg('key'),answers=str('answers');const set=()=>c.setFact(s,key,{body:rest('fact'),source:need('source'),checked_at:str('checked-at'),expected_version:num('expect')});
           result=answers===undefined?set():s.tx(()=>{const fact=set();t.markFactAnswer(s,answers,{id:fact.id,key:fact.key});return {...fact,answers};});break;}
         case 'fact get': case 'fact history': {const key=arg('key');empty();result=command==='fact get'?c.facts(s,{key}):c.factHistory(s,key);break;}
+        case 'feedback add': {const kind=arg('kind');result=fb.addFeedback(s,kind,rest('feedback'),{re:str('re')});break;}
+        case 'feedback list': empty();result=fb.listFeedback(s,{kind:str('kind'),author:str('author'),all:bool('all'),limit:num('limit'),after:str('after')});break;
+        case 'feedback close': {const k=arg('feedback');empty();result=fb.closeFeedback(s,k,{task:str('task'),fact:str('fact'),dropped:str('dropped')});break;}
         case 'facts': empty();result=c.facts(s,{limit:num('limit')});break;
         case 'wip show': {const role=p.shift();empty();result=c.getWip(s,role);break;}
         case 'wip set': empty();{const warnings=humanWaits(s,{current:str('current'),next:str('next'),notes:str('notes')});result=withWarnings(c.setWip(s,{current:str('current'),next:str('next'),notes:str('notes'),expected_version:num('expect')}),warnings);}break;

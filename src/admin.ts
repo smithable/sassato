@@ -103,7 +103,7 @@ export function search(s: Store, query: string, options: {type?: string;role?: s
   const match = options.phrase ? quote(words.join(' ')) : words.map((w,i) => quote(w)+(options.prefix && i === words.length-1 ? '*' : '')).join(' AND ');
   const filters=['d.workspace_id=?','search MATCH ?']; const params: Param[]=[s.ws,match];
   if (options.type) {
-    const types=options.type.split(','); check(types.length <= 10 && types.every(t=>['task','message','fact','blocker','question','wip','event','import'].includes(t)),'Unknown search type');
+    const types=options.type.split(','); check(types.length <= 10 && types.every(t=>['task','message','fact','feedback','blocker','question','wip','event','import'].includes(t)),'Unknown search type');
     filters.push(`d.type IN (${types.map(()=>'?').join(',')})`); params.push(...types);
   }
   for (const key of ['role','status'] as const) if(options[key]) {filters.push(`d.${key}=?`);params.push(options[key]!);}
@@ -150,9 +150,9 @@ export function machine(): Row { return {load:loadavg(),cpus:cpus().length,free_
 
 /** Expand a search result by public ID, always within the selected workspace. */
 export function showRecord(s: Store, recordId: string): Row {
-  const tables: Record<string,string> = {M:'messages',F:'facts',B:'blockers',H:'questions',E:'events',I:'imports'};
+  const tables: Record<string,string> = {M:'messages',F:'facts',K:'feedback',B:'blockers',H:'questions',E:'events',I:'imports'};
   const prefix = recordId[0], table = tables[prefix];
-  check(table, 'Expected a task, message, fact, blocker, question, event or import ID');
+  check(table, 'Expected a task, message, fact, feedback, blocker, question, event or import ID');
   const row = s.get(`SELECT * FROM ${table} WHERE workspace_id=? AND id=?`,s.ws,id(recordId,prefix));
   check(row, `${recordId} not found in this workspace`,3);
   const result: Row = {...row,id:recordId};
