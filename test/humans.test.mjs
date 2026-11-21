@@ -292,3 +292,25 @@ test('ask-human --new makes the task and asks the question in one step (T1085)',
   const bad=raw(db,['--as','builder','ask-human','--new','Orphan','Which?','--for','nobody']);
   assert.notEqual(bad.status,0);assert.equal(s.get('SELECT count(*) AS n FROM tasks').n,before);
 });
+
+test('answer --asked records a question nobody recorded and its answer together (T1085)',t=>{
+  const {s,db}=fixture(t),task=tasks.addTask(s,{title:'Choose host',owner:'builder'});
+  const on=run(db,['--as','alice','answer','--asked','Which host?','--on',task.id,'--relayed-by','builder','Hosted']);
+  assert.deepEqual([on.status,on.answer,on.answered_by,on.asked_by,on.relayed_by,on.task_id],['answered','Hosted','alice','builder','builder',task.id]);
+  assert.equal(tasks.showTask(s,task.id).blockers.length,0);
+  assert.equal(s.get("SELECT count(*) AS n FROM events WHERE entity='question' AND entity_id=? AND action='recorded'",on.id).n,1);
+  const made=run(db,['--as','alice','answer','--asked','Ship on Monday?','--new','Ship date','--relayed-by','builder','--close','Yes']);
+  const t2=tasks.showTask(s,made.task_id);
+  assert.deepEqual([t2.title,t2.owner,t2.for_role,t2.status],['Ship date','builder','builder','done']);
+  // Only a human records an answer, and always says who heard it.
+  assert.equal(raw(db,['--as','builder','answer','--asked','Q?','--on',task.id,'--relayed-by','builder','A']).status,3);
+  assert.match(raw(db,['--as','alice','answer','--asked','Q?','--on',task.id,'A']).stderr,/--relayed-by ROLE/);
+  assert.match(raw(db,['--as','alice','answer','--asked','Q?','--relayed-by','builder','A']).stderr,/--on T1.*--new TITLE/);
+  assert.match(raw(db,['--as','alice','answer',on.id,'A','--on',task.id]).stderr,/go with --asked/);
+  assert.equal(s.get("SELECT detail FROM events WHERE entity='task' AND entity_id=? AND action='human-question'",task.id).detail.includes('"asked_by":"builder"'),true);
+  // A failure after the new task is made rolls the task back with the question.
+  s.run("CREATE TRIGGER boom BEFORE INSERT ON questions WHEN NEW.question='Boom?' BEGIN SELECT RAISE(ABORT,'boom'); END");
+  const before=s.get('SELECT count(*) AS n FROM tasks').n;
+  assert.notEqual(raw(db,['--as','alice','answer','--asked','Boom?','--new','Orphan','--relayed-by','builder','A']).status,0);
+  assert.equal(s.get('SELECT count(*) AS n FROM tasks').n,before);
+});
