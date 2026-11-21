@@ -849,14 +849,19 @@ by this enrollment is suppressed while other work can still wake the worker.
 An overdue acknowledgement sends one reminder per receipt to the operator.
 
 A queue call waits up to 30 seconds; after a timeout it is tried once more
-after a short pause (a timed-out call may still have queued its line, and a
-second line is harmless). A queue warning (even with exit zero), a second
-timeout, a changed binding or five minutes without consumption suspends
-dispatch and alerts the enrolling human. A suspended watcher, and one refused
-at startup, also sends one urgent mail to the workspace's default human
-(fixed text: the role and the reason), and `sas status` shows
-`watcher exited (reason)` or `watcher refused (reason)` for the role until the
-next enrollment. Interrupting the launcher (Ctrl-C) is recorded but not mailed. An
+after a short pause, for work only and only when the first call printed
+nothing; STOP, the binding and whether the worker already consumed the result
+are checked again first, and a STOP notice is never sent twice. A queue
+warning (even with exit zero), a second timeout, a changed binding or five
+minutes without consumption suspends dispatch and alerts the enrolling human.
+A suspended watcher, and any start refused once the role name is valid (the
+launch lock included), also sends one urgent mail to the workspace's default
+human, with a fixed reason and never the provider's output. `sas status` shows
+the role's open enrollment (`watcher enrolled E12`, or `watcher exited E12
+(queue delivery uncertain)` once its launcher has ended) until a human closes
+it, and a start refused since then (`watcher refused (…)`, or `a restart
+refused (…)` beside an open one). Interrupting the launcher (Ctrl-C) is
+recorded (`watcher suspended E12 (interrupted)`) but not mailed. An
 approval prompt may account for the delay. Check the human terminal. STOP
 preempts the wait, queues at most one fixed stop notice to the same eligible
 session, and ends enrollment. The worker checkpoints and acknowledges STOP.

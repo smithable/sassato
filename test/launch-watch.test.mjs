@@ -8,7 +8,7 @@ import { join,resolve } from 'node:path';
 import { mkdtempSync,readFileSync,rmSync,writeFileSync,existsSync,symlinkSync,realpathSync,chmodSync,lstatSync,statSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Store } from '../dist/storage.js';
-import { initWorkspace,status } from '../dist/admin.js';
+import { initWorkspace,status,renderStatus } from '../dist/admin.js';
 import { registerSession,send } from '../dist/coordination.js';
 import { requestStop } from '../dist/control.js';
 import { saveNotificationProgress,getNotificationProgress } from '../dist/notification-progress.js';
@@ -75,15 +75,17 @@ test('warning despite exit zero suspends, preserves pending work, explicit close
   const f=await fixture(t,'warning');
   send(f.operator,['b'],'Deliver once',{now:true});
   await assert.rejects(launchWatch(f.operator,'b',f.remote,thread),/uncertain/);
-  assert.equal(status(f.worker).watcher.state,'exited');assert.match(status(f.worker).watcher.reason,/uncertain/);
+  assert.deepEqual(status(f.worker).watcher,{state:'exited',epoch:status(f.worker).watcher.epoch,reason:'queue delivery uncertain'});
   assert.equal(getNotificationProgress(f.worker).cursor,0);
   await assert.rejects(launchWatch(f.operator,'b',f.remote,thread),/Close the existing/);
   assert.equal(f.calls().length,1);
   const epoch=f.worker.get("SELECT id FROM events WHERE entity='wake-enrollment' AND action='opened'").id;
   assert.ok(f.worker.get("SELECT id FROM messages WHERE sender='b' AND body LIKE '%suspended%'"));
   const urgent=f.worker.all("SELECT body FROM messages WHERE sender='b' AND urgent=1 AND body LIKE 'The Codex waiter for b stopped%'");
-  assert.equal(urgent.length,1);assert.match(urgent[0].body,/dispatch suspended/);assert.doesNotMatch(urgent[0].body,/Deliver once/);
-  assert.equal(status(f.worker).watcher.state,'refused');
+  assert.equal(urgent.length,1);assert.match(urgent[0].body,/stopped: queue delivery uncertain\./);assert.doesNotMatch(urgent[0].body,/Deliver once|resume unavailable/);
+  const after=status(f.worker).watcher;
+  assert.equal(after.state,'exited');assert.equal(after.start_refused,'an earlier enrollment is still open');
+  assert.match(renderStatus(status(f.worker)),/watcher exited E\d+ \(queue delivery uncertain\), a restart refused \(an earlier enrollment is still open\)/);
   assert.equal(f.cli('wake','--pending').status,0);
   assert.equal(reconcileWatch(f.operator,'b',epoch).closed,epoch);
 });
@@ -225,6 +227,7 @@ test('a newer untested Codex version starts with a warning, an older one is refu
   assert.match(checkCodexVersion(settings,'codex-cli 1.0.0').warning,/not a tested version/);
   assert.throws(()=>checkCodexVersion(settings,'codex-cli 0.166.9'),/Codex CLI 0\.166\.9 is older than 0\.167\.0/);
   assert.throws(()=>checkCodexVersion(settings,'codex-cli 0.99.0'),/older than/);
+  assert.throws(()=>checkCodexVersion({...settings,codex_versions:['0.166.0','0.167.0']},'codex-cli 0.166.0'),/older than/);
   assert.throws(()=>acceptCodexVersion(f.worker,'0.168.0'),/Only a human accepts a Codex version/);
   const refused=f.cli('codex','accept','0.168.0');assert.notEqual(refused.status,0);assert.match(refused.stderr,/Only a human/);
   assert.deepEqual(acceptCodexVersion(f.operator,'0.168.0'),['0.167.0','0.168.0']);
@@ -248,7 +251,16 @@ test('an older Codex version is refused at startup with one urgent mail and a st
   assert.deepEqual(f.calls(),[]);
   const urgent=f.worker.all("SELECT body FROM messages WHERE urgent=1 AND body LIKE 'The Codex waiter for b did not start%'");
   assert.equal(urgent.length,1);
-  assert.equal(status(f.worker).watcher.state,'refused');assert.match(status(f.worker).watcher.reason,/older than/);
+  assert.deepEqual(status(f.worker).watcher,{state:'refused',reason:'Codex CLI older than the oldest supported version'});
+});
+test('provider output never reaches the mail or the status line (T663)',async t=>{
+  const f=await fixture(t,'success',false,'9.9.9 <script>secret</script>');
+  await assert.rejects(launchWatch(f.operator,'b',f.remote,thread),/Cannot read the Codex CLI version/);
+  const mail=f.worker.all("SELECT body FROM messages WHERE urgent=1 AND body LIKE 'The Codex waiter%'");
+  assert.equal(mail.length,1);assert.equal(mail[0].body,'The Codex waiter for b did not start: Codex CLI version unreadable.');
+  assert.doesNotMatch(renderStatus(status(f.worker)),/secret/);
+  await assert.rejects(launchWatch(f.operator,'b',f.remote,'not-a-thread'),/UUID/);
+  assert.equal(f.worker.all("SELECT body FROM messages WHERE urgent=1 AND body LIKE 'The Codex waiter%'").length,2);
 });
 test('a notice on stderr beside a good version line is accepted (T664)',async t=>{
   const f=await fixture(t,'notice');

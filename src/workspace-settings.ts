@@ -127,8 +127,9 @@ const atLeast=(version:string,floor:string)=>{
 export function checkCodexVersion(settings:WorkspaceSettings,output:string):{version:string;warning:string|null} {
   const version=/^codex(?:-cli)? ([0-9]+\.[0-9]+\.[0-9]+)$/.exec(output.trim())?.[1];
   check(version!==undefined,`Cannot read the Codex CLI version from "${output.trim().slice(0,80)}"`,4);
-  if(settings.codex_versions.includes(version!))return {version:version!,warning:null};
+  // The floor comes first: an old version accepted before T664 is still refused.
   check(atLeast(version!,MIN_CODEX_VERSION),`Codex CLI ${version} is older than ${MIN_CODEX_VERSION}, the oldest sassato starts (tested: ${settings.codex_versions.join(', ')})`,4);
+  if(settings.codex_versions.includes(version!))return {version:version!,warning:null};
   return {version:version!,warning:`Warning: Codex CLI ${version} is not a tested version (tested: ${settings.codex_versions.join(', ')}); starting anyway. After a trial, a human marks it tested with: sassato codex accept ${version}`};
 }
 export const DIGEST_SKIPPABLE=['own-work','open-work','spare-work','task-finished','mail'];

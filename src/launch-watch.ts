@@ -21,7 +21,21 @@ const deadlineMs=300_000;
 // timeout try once more after a short pause (T663). A timed-out call may still have queued its line; a second
 // "run sas wake --pending" line is harmless, since the pending result is consumed once.
 const queueTimeoutMs=30_000,retryPauseMs=2_000;
-const firstLine=(error:unknown)=>String(error instanceof Error?error.message:error).split('\n')[0].slice(0,200);
+// Mail and status carry a fixed reason only, never provider output: the full error stays in the launcher's terminal.
+const reasons:[RegExp,string][]=[
+  [/is older than/,'Codex CLI older than the oldest supported version'],
+  [/Cannot read the Codex CLI version/,'Codex CLI version unreadable'],
+  [/queue interface unavailable/,'Codex queue interface unavailable'],
+  [/session, endpoint or configuration changed/,'session, endpoint or configuration changed'],
+  [/Close the existing waiter enrollment/,'an earlier enrollment is still open'],
+  [/notification progress/,'notification progress missing'],
+  [/Queue delivery is uncertain/,'queue delivery uncertain'],
+  [/Five minutes elapsed/,'no worker receipt within five minutes'],
+];
+const reasonOf=(error:unknown)=>{
+  const text=String(error instanceof Error?error.message:error);
+  return reasons.find(([pattern])=>pattern.test(text))?.[1]??'see the launcher terminal';
+};
 
 // Every folder from this one up to the root is the user's or root's, and only those can replace its entries:
 // not writable by group or others unless sticky (as /tmp is).
@@ -82,12 +96,22 @@ export function reconcileWatch(operator:Store,role:string,epoch:number) {
 
 export async function launchWatch(operator:Store,role:string,remote:string,thread:string,clock=()=>performance.now(),timing={queueTimeoutMs,retryPauseMs}) {
   const human=operator.requireHuman();name(role);
-  check(uuid.test(thread),'A registered Codex thread UUID is required');
-  check(/^unix:\/\/\/[^\s\0]+$/.test(remote),'Use an explicit local unix:///absolute/path endpoint');
-  const release=acquireLaunchLock(operator,role);
+  // Every refused start past this point is recorded and mailed (T663).
+  const refused=(error:unknown)=>{
+    const reason=reasonOf(error);
+    operator.event('watch-dispatch',role,'refused',{reason});
+    warnHuman(operator,human,`The Codex waiter for ${role} did not start: ${reason}.`);
+    return error;
+  };
+  let release:()=>void;
+  try {
+    check(uuid.test(thread),'A registered Codex thread UUID is required');
+    check(/^unix:\/\/\/[^\s\0]+$/.test(remote),'Use an explicit local unix:///absolute/path endpoint');
+    release=acquireLaunchLock(operator,role);
+  } catch(error) {throw refused(error);}
   try {
     const s=new Store(operator.path,role);
-    try {s.use(operator.workspace);return await observe(s,human,remote,thread,clock,timing);}
+    try {s.use(operator.workspace);return await observe(s,human,remote,thread,clock,timing,refused);}
     finally {s.close();}
   } finally {release();}
 }
@@ -96,16 +120,12 @@ export async function launchWatch(operator:Store,role:string,remote:string,threa
 // and the reason only, so a watcher that stops is seen by someone and not only in a terminal tab (T663).
 function warnHuman(s:Store,human:string,text:string) {
   const to=workspaceSettings(s).default_human??human;
-  try {send(s,[to],text,{urgent:true});} catch {/* The thrown error still reaches the terminal. */}
+  try {send(s,[to],text,{urgent:true});}
+  catch(error) {console.error(`Could not send the urgent mail to ${to}: ${error instanceof Error?error.message:error}`);}
 }
 
-async function observe(s:Store,human:string,remote:string,thread:string,clock:()=>number,timing:{queueTimeoutMs:number;retryPauseMs:number}) {
+async function observe(s:Store,human:string,remote:string,thread:string,clock:()=>number,timing:{queueTimeoutMs:number;retryPauseMs:number},refused:(error:unknown)=>unknown) {
   const role=s.requireActor();
-  const refused=(error:unknown)=>{
-    s.event('watch-dispatch',role,'refused',{reason:firstLine(error)});
-    warnHuman(s,human,`The Codex waiter for ${role} did not start: ${firstLine(error)}`);
-    return error;
-  };
   let bound:ReturnType<typeof session>,client:string,pinned:string,options:{cwd:string},epoch:number;
   const clientIdentity=()=>{const st=statSync(client,{bigint:true});return [st.dev,st.ino,st.ctimeNs].join(':');};
   const identity=()=>check(pinned===clientIdentity() && JSON.stringify(session(s,thread,remote))===JSON.stringify(bound),
@@ -130,9 +150,10 @@ async function observe(s:Store,human:string,remote:string,thread:string,clock:()
   process.on('SIGTERM',cancel);process.on('SIGINT',cancel);
   const messages=new Map<string,{at:number;reported:boolean}>(),deliveredMail=new Set<string>();
   const alert=(message:string)=>send(s,[human],`Waiter for ${role}, enrollment E${epoch}: ${message}`);
-  const exited=(reason:string,error:unknown)=>{
-    s.event('watch-dispatch',role,'exited',{epoch,reason:firstLine(error)});
-    warnHuman(s,human,`The Codex waiter for ${role} stopped (${reason}): ${firstLine(error)}. Nothing wakes ${role} until it is started again; sassato watch-status ${role} shows enrollment E${epoch}.`);
+  const exited=(error:unknown)=>{
+    const reason=reasonOf(error);
+    s.event('watch-dispatch',role,'exited',{epoch,reason});
+    warnHuman(s,human,`The Codex waiter for ${role} stopped: ${reason}. Nothing wakes ${role} until it is started again; sassato watch-status ${role} shows enrollment E${epoch}.`);
   };
   const inspect=()=>{
     controller.signal.throwIfAborted();identity();
@@ -149,7 +170,11 @@ async function observe(s:Store,human:string,remote:string,thread:string,clock:()
     }
     if(overdue.length)alert(`acknowledgements outstanding: ${overdue.length}. See ${overdue.slice(0,12).join(', ')}.`);
   };
-  const queue=async(stopping:boolean)=>{
+  const consumed=(pending:number)=>{
+    const last=s.get("SELECT action,detail FROM events WHERE workspace_id=? AND entity='wake-delivery' AND entity_id=? ORDER BY id DESC LIMIT 1",s.ws,role);
+    return last?.action==='consumed' && JSON.parse(last.detail).pending===pending;
+  };
+  const queue=async(stopping:boolean,pending?:number)=>{
     identity();controller.signal.throwIfAborted();
     if(!stopping && pendingStop(s))return false;
     if(!stopping)enrollment(s,epoch);
@@ -159,9 +184,15 @@ async function observe(s:Store,human:string,remote:string,thread:string,clock:()
     // Staging is the durable intent for work. Record STOP intent too, before crossing processes.
     if(stopping)s.event('watch-dispatch',role,'stop-intent',{epoch});
     let result=await queueClient(client,args,{...options,signal:controller.signal,timeoutMs:timing.queueTimeoutMs});
-    if(result.timedOut && !controller.signal.aborted){
-      s.event('watch-dispatch',role,'retry',{epoch,stop:stopping});
+    // One retry, for work only and only after a silent hang: a STOP notice is never sent twice, and a call that
+    // printed anything is uncertain as it stands. Eligibility is checked again before the second call.
+    if(result.timedOut && !stopping && pending!==undefined && !controller.signal.aborted && !result.stdout.trim() && !result.stderr.trim()){
+      s.event('watch-dispatch',role,'retry',{epoch});
       await delay(timing.retryPauseMs,undefined,{signal:controller.signal});
+      identity();
+      if(pendingStop(s))return false;
+      enrollment(s,epoch);
+      if(consumed(pending))return true;
       result=await queueClient(client,args,{...options,signal:controller.signal,timeoutMs:timing.queueTimeoutMs});
     }
     const receipt=new RegExp(`^Queued message ([a-f0-9-]+) for thread ${thread}\\.$`,'i').exec(result.stdout.trim());
@@ -194,13 +225,12 @@ async function observe(s:Store,human:string,remote:string,thread:string,clock:()
       const pending=stagePendingWake(s,epoch,progress,result);
       if(pendingStop(s))return await stop();
       inspect();
-      if(!await queue(false))return await stop();
+      if(!await queue(false,pending))return await stop();
       const deadline=clock()+deadlineMs;
       for(;;){
         if(pendingStop(s))return await stop();
         inspect();
-        const last=s.get("SELECT action,detail FROM events WHERE workspace_id=? AND entity='wake-delivery' AND entity_id=? ORDER BY id DESC LIMIT 1",s.ws,role);
-        if(last?.action==='consumed' && JSON.parse(last.detail).pending===pending)break;
+        if(consumed(pending))break;
         check(clock()<deadline,'Five minutes elapsed without a worker receipt; inspect the worker and consume the pending result',4);
         await delay(500);
       }
@@ -210,16 +240,20 @@ async function observe(s:Store,human:string,remote:string,thread:string,clock:()
       for(const id of ids){messages.set(id,{at:clock(),reported:false});deliveredMail.add(id);}
     }
   } catch(error) {
+    // An interrupt is the human's own act at the terminal: recorded, not mailed, whatever was under way.
+    const interrupted=()=>{s.event('watch-dispatch',role,'suspended',{epoch,reason:'interrupted'});};
+    if(controller.signal.aborted){interrupted();throw error;}
     // Preserve intent, epoch and cursor on unknown delivery. A human may still have the worker consume it.
     if(!stopping && pendingStop(s)){
       try {return await stop();}
-      catch(stopError){alert('STOP observed. Enrollment closed; confirm the worker saw STOP.');throw stopError;}
+      catch(stopError){
+        if(controller.signal.aborted){interrupted();throw stopError;}
+        alert('STOP observed. Enrollment closed; confirm the worker saw STOP.');throw stopError;
+      }
     }
     if(stopping){alert('STOP observed. Verify the worker saw STOP and check enrollment status.');throw error;}
-    // An interrupt is the human's own act at the terminal: recorded, not mailed.
-    if(controller.signal.aborted){s.event('watch-dispatch',role,'suspended',{epoch,reason:'interrupted'});throw error;}
     alert(`automatic dispatch suspended. Inspect the terminal and pending result; explicitly reconcile epoch ${epoch} before restarting.`);
-    exited('dispatch suspended',error);
+    exited(error);
     throw error;
   } finally {process.off('SIGTERM',cancel);process.off('SIGINT',cancel);}
 }
