@@ -180,10 +180,10 @@ export function digestKindOf(s:Store,actor:string,event:Row):{kind:string;wakes:
 }
 /** Immediate workflow signals may be behind a full mail page. Deliver them without crossing skipped events. */
 function priorityWorkflow(s:Store,actor:string,cursor:number):{wake:WaitResult;event:Row}[] {
-  const answer=s.all(`SELECT e.* FROM questions q JOIN tasks t ON t.workspace_id=q.workspace_id AND t.id=q.task_id
+  const answer=s.get(`SELECT e.* FROM questions q JOIN tasks t ON t.workspace_id=q.workspace_id AND t.id=q.task_id
     JOIN events e ON e.workspace_id=q.workspace_id AND e.entity='question' AND e.entity_id='H'||q.id AND e.action='answered'
     WHERE q.workspace_id=? AND q.status='answered' AND (q.asked_by=? OR t.owner=?) AND e.id>? AND e.actor!=? AND json_valid(e.detail)
-      AND coalesce(json_extract(e.detail,'$.relayed_by'),'')!=? ORDER BY e.id LIMIT ?`,s.ws,actor,actor,cursor,actor,actor,DIGEST_LIMIT);
+      AND coalesce(json_extract(e.detail,'$.relayed_by'),'')!=? ORDER BY e.id LIMIT 1`,s.ws,actor,actor,cursor,actor,actor);
   const ping=s.get(`SELECT e.* FROM supervisor_pings p LEFT JOIN managed_workers w ON w.workspace_id=p.workspace_id AND w.role=p.role
     JOIN events e ON e.workspace_id=p.workspace_id AND e.entity='supervisor-ping' AND e.entity_id=p.role AND e.action='requested'
       AND CASE WHEN json_valid(e.detail) THEN json_extract(e.detail,'$.nonce')=p.nonce ELSE 0 END
@@ -191,8 +191,7 @@ function priorityWorkflow(s:Store,actor:string,cursor:number):{wake:WaitResult;e
       AND p.ping_epoch=coalesce(w.ping_epoch,0) AND (w.id IS NULL OR w.state IN ('running','draining')) AND e.id>? ORDER BY e.id LIMIT 1`,s.ws,actor,cursor);
   // Pings have explicit nonce ACKs; a replayed answer must never hide a later ping.
   const result:{wake:WaitResult;event:Row}[]=[];
-  // Every answer already there comes in this one digest (T1099), not one wake each.
-  for(const event of [ping,...answer].filter((event):event is Row=>Boolean(event))) {
+  for(const event of [ping,answer].filter((event):event is Row=>Boolean(event))) {
     const wake=workflow(s,actor,event);if(wake)result.push({wake,event});
   }
   return result;
@@ -214,7 +213,8 @@ function extraDuringDigest(s:Store,actor:string,event:Row):DigestEntry|undefined
   if(event.actor===actor)return undefined;
   if(event.entity==='message'&&event.action==='sent') {
     let detail:Row={};try{detail=JSON.parse(event.detail);}catch{/* no detail */}
-    if(detail.answer)return undefined; // An answer's notice: its H entry is the delivery (T1099).
+    // An answer's notice: its H entry is the delivery (T1099). Notices written before the mark are known by their words.
+    if(detail.answer||detail.workflow_mirror&&/^H\d+ on T\d+ answered by /.test(String(detail.body??'')))return undefined;
     const row=s.get("SELECT m.id,m.sender,m.body,m.task_id FROM receipts r JOIN messages m ON m.workspace_id=r.workspace_id AND m.id=r.message_id WHERE r.workspace_id=? AND r.recipient=? AND r.state!='done' AND m.id=?",s.ws,actor,Number(String(event.entity_id).slice(1)));
     if(row)return {id:`M${row.id}`,event_id:`E${event.id}`,from:row.sender,kind:'mail',...(row.task_id?{task:`T${row.task_id}`}:{}) ,summary:digestText(row.body),group:'other'};
   }
