@@ -5,6 +5,7 @@ import { parseArgs } from 'node:util';
 import { readFileSync, openSync, fstatSync, readSync, closeSync, constants } from 'node:fs';
 import { unchangedIdleText, waitForWork, type WaitResult } from './mail-wait.js';
 import { Store, databasePath, SCHEMA_VERSION, type Row } from './storage.js';
+import { humanWaits } from './humans.js';
 import { AppError, check, integer } from './errors.js';
 import * as a from './admin.js';
 import * as t from './tasks.js';
@@ -237,6 +238,12 @@ function humanOutput(value: unknown, command?: string): string {
   }
   return JSON.stringify(value,null,2);
 }
+/** A saved WIP or checkpoint that names a wait on a human gets a warning line on stderr and in its JSON. */
+function waitWarnings(s: Store, result: unknown, fields: Record<string, string | undefined>): unknown {
+  const warnings = humanWaits(s, fields);
+  for (const line of warnings) console.error(`sassato: warning: ${line}`);
+  return warnings.length && result && typeof result === 'object' ? { ...result, warnings } : result;
+}
 /** Where the version a command's --expect takes is shown. */
 function expectSource(command: string): string {
   if (command==='wip set'||command==='checkpoint save') return 'the WIP version, from sassato wip show (or version= on the wip line of context).';
@@ -405,7 +412,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'fact get': case 'fact history': {const key=arg('key');empty();result=command==='fact get'?c.facts(s,{key}):c.factHistory(s,key);break;}
         case 'facts': empty();result=c.facts(s,{limit:num('limit')});break;
         case 'wip show': {const role=p.shift();empty();result=c.getWip(s,role);break;}
-        case 'wip set': empty();result=c.setWip(s,{current:str('current'),next:str('next'),notes:str('notes'),expected_version:num('expect')});break;
+        case 'wip set': empty();result=c.setWip(s,{current:str('current'),next:str('next'),notes:str('notes'),expected_version:num('expect')});result=waitWarnings(s,result,{current:str('current'),next:str('next'),notes:str('notes')});break;
         case 'sessions': empty();result=c.sessions(s);break;
         case 'session register': empty();result=c.registerSession(s,{provider:need('provider'),external_id:str('session-id'),pid:num('pid'),replace:bool('replace')});break;
         case 'session heartbeat': case 'session end': empty();result=(command==='session heartbeat'?c.heartbeat:c.endSession)(s,str('session-id'));break;
@@ -447,7 +454,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'brief save': {const task=arg('task');empty();result=briefs.saveTaskBrief(s,task,checkpointEvidence(need('file')),expectNum());break;}
         case 'brief show': {const task=arg('task');empty();result=briefs.showTaskBrief(s,task);break;}
         case 'checkpoint show': {const role=p.shift();empty();result=getCheckpoint(s,role);break;}
-        case 'checkpoint save': empty();result=saveCheckpoint(s,{current:filled('current'),next:filled('next'),notes:filled('notes'),expected_version:num('expect'),evidence:checkpointEvidence(str('evidence'))});break;
+        case 'checkpoint save': empty();result=saveCheckpoint(s,{current:filled('current'),next:filled('next'),notes:filled('notes'),expected_version:num('expect'),evidence:checkpointEvidence(str('evidence'))});result=waitWarnings(s,result,{current:str('current'),next:str('next'),notes:str('notes')});break;
         case 'progress show': {const role=p.shift();empty();result=getNotificationProgress(s,role);break;}
         case 'progress save': {
           empty();
