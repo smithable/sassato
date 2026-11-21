@@ -307,7 +307,10 @@ test('answer --asked records a question nobody recorded and its answer together 
   assert.match(raw(db,['--as','alice','answer','--asked','Q?','--on',task.id,'A']).stderr,/--relayed-by ROLE/);
   assert.match(raw(db,['--as','alice','answer','--asked','Q?','--relayed-by','builder','A']).stderr,/--on T1.*--new TITLE/);
   assert.match(raw(db,['--as','alice','answer',on.id,'A','--on',task.id]).stderr,/go with --asked/);
+  assert.equal(s.get("SELECT detail FROM events WHERE entity='task' AND entity_id=? AND action='human-question'",task.id).detail.includes('"asked_by":"builder"'),true);
+  // A failure after the new task is made rolls the task back with the question.
+  s.run("CREATE TRIGGER boom BEFORE INSERT ON questions WHEN NEW.question='Boom?' BEGIN SELECT RAISE(ABORT,'boom'); END");
   const before=s.get('SELECT count(*) AS n FROM tasks').n;
-  assert.notEqual(raw(db,['--as','alice','answer','--asked','Q?','--new','Orphan','--relayed-by','nobody','A']).status,0);
+  assert.notEqual(raw(db,['--as','alice','answer','--asked','Boom?','--new','Orphan','--relayed-by','builder','A']).status,0);
   assert.equal(s.get('SELECT count(*) AS n FROM tasks').n,before);
 });

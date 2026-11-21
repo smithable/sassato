@@ -354,7 +354,8 @@ export function listBlockers(s: Store, options: { task?: string; chain?: string;
   return [...explicit, ...dependencies].slice(0, limit);
 }
 export interface AskOptions { question: string; options?: string[]; recommendation?: string; command?: string; forRole?: string }
-export function askHuman(s: Store, task: string, options: AskOptions): Row {
+// askedBy: the role that asked, when a human records a question relayed for it (recordAnswered).
+export function askHuman(s: Store, task: string, options: AskOptions, askedBy?: string): Row {
   return s.tx(() => {
     const row = s.task(task), actor = writable(s, row); active(row); text(options.question, 'question');
     const choices = options.options ?? []; check(Array.isArray(choices) && choices.length <= 20, 'At most 20 options are allowed'); for (const choice of choices) text(choice, 'option', 2000);
@@ -362,7 +363,7 @@ export function askHuman(s: Store, task: string, options: AskOptions): Row {
     if (options.command !== undefined) text(options.command, 'command', 10_000);
     const recipient = humanRole(s, options.forRole);
     const blocker = blockTask(s, task, { kind: 'human', waitingOn: recipient, body: options.question });
-    const at = now(), n = s.run('INSERT INTO questions(workspace_id,task_id,blocker_id,asked_by,question,options,recommendation,command,created_at) VALUES(?,?,?,?,?,?,?,?,?)', s.ws, row.id, id(blocker.id, 'B'), actor, options.question, JSON.stringify(choices), options.recommendation ?? null, options.command ?? null, at).lastInsertRowid;
+    const at = now(), n = s.run('INSERT INTO questions(workspace_id,task_id,blocker_id,asked_by,question,options,recommendation,command,created_at) VALUES(?,?,?,?,?,?,?,?,?)', s.ws, row.id, id(blocker.id, 'B'), askedBy ?? actor, options.question, JSON.stringify(choices), options.recommendation ?? null, options.command ?? null, at).lastInsertRowid;
     const question = s.get('SELECT * FROM questions WHERE workspace_id=? AND id=?', s.ws, n)!;
     s.index('question', `H${n}`, options.question, JSON.stringify({ options: choices, recommendation: options.recommendation, command: options.command }), { role: recipient, status: 'pending', updated_at: at });
     s.event('task', task, 'human-question', questionView(question));
@@ -418,10 +419,9 @@ export function recordAnswered(s: Store, options: { question: string; answer: st
     const actor = s.requireHuman(); s.role(options.relayedBy); text(options.question, 'question'); text(options.answer, 'answer');
     check((options.task === undefined) !== (options.title === undefined), 'Give the task the question was about (--on T1) or a title for a new one (--new TITLE)');
     const task = options.task ?? addTask(s, { title: options.title!, body: options.question, owner: options.relayedBy, forRole: options.relayedBy }).id;
-    const asked = askHuman(s, task, { question: options.question, forRole: actor });
-    s.run('UPDATE questions SET asked_by=? WHERE workspace_id=? AND id=?', options.relayedBy, s.ws, id(asked.id, 'H'));
+    const asked = askHuman(s, task, { question: options.question, forRole: actor }, options.relayedBy);
     s.event('question', asked.id, 'recorded', { task, relayed_by: options.relayedBy, with_answer: true });
-    return { ...answerQuestion(s, asked.id, options.answer, { close: options.close, relayedBy: options.relayedBy }), asked_by: options.relayedBy, recorded_with_answer: true };
+    return { ...answerQuestion(s, asked.id, options.answer, { close: options.close, relayedBy: options.relayedBy }), recorded_with_answer: true };
   });
 }
 // A pending question its asker no longer needs (a reworded one asked again, a decision made
