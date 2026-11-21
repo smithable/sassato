@@ -85,4 +85,7 @@ test('wip set and checkpoint save warn on a wait on a human with no question rec
  assert.equal(recorded.status,0);assert.doesNotMatch(recorded.stderr,/warning/);assert.equal(JSON.parse(recorded.stdout).warnings,undefined);
  const other=raw(['wip','set','--current','Waiting for CI, then ask the human','--expect','2','--as','a']);
  assert.equal(other.status,0);assert.doesNotMatch(other.stderr,/warning/);
+ const sentence=raw(["wip","set","--current","Waiting for CI. Ask human then","--notes","Waiting on human to say how many humans come","--expect","3","--as","a","--json"]);
+ assert.equal(JSON.parse(sentence.stdout).warnings.length,1);assert.match(sentence.stderr,/--notes names a wait on human/);
+ const listed=raw(["wip","set","--current","Waiting on human: see sas humans --for human","--expect","4","--as","a"]);assert.doesNotMatch(listed.stderr,/warning/);
 });
