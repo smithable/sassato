@@ -54,7 +54,7 @@ function blocking(s: Store, row: Row): Row[] {
 function unblocked(s: Store, row: Row): void {
   const reasons = blocking(s, row); check(reasons.length === 0, `Task has unresolved blockers: ${reasons.map(r => r.id).join(', ')}`, 4);
 }
-function notify(s: Store, recipients: string[], body: string, task: Row): void {
+function notify(s: Store, recipients: string[], body: string, task: Row, extra: Row = {}): void {
   const at = now(), sender = s.requireActor(); text(body);
   const to = [...new Set(recipients)].filter(r => r !== sender);
   if (!to.length) return;
@@ -62,7 +62,7 @@ function notify(s: Store, recipients: string[], body: string, task: Row): void {
   const n = s.run('INSERT INTO messages(workspace_id,sender,body,task_id,created_at) VALUES(?,?,?,?,?)', s.ws, sender, body, task.id, at).lastInsertRowid;
   for (const recipient of to) s.run('INSERT INTO receipts(workspace_id,message_id,recipient) VALUES(?,?,?)', s.ws, n, recipient);
   s.index('message', `M${n}`, `${sender} → ${to.join(', ')}`, body, { role: sender, updated_at: at });
-  s.event('message', `M${n}`, 'sent', { recipients: to, task_id: taskId(task), body, workflow_mirror:true });
+  s.event('message', `M${n}`, 'sent', { recipients: to, task_id: taskId(task), body, workflow_mirror:true, ...extra });
 }
 function lease(hours = 4): string { return new Date(Date.now() + integer(hours, 'lease hours', 1, 168) * 3_600_000).toISOString(); }
 function priority(value = 0): number { return integer(value, 'priority', 0, 100); }
@@ -406,7 +406,9 @@ export function answerQuestion(s: Store, questionOrTask: string, answer: string,
     // Explicit human closure shares this transaction: any remaining blocker or review
     // requirement rolls back the answer, blocker resolution, events and notification.
     if (options.close) completeTask(s, row, { ref: `H${question.id}` }, true);
-    notify(s, [row.owner, question.asked_by].filter((r): r is string => Boolean(r)), `H${question.id} on ${taskId(row)} answered by ${actor}: ${recorded}${options.close ? ' Task closed.' : ''}`, row);
+    // The role that relayed the answer already knows it (T1103); the waiter delivers the answer as its H entry,
+    // so this notice is marked for the inbox only (T1099).
+    notify(s, [row.owner, question.asked_by].filter((r): r is string => Boolean(r) && r !== options.relayedBy), `H${question.id} on ${taskId(row)} answered by ${actor}: ${recorded}${options.close ? ' Task closed.' : ''}`, row, { answer: `H${question.id}` });
     const result = questionView({ ...question, status: 'answered', answer: recorded, answered_by: actor, answered_at: at, ...attribution });
     return options.close ? { ...result, task_status: 'done' } : result;
   });
