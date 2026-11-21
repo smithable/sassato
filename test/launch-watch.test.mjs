@@ -221,6 +221,10 @@ test('an unaccepted Codex version is refused until a human accepts it (T1098)',a
   const listed=f.cli('codex','versions','--json');assert.equal(listed.status,0,listed.stderr);
   assert.deepEqual(JSON.parse(listed.stdout).accepted,['0.167.0','0.168.0']);
   assert.deepEqual(acceptCodexVersion(f.operator,'0.168.0',true),['0.168.0']);
+  for(let i=1;i<16;i++)acceptCodexVersion(f.operator,`1.0.${i}`);
+  assert.equal(acceptCodexVersion(f.operator,'1.0.3').length,16);
+  assert.throws(()=>acceptCodexVersion(f.operator,'2.0.0'),/1 to 16/);
+  acceptCodexVersion(f.operator,'0.168.0',true);
   assert.throws(()=>acceptCodexVersion(f.operator,'latest'),/exact Codex version/);
   const run=launchWatch(f.operator,'b',f.remote,thread);run.catch(()=>{});
   send(f.operator,['b'],'First',{now:true});

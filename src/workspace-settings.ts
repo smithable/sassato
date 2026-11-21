@@ -102,7 +102,7 @@ export function acceptCodexVersion(s:Store,version:string,replace=false):string[
   return s.tx(()=>{
     check(s.role(s.requireActor()).kind==='human','Only a human accepts a Codex version',3);
     const before=workspaceSettings(s).codex_versions;
-    return setWorkspaceSettings(s,{codex_versions:replace?[version]:[...before,version]}).codex_versions;
+    return setWorkspaceSettings(s,{codex_versions:replace?[version]:before.includes(version)?before:[...before,version]}).codex_versions;
   });
 }
 /** Refuses a Codex CLI whose --version output is not an accepted version, naming the command that accepts it. */
