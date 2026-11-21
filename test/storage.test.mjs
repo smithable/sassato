@@ -1,4 +1,4 @@
-import { fixtureConfig, stripScoredWakeSql } from './fixtures/team.mjs';
+import { fixtureConfig, stripNewerSql } from './fixtures/team.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync,rmSync,writeFileSync,readFileSync,existsSync } from 'node:fs';
@@ -48,7 +48,7 @@ function legacyFixture(t) {
   // Reconstruct the exact v1 roles schema, keeping real committed data from all core modules.
   const db=new DatabaseSync(path);db.exec('BEGIN IMMEDIATE');
   for(const column of ['reasoning_effort','permission_mode','sandbox_mode','approval_policy'])db.exec(`ALTER TABLE roles DROP COLUMN ${column}`);
-  db.exec(stripScoredWakeSql+'DROP TABLE supervisor_waiters; DROP TABLE supervisor_pings; DROP TABLE managed_transitions; DROP TABLE managed_workers; DROP TABLE managed_controllers; DROP TABLE task_briefs; DROP TABLE checkout_bindings; DROP TABLE project_checkouts; DROP TABLE registry_checkouts; DROP TABLE registry_repositories; DROP TABLE registry_projects; DROP TABLE jobs; ALTER TABLE messages DROP COLUMN reply; DROP INDEX urgent_messages; ALTER TABLE messages DROP COLUMN urgent; DROP TABLE stop_requests; DELETE FROM schema_migrations WHERE version>=2; PRAGMA user_version=1; COMMIT;');db.close();
+  db.exec(stripNewerSql+'DROP TABLE supervisor_waiters; DROP TABLE supervisor_pings; DROP TABLE managed_transitions; DROP TABLE managed_workers; DROP TABLE managed_controllers; DROP TABLE task_briefs; DROP TABLE checkout_bindings; DROP TABLE project_checkouts; DROP TABLE registry_checkouts; DROP TABLE registry_repositories; DROP TABLE registry_projects; DROP TABLE jobs; ALTER TABLE messages DROP COLUMN reply; DROP INDEX urgent_messages; ALTER TABLE messages DROP COLUMN urgent; DROP TABLE stop_requests; DELETE FROM schema_migrations WHERE version>=2; PRAGMA user_version=1; COMMIT;');db.close();
   return {path,dir,baseline,task};
 }
 
@@ -96,7 +96,7 @@ function questionV4Fixture(t) {
     INSERT INTO questions_v4(id,workspace_id,task_id,blocker_id,asked_by,question,options,recommendation,command,status,answer,answered_by,created_at,answered_at) SELECT id,workspace_id,task_id,blocker_id,asked_by,question,options,recommendation,command,status,answer,answered_by,created_at,answered_at FROM questions;
     DROP TABLE questions;ALTER TABLE questions_v4 RENAME TO questions;CREATE INDEX questions_status ON questions(workspace_id,status,id);
     UPDATE sqlite_sequence SET seq=100 WHERE name='questions';
-    ${stripScoredWakeSql}
+    ${stripNewerSql}
     DROP TABLE supervisor_waiters; DROP TABLE supervisor_pings; DROP TABLE managed_transitions; DROP TABLE managed_workers; DROP TABLE managed_controllers; DROP TABLE task_briefs; DROP TABLE checkout_bindings; DROP TABLE project_checkouts; DROP TABLE registry_checkouts; DROP TABLE registry_repositories; DROP TABLE registry_projects; DROP TABLE jobs; ALTER TABLE messages DROP COLUMN reply;
     DELETE FROM schema_migrations WHERE version>=5;PRAGMA user_version=4;COMMIT;`);
   db.close();return {path,dropped,pending,completed,obsolete,active,live,answeredTask,answered,external,before};

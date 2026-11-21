@@ -49,7 +49,7 @@ function detail(s: Store, entry: DigestEntry, since: number, until: number): str
     const t = s.get('SELECT * FROM tasks WHERE workspace_id=? AND id=?', s.ws, Number(taskId.slice(1)));
     if (!t) return entry.summary;
     const lines = [`${taskId} "${wakeText(t.title, taskId, 200)}" · ${t.status} · owner ${t.owner ?? '-'} · for ${t.for_role ?? '-'} · version ${t.version}`];
-    if (['task-assigned', 'task-ready', 'open-work'].includes(entry.kind) && t.body) lines.push(wakeText(t.body, taskId, 800));
+    if (['task-assigned', 'task-ready', 'open-work', 'spare-work'].includes(entry.kind) && t.body) lines.push(wakeText(t.body, taskId, 800));
     if (entry.kind.startsWith('review-') && t.review_note) lines.push(`Review: ${wakeText(t.review_note, taskId, 800)}`);
     for (const note of notesSince(s, taskId, since, until)) lines.push(`Note (${note.actor}): ${wakeText(note.note, taskId, 500)}`);
     return lines.join('\n');

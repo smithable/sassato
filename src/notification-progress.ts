@@ -11,7 +11,7 @@ export interface NotificationProgress {
   saved_at: string;
 }
 export interface IdleDelivery {
-  kind:'own-work'|'open-work'; tasks:{id:string;version:number}[];
+  kind:'own-work'|'open-work'|'spare-work'; tasks:{id:string;version:number}[];
   observed:number; since:number; delivered:number; repeats:number;
 }
 export interface ScoredDelivery { event_ids:number[]; through?:number; score:WakeScore; idle?:IdleDelivery }
@@ -20,7 +20,7 @@ export const IDLE_TASK_LIMIT=20;
 
 function validIdle(value: unknown): value is IdleDelivery {
   const i=value as IdleDelivery|undefined;
-  return !!i && (i.kind==='own-work'||i.kind==='open-work') && Array.isArray(i.tasks) && i.tasks.length>0 && i.tasks.length<=IDLE_TASK_LIMIT &&
+  return !!i && (i.kind==='own-work'||i.kind==='open-work'||i.kind==='spare-work') && Array.isArray(i.tasks) && i.tasks.length>0 && i.tasks.length<=IDLE_TASK_LIMIT &&
     i.tasks.every(task=>task && typeof task.id==='string' && /^T[1-9][0-9]*$/.test(task.id) && Number.isSafeInteger(task.version) && task.version>0) &&
     Number.isSafeInteger(i.observed) && i.observed>=0 && Number.isSafeInteger(i.repeats) && i.repeats>=0 &&
     Number.isSafeInteger(i.since) && i.since>=0 && Number.isSafeInteger(i.delivered) && i.delivered>=i.since && i.delivered<=8_640_000_000_000_000;
