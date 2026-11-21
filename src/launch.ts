@@ -286,7 +286,7 @@ export function unlockLaunch(store:Store,roles:string[]):{unlocked:string[]} {
 // enough for it, since a launch that waits a little longer costs less than a refused one (T1057).
 const VERSION_PROBE_MS=30_000,REGISTER_WINDOW_MS=10_000;
 function verifyExecutable(executable:string,env:NodeJS.ProcessEnv):void {
-  const result=spawnSync(executable,['--version'],{encoding:'utf8',timeout:VERSION_PROBE_MS,stdio:['ignore','pipe','pipe'],shell:false,env});
+  const result=spawnSync(executable,['--version'],{encoding:'utf8',timeout:VERSION_PROBE_MS,killSignal:'SIGKILL',stdio:['ignore','pipe','pipe'],shell:false,env});
   check(!result.error&&result.status===0,`Cannot run ${executable}. Install it or use launch --dry-run. ${result.error?.message??''}`,3);
 }
 async function terminateUnconfirmed(child:ReturnType<typeof spawn>,exited:Promise<unknown>):Promise<void> {
@@ -331,8 +331,8 @@ async function runNative(store:Store,plan:LaunchPlan,options:LaunchOptions,runti
       // spawn fires before a script's interpreter has necessarily finished exec, and under load that can
       // take seconds (T1057). Only register a provider-verified process, retrying that one refusal for a
       // bounded time and noticing immediate exits; any other error ends the attempts at once.
-      let registrationError:unknown;const registerBy=Date.now()+REGISTER_WINDOW_MS;
-      for(let attempt=0;(attempt===0||Date.now()<registerBy)&&child.exitCode===null&&child.signalCode===null;attempt++) {
+      let registrationError:unknown;const registerBy=performance.now()+REGISTER_WINDOW_MS;
+      for(let attempt=0;(attempt===0||performance.now()<registerBy)&&child.exitCode===null&&child.signalCode===null;attempt++) {
         const previousActor=store.actor;store.actor=fresh.role;
         try {
           registered=store.tx(()=>{
