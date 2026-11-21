@@ -51,11 +51,12 @@ export function listFeedback(s: Store, options: FeedbackListOptions = {}): {item
 export interface FeedbackCloseOptions { task?: string; fact?: string; dropped?: string }
 export function closeFeedback(s: Store, feedbackId: string, options: FeedbackCloseOptions): Row {
   const actor = s.requireActor();
-  check(canCloseFeedback(s,actor),'Only a human, or a role a human named with workspace set --feedback-closers, closes feedback',3);
   const given = [options.task,options.fact,options.dropped].filter(v=>v!==undefined);
   check(given.length===1,'Close feedback with exactly one of --task T1, --fact KEY or --dropped REASON');
   const n = id(feedbackId,'K');
   return s.tx(() => {
+    // Checked under the write lock, so a closer removed meanwhile cannot still close one.
+    check(canCloseFeedback(s,actor),'Only a human, or a role a human named with workspace set --feedback-closers, closes feedback',3);
     const old = s.get('SELECT * FROM feedback WHERE workspace_id=? AND id=?',s.ws,n);
     check(old,`${feedbackId} not found in this workspace`,3);
     check(old.closed_at===null,`${feedbackId} is already closed (${old.outcome}: ${old.outcome_ref})`,4);

@@ -21,6 +21,19 @@ function fixture(t){
 }
 const code=n=>error=>error.code===n;
 
+test('adding and closing feedback wakes nobody, not even a closer, in either wake mode (T1113)',async t=>{
+  for(const mode of ['legacy','scored']) {
+    const {s,dir}=fixture(t);
+    s.actor='human';setWorkspaceSettings(s,{feedback_closers:['b'],wake_mode:mode});
+    s.actor='b';const since=context(s).snapshot_cursor;
+    s.actor='a';const k=addFeedback(s,'workflow','Asked twice for the same review');
+    s.actor='human';closeFeedback(s,k.id,{dropped:'Seen'});addFeedback(s,'sassato','No way to list closed ones');
+    s.actor='b';
+    const event=await waitForUrgent(s,{settle:mode==='legacy'?0:undefined,timeout:2,stopFile:join(dir,'stop'),since});
+    assert.equal(event.reason,'timeout',mode+' '+JSON.stringify(event));
+  }
+});
+
 test('feedback is one line with a kind, numbered K, linked to a task, and wakes nobody (T1113)',async t=>{
   const {s,dir}=fixture(t);
   s.actor='a';const task=addTask(s,{title:'Gate'});

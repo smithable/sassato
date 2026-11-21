@@ -368,7 +368,8 @@ export function context(s: Store, options: { since?: number; limit?: number; bri
       // Keep delta notifications ahead of snapshots: a bounded snapshot must not prevent the
       // next cursor from making progress, nor hide a returned delta in terminal rendering.
       const delta = (key: string) => key === 'facts' || key === 'answers' || key === 'replies';
-      const candidates = Object.entries(sections).filter(([key,rows])=>key !== 'session' && key !== 'feedback' && key !== 'stop' && key !== 'wip' && key !== 'checkpoint' && key !== 'notification_progress' && rows.length > 0).sort((a,b)=>Number(delta(a[0]))-Number(delta(b[0])) || JSON.stringify(b[1]).length-JSON.stringify(a[1]).length);
+      const candidates = Object.entries(sections).filter(([key,rows])=>key !== 'session' && key !== 'stop' && key !== 'wip' && key !== 'checkpoint' && key !== 'notification_progress' && rows.length > 0)// The feedback count goes first: it is never work (T1113).
+      .sort((a,b)=>Number(b[0]==='feedback')-Number(a[0]==='feedback') || Number(delta(a[0]))-Number(delta(b[0])) || JSON.stringify(b[1]).length-JSON.stringify(a[1]).length);
       if (!candidates.length) break;
       const omitted = candidates[0][1].pop()!;
       if (omitted.event_id) data.cursor = Math.min(data.cursor,omitted.event_id-1);
