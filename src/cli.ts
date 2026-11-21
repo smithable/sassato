@@ -258,6 +258,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     const bool=(key:string):boolean=>v[key]===true;
     const expectNum=():number=>{need('expect');return num('expect')!;};
     const need=(key:string):string=>{const val=str(key);check(val!==undefined,`Missing --${key}`);return val;};
+    const filled=(key:string):string=>{const val=need(key);check(val.trim()!=="",`--${key} is empty; write what applies, or "none" when there is nothing to add`);return val;};
     if (bool('help') || !positionals.length && !bool('version')) {console.log(bool('json')?JSON.stringify({help:HELP}):HELP);return;}
     if (bool('version')) {const build=JSON.parse(readFileSync(new URL('./build-info.json',import.meta.url),'utf8'));console.log(bool('json')?JSON.stringify({...build,schema:SCHEMA_VERSION}):`${build.version} (build ${build.build})`);return;}
     const p=[...positionals];let command=p.shift()!;
@@ -445,7 +446,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'brief save': {const task=arg('task');empty();result=briefs.saveTaskBrief(s,task,checkpointEvidence(need('file')),expectNum());break;}
         case 'brief show': {const task=arg('task');empty();result=briefs.showTaskBrief(s,task);break;}
         case 'checkpoint show': {const role=p.shift();empty();result=getCheckpoint(s,role);break;}
-        case 'checkpoint save': empty();result=saveCheckpoint(s,{current:need('current'),next:need('next'),notes:need('notes'),expected_version:num('expect'),evidence:checkpointEvidence(str('evidence'))});break;
+        case 'checkpoint save': empty();result=saveCheckpoint(s,{current:filled('current'),next:filled('next'),notes:filled('notes'),expected_version:num('expect'),evidence:checkpointEvidence(str('evidence'))});break;
         case 'progress show': {const role=p.shift();empty();result=getNotificationProgress(s,role);break;}
         case 'progress save': {
           empty();
