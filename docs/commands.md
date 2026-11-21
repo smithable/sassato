@@ -246,6 +246,25 @@ Two workspace settings, set only by a human:
 same roles that may update the task otherwise. A cleared flag makes the task ordinary ready work, and the
 change is in the task's history (`show T1`) with who made it, before and after.
 
+## Feedback (T1113)
+
+A feedback record is one line a role writes when it notices a workflow mistake, wasted tokens, something
+untested, something sampleusers could test, or a point about Sassato itself. It is a record, not work: it
+never wakes anyone, is never ready work, and needs no check first whether it is already known.
+
+| Command | Meaning |
+| - | - |
+| `feedback add KIND TEXT [--re T1]` | Any role. KIND is `workflow`, `tokens`, `untested`, `sampleusers` or `sassato`; TEXT is one line of at most 500 characters. Sassato records who wrote it and when, and prints its number (`K1`, `K2`…) |
+| `feedback list [--kind K] [--author ROLE] [--all] [--limit N] [--after K1]` | Open feedback, oldest first, 50 per page; `--all` includes closed ones |
+| `feedback close K1 --task T1 \| --fact KEY \| --dropped REASON` | Closes it as a task, a rule (a fact, which must exist) or a stated no. Only a human, or a role a human named in `feedback_closers` |
+
+- `workspace set --feedback-closers fable --as HUMAN` names the roles besides humans that close feedback
+  (`none` clears the list; the default is none, so only humans close it).
+- Humans and the roles in `feedback_closers` see `feedback: open=N · oldest_days=D` in `context` and
+  `context --brief`; nobody else sees a feedback section.
+- `show K1` prints one record, `search` finds feedback text (`--type feedback`), and `export` writes
+  `feedback.md`.
+
 ## Dependencies, blockers and decisions
 
 ```sh
@@ -431,7 +450,7 @@ with the needs asked for, the estimates given, and what the next run will ask fo
 
 ## Search, migration and launch
 
-`search TEXT [--type task,message,fact,blocker,question,wip,event,import] [--owner ROLE]
+`search TEXT [--type task,message,fact,feedback,blocker,question,wip,event,import] [--owner ROLE]
 [--status STATUS] [--since ISO_DATE] [--limit 1..100] [--phrase] [--prefix]` searches literal
 words by default, ANDed together. --phrase matches a literal phrase; --prefix applies to
 the last word. --owner filters the document's indexed role (sender for messages, owner or

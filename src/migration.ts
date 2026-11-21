@@ -402,10 +402,12 @@ export function exportMarkdown(store: Store, outDirectory: string): {directory:s
     const events=store.all("SELECT * FROM events WHERE workspace_id=? AND entity='task' ORDER BY id",store.ws);
     const questions=store.all('SELECT q.*,b.waiting_on AS for_role FROM questions q JOIN blockers b ON b.workspace_id=q.workspace_id AND b.id=q.blocker_id WHERE q.workspace_id=? ORDER BY q.id',store.ws);
     const wip=store.all('SELECT * FROM wip WHERE workspace_id=? ORDER BY role',store.ws);
+    const feedback=store.all('SELECT * FROM feedback WHERE workspace_id=? ORDER BY id',store.ws);
     const out:Record<string,string>={
       'backlog.md':`# ${store.workspace}: backlog\n\nExported ${now()}. These are snapshots; edit through Sassato.\n\n`+tasks.filter(t=>!['done','dropped'].includes(t.status)).map(markdownTask).join('\n'),
       'wip.md':`# ${store.workspace}: work in progress\n\n`+tasks.filter(t=>['doing','blocked','review'].includes(t.status)).map(markdownTask).join('\n')+'\n'+wip.map(w=>`## ${w.role}\n\nCurrent: ${w.current}\n\nNext: ${w.next}\n\n${w.notes}\n`).join('\n'),
       'humans.md':`# ${store.workspace}: human decisions\n\n`+questions.filter(q=>q.status==='pending').map(q=>`## H${q.id} · T${q.task_id}\n\nFor: ${q.for_role}\n\n${q.question}\n\nOptions: ${q.options}\n\nRecommendation: ${q.recommendation??'none'}\n\nCommand (reference only):\n\n\`\`\`text\n${q.command??'none'}\n\`\`\`\n`).join('\n'),
+      'feedback.md':`# ${store.workspace}: feedback\n\n`+feedback.map(k=>`- K${k.id} · ${k.created_at} · ${k.author} · ${k.kind}${k.task_id?` · T${k.task_id}`:''}: ${k.body}${k.closed_at?` (closed ${k.closed_at} by ${k.closed_by}: ${k.outcome} ${k.outcome_ref})`:''}`).join('\n')+'\n',
     };
     const eventsByTask=new Map<string,Row[]>(), questionsByTask=new Map<number,Row[]>();
     for(const event of events) {const group=eventsByTask.get(event.entity_id)??[];group.push(event);eventsByTask.set(event.entity_id,group);}

@@ -5,6 +5,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { Store, type Row } from './storage.js';
 import { AppError, check, id, integer, name, now, text } from './errors.js';
 import { workspaceSettings } from './workspace-settings.js';
+import { feedbackSummary } from './feedback.js';
 import { getCheckpoint } from './checkpoints.js';
 import { aged } from './tasks.js';
 import { getNotificationProgress } from './notification-progress.js';
@@ -357,6 +358,8 @@ export function context(s: Store, options: { since?: number; limit?: number; bri
     // An agent sees only its own stale work; a human role keeps the whole workspace in view.
     section('stale',"SELECT id,title,status,owner,lease_until,priority,creator FROM tasks WHERE workspace_id=? AND lease_until<? AND status IN ('doing','blocked','review') AND (owner=? OR ?='human') ORDER BY lease_until,id",[s.ws,now(),actor,s.role(actor).kind],taskRow);
     section('facts',"SELECT f.id,f.key,substr(f.body,1,160) AS body,substr(f.source,1,120) AS source,f.checked_at,f.version,min(e.id) AS event_id FROM events e JOIN facts f ON f.workspace_id=e.workspace_id AND e.entity_id='F'||f.id WHERE e.workspace_id=? AND e.id>? AND e.entity='fact' GROUP BY f.id ORDER BY event_id",[s.ws,since],r=>({id:`F${r.id}`,key:clip(r.key,80),text:clip(r.body,140),source:clip(r.source,90),checked_at:r.checked_at,version:r.version,event_id:r.event_id}));
+    const feedback = feedbackSummary(s,actor);
+    if (feedback) sections.feedback = [feedback];
     const session = s.get('SELECT * FROM sessions WHERE workspace_id=? AND role=? AND ended_at IS NULL',s.ws,actor);
     const role = s.role(actor);
     sections.session = [{state:session ? sessionState(session) : 'unregistered',provider:session?.provider ?? role.provider,usage:clip(role.usage,120),usage_until:role.usage_until,last_seen_at:session?.last_seen_at ?? null}];
@@ -365,7 +368,7 @@ export function context(s: Store, options: { since?: number; limit?: number; bri
       // Keep delta notifications ahead of snapshots: a bounded snapshot must not prevent the
       // next cursor from making progress, nor hide a returned delta in terminal rendering.
       const delta = (key: string) => key === 'facts' || key === 'answers' || key === 'replies';
-      const candidates = Object.entries(sections).filter(([key,rows])=>key !== 'session' && key !== 'stop' && key !== 'wip' && key !== 'checkpoint' && key !== 'notification_progress' && rows.length > 0).sort((a,b)=>Number(delta(a[0]))-Number(delta(b[0])) || JSON.stringify(b[1]).length-JSON.stringify(a[1]).length);
+      const candidates = Object.entries(sections).filter(([key,rows])=>key !== 'session' && key !== 'feedback' && key !== 'stop' && key !== 'wip' && key !== 'checkpoint' && key !== 'notification_progress' && rows.length > 0).sort((a,b)=>Number(delta(a[0]))-Number(delta(b[0])) || JSON.stringify(b[1]).length-JSON.stringify(a[1]).length);
       if (!candidates.length) break;
       const omitted = candidates[0][1].pop()!;
       if (omitted.event_id) data.cursor = Math.min(data.cursor,omitted.event_id-1);
