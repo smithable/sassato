@@ -16,7 +16,7 @@ import { retitleImportedTasks } from './retitle.js';
 import { setup } from './setup.js';
 import { promptSetup } from './setup-prompt.js';
 import { loadConfig, configPath } from './config.js';
-import { workspaceSettings, setWorkspaceSettings, setRoleAutocompact, roleAutocompact, type WorkspaceSettings } from './workspace-settings.js';
+import { workspaceSettings, setWorkspaceSettings, setRoleAutocompact, roleAutocompact, acceptCodexVersion, type WorkspaceSettings } from './workspace-settings.js';
 import * as control from './control.js';
 import { stop } from './stop.js';
 import { getCheckpoint } from './checkpoints.js';
@@ -41,6 +41,7 @@ Setup:      init (interactive in a terminal) | init --workspace NAME
             workspace attach PATH --as HUMAN
             workspace settings | workspace set --default-human NAME | --wake-mode legacy|scored | --speed slow|normal|fast
             workspace wake-audit [--limit N] --as HUMAN
+            codex versions | codex accept VERSION [--replace] --as HUMAN (the Codex CLI versions launch accepts)
             roles | role set NAME [--provider claude|codex] [--model MODEL] [--dir PATH]
             [--kind human|agent] [--effort LEVEL] [--permission-mode MODE] [--sandbox MODE] [--approval POLICY]
             [--autocompact TOKENS|auto] (Claude roles; a human sets it; launch passes --autocompact)
@@ -118,7 +119,7 @@ const allowed: Record<string,string[]> = {
   add:['title','body','for','owner','priority','human-only','review-required','spare'],tasks:['status','owner','for','available','limit','after','spare'],show:['limit','before-event'],
   take:['hours'],renew:['hours'],note:[],update:['expect','title','body','priority','for','human-only','agent-allowed','review-required','no-review','spare','no-spare'],handoff:['brief-file','expect'],release:[],submit:['reviewer'],review:['approve','reject','note','expect'],done:['ref'],drop:[],reopen:[],after:[],unafter:[],block:['kind','waits-on','on'],blockers:['task','chain','limit','all'],resolve:[],
   'ask-human':['for','options','recommend','command','new'],answer:['close','relayed-by','asked','on','new'],withdraw:[],humans:['for','limit','untouched'],send:['re','urgent','needs-reply','now','urgency','reason'],wait:['urgent','timeout','stop-file','since','idle-minutes','settle','settle-max'],inbox:['peek','state','limit','unread'],wake:['pending','since','ack','timeout','stop-file','idle-minutes','settle','settle-max'],outbox:['limit'],sent:['limit'],retitle:['owner','apply'],ack:[],
-  'fact set':['source','checked-at','expect','answers'],'fact get':[],'fact history':[],facts:['limit'],
+  'fact set':['source','checked-at','expect','answers'],'fact get':[],'fact history':[],'codex accept':['replace'],'codex versions':[],facts:['limit'],
   'wip show':[],'wip set':['current','next','notes','expect'],sessions:[], 'session register':['provider','session-id','pid','replace'],'session heartbeat':['session-id'],'session end':['session-id'],usage:['until'],
   stop:['all','timeout','no-wait','force'],'stop-status':['quiet','stop-file'],stopped:[],'resume-work':['all'],
   context:['brief','since','limit','line-length'],status:['line-length'],'job run':['kind','wait','no-wait','job-version','load','mem'],'job list':[],'job stats':[],search:['type','owner','status','since','limit','phrase','prefix'],
@@ -272,7 +273,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (bool('version')) {const build=JSON.parse(readFileSync(new URL('./build-info.json',import.meta.url),'utf8'));console.log(bool('json')?JSON.stringify({...build,schema:SCHEMA_VERSION}):`${build.version} (build ${build.build})`);return;}
     const p=[...positionals];let command=p.shift()!;
     if (command==='task') command=p.shift()??'tasks';
-    if (['workspace','role','fact','session','job','checkout','brief','index'].includes(command)) command+=' '+(p.shift()??'');
+    if (['workspace','role','fact','session','job','checkout','brief','index','codex'].includes(command)) command+=' '+(p.shift()??'');
     if (command==='supervise') command+=' '+(p.shift()??(bool('attended')?'attended':'status'));
     if (command==='checkpoint' || command==='progress') command+=' '+(p.shift()??'show');
     // wip get is an alias of wip show, which prints the version that wip set --expect takes.
@@ -313,7 +314,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     else if(command==='restore') {const source=arg('backup');empty();check(str('db'),'Restore requires explicit --db NEW_FILE');result=await a.restoreDatabase(source,db);}
     else if(command==='machine') {empty();result=a.machine();}
     else {
-      const reads=['watch-status','supervise assignment','supervise status','checkout list','checkout show','checkout resolve','brief show','job list','job stats','tasks','show','blockers','humans','outbox','sent','fact get','fact history','facts','wip show','sessions','roles','workspace settings','workspace wake-audit','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
+      const reads=['watch-status','supervise assignment','supervise status','checkout list','checkout show','checkout resolve','brief show','job list','job stats','tasks','show','blockers','humans','outbox','sent','fact get','fact history','codex versions','facts','wip show','sessions','roles','workspace settings','workspace wake-audit','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
       const readonly=reads.includes(command)||command==='retitle'&&!bool('apply')||command==='inbox'&&bool('peek')||['launch','import'].includes(command)&&bool('dry-run');
       store=new Store(db,actor,{readonly,managedWriteMode:command==='supervise reconcile'?'reconcile':command==='supervise ack'?'normal':command==='stopped'?'stop-ack':'normal'});
       const s=store;
@@ -322,6 +323,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'migrate': empty();result={schema:SCHEMA_VERSION,database:s.path};break;
         case 'workspace attach': {const path=arg('path');empty();result=a.attachWorkspace(s,path);break;}
         case 'workspace settings': empty();result=workspaceSettings(s);break;
+        case 'codex versions': empty();result={accepted:workspaceSettings(s).codex_versions};break;
+        case 'codex accept': {const version=arg('version');empty();result={accepted:acceptCodexVersion(s,version,bool('replace'))};break;}
         case 'workspace wake-audit': empty();result=c.wakeAudit(s,num('limit'));break;
         case 'workspace set': {
           empty();const patch:Partial<WorkspaceSettings>={};

@@ -28,7 +28,7 @@ if '--version' in sys.argv:
                 counter.write_text(str(count))
                 if count >= 2:
                     (root / 'late-busy').write_text('fixture busy')
-    print('attended fixture 1')
+    print('codex-cli 0.167.0')
     sys.exit(0)
 
 

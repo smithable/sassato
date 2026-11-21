@@ -13,7 +13,7 @@ import { getNotificationProgress } from './notification-progress.js';
 import { enrollPendingWake, enrollment, closePendingWake, pendingStop, stagePendingWake } from './pending-wake.js';
 import { queueClient } from './queue-client.js';
 import { Store } from './storage.js';
-import { workspaceSettings } from './workspace-settings.js';
+import { workspaceSettings, checkCodexVersion } from './workspace-settings.js';
 
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const deadlineMs=300_000;
@@ -92,7 +92,8 @@ async function observe(s:Store,human:string,remote:string,thread:string,clock:()
   const clientIdentity=()=>{const st=statSync(client,{bigint:true});return [st.dev,st.ino,st.ctimeNs].join(':');};
   const pinned=clientIdentity(),options={cwd:bound.cwd};
   const version=await queueClient(client,['--version'],options);
-  check(version.code===0 && !version.timedOut && !version.stderr.trim() && /^codex(?:-cli)? 0\.167\.0$/.test(version.stdout.trim()),'Expected Codex CLI 0.167.0',4);
+  check(version.code===0 && !version.timedOut && !version.stderr.trim(),'Cannot read the Codex CLI version',4);
+  checkCodexVersion(workspaceSettings(s),version.stdout);
   const help=await queueClient(client,['queue','--help'],options);
   check(help.code===0 && !help.timedOut && !help.stderr.trim() && ['thread','message','resume','remote'].every(flag=>new RegExp(`--${flag}\\b`).test(help.stdout)),'Required Codex queue interface unavailable',4);
   const identity=()=>check(pinned===clientIdentity() && JSON.stringify(session(s,thread,remote))===JSON.stringify(bound),
