@@ -283,6 +283,11 @@ owner. Multiple blockers do not overwrite the original state.
 a human's decision in the audit event. It still requires a human actor; relay attribution
 does not grant permission or authenticate either identity.
 
+A decision given in a chat before anyone recorded the question is recorded whole:
+`answer --asked QUESTION (--on T1 | --new TITLE) ANSWER --as alice --relayed-by assistant
+[--close]` records the question, asked by the relaying role, and its answer in one step,
+on the task or on a new one owned by and for the relaying role. `--relayed-by` is required.
+
 ## Mail, facts and WIP
 
 | Command | Behavior |
