@@ -166,7 +166,8 @@ function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
   if(event.action==='completed'||(event.action==='import-repaired'&&(detail.after?.task?.status??detail.after?.status)==='done')) {
     tasks=available(s,actor,'EXISTS (SELECT 1 FROM dependencies d WHERE d.workspace_id=t.workspace_id AND d.task_id=t.id AND d.depends_on=?)',[id],true);
   } else {
-    const updated=event.action==='updated'&&['for_role','human_only','spare'].some(key=>Object.hasOwn(detail.after??{},key)&&detail.before?.[key]!==detail.after[key]);
+    // Clearing spare makes the task ready work; marking it spare never wakes anyone (T1102).
+    const updated=event.action==='updated'&&(['for_role','human_only'].some(key=>Object.hasOwn(detail.after??{},key)&&detail.before?.[key]!==detail.after[key])||detail.before?.spare===1&&detail.after?.spare===0);
     const repaired=event.action==='import-repaired'&&(detail.after?.task?.status??detail.after?.status)==='open';
     if(!updated&&!repaired&&!['created','imported','reopened','released','handed-off','dependency-removed'].includes(event.action))return undefined;
     if(['created','imported','handed-off','updated'].includes(event.action)) {
