@@ -353,7 +353,9 @@ changes receipts. Save its `cursor` for the next `context --since`; `snapshot_cu
 is informational, not the continuation point. Waiter recovery uses its own returned
 cursor and durable progress, not context pagination. Truncation can cause repeat delivery when paging; use stable IDs
 for deduplication. Cursor tracks changed facts and answered questions; current work, pending
-mail and blockers remain visible regardless of --since. Non-inbox counts are lower bounds.
+mail and blockers remain visible regardless of --since. Its `questions` are the role's own
+open questions to humans (asked by it or on a task it owns), each with `age_days` and
+`untouched` as in `humans`. Non-inbox counts are lower bounds.
 Detailed commands show full records. JSON context is limited to roughly 5800 characters;
 terminal context to 40 lines/6000 characters.
 
