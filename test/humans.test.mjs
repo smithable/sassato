@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { Store, SCHEMA_VERSION } from '../dist/storage.js';
 import { initWorkspace, search, showRecord } from '../dist/admin.js';
-import { setRole, inbox, context } from '../dist/coordination.js';
+import { setRole, inbox, context, renderContext } from '../dist/coordination.js';
 import * as tasks from '../dist/tasks.js';
 import { previewImport, applyImport, exportMarkdown } from '../dist/migration.js';
 
@@ -263,4 +263,16 @@ test('the human queue says who asked, how long ago, and marks what nobody touche
   const text=spawnSync(process.execPath,[cli,'--db',db,'--workspace','team','--as','alice','humans'],{encoding:'utf8'}).stdout;
   assert.match(text,/Sign the form.*\(asked by builder, 9 d, untouched\)/);
   assert.match(text,/Which host\? \(asked by builder, 9 d\)/);
+});
+
+test('context shows a role its own open questions with their age and the untouched mark (T1085)',t=>{
+  const {s}=fixture(t),old=new Date(Date.now()-10*86_400_000).toISOString();
+  const task=tasks.addTask(s,{title:'Choose host',owner:'builder'}),q=tasks.askHuman(s,task.id,{question:'Which host?'});
+  let row=context(s).sections.questions.find(r=>r.id===q.id);
+  assert.deepEqual([row.age_days,row.untouched],[0,false]);
+  s.run('UPDATE questions SET created_at=? WHERE id=?',old,Number(q.id.slice(1)));
+  s.run('UPDATE tasks SET updated_at=? WHERE id=?',old,Number(task.id.slice(1)));
+  row=context(s).sections.questions.find(r=>r.id===q.id);
+  assert.deepEqual([row.age_days,row.untouched],[10,true]);
+  assert.match(renderContext(context(s)),new RegExp(`questions: ${q.id} · task=${task.id} · for_role=alice · age_days=10 · untouched=true · question=Which host\\?`));
 });
