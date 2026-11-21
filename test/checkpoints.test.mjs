@@ -143,6 +143,10 @@ test('CLI preserves checkpoint recovery and rejects removed advice syntax',test=
   const run=(args,json=true)=>spawnSync(process.execPath,[cli,'--db',db,'--workspace','demo','--as','builder',...(json?['--json']:[]),...args],{encoding:'utf8',timeout:5000});
   const saved=run(['checkpoint','save','--current','Completed parser','--next','Review API','--notes','Tests passed']);
   assert.equal(saved.status,0,saved.stderr);assert.equal(JSON.parse(saved.stdout).wip_version,1);
+  for(const [flag,value] of [['--notes',''],['--next','  ']]) {
+    const args=['checkpoint','save','--current','c','--next','n','--notes','x'];args[args.indexOf(flag)+1]=value;
+    const empty=run(args,false);assert.equal(empty.status,2);assert.equal(empty.stderr,`sassato: ${flag} is empty; write what applies, or "none" when there is nothing to add\n`);
+  }
   const removed=run(['context','advise']);
   assert.equal(removed.status,2);assert.match(removed.stderr,/Unexpected argument: advise/);assert.equal(removed.stdout,'');
   for(const flag of ['--pressure','--relation','--jobs','--unsaved']) {
