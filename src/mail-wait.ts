@@ -9,7 +9,7 @@ import { getNotificationProgress, IDLE_TASK_LIMIT, lastIdleDelivery, scoredDeliv
 import { effectiveWakePolicy, scoredWake, WORKFLOW_WAKE_POINTS, type ScoredItem, type WakeScore } from './wake-policy.js';
 
 export interface WaitResult {
-  reason:'digest'|'urgent'|'reply-needed'|'own-work'|'open-work'|'stop'|'timeout'|'answer'|'blocker-resolved'|'blocker-assigned'|'dependency-dropped'|'task-assigned'|'task-ready'|'review-submitted'|'review-approved'|'review-rejected'|'supervisor-ping';
+  reason:'digest'|'urgent'|'reply-needed'|'own-work'|'open-work'|'spare-work'|'stop'|'timeout'|'answer'|'blocker-resolved'|'blocker-assigned'|'dependency-dropped'|'task-assigned'|'task-ready'|'review-submitted'|'review-approved'|'review-rejected'|'supervisor-ping';
   role:string; cursor:number; message?:Row; stop?:Row;
   question?:string; blocker?:string; task?:string; tasks?:string[];
   /** Task version recorded by the workflow event, not a substitute for reading current work. */
@@ -28,21 +28,29 @@ export interface WaitOptions {
   defaultIdleMinutes?:number; clock?:WaitClock;
 }
 const maximum=(s:Store):number=>Number(s.get('SELECT coalesce(max(id),0) n FROM events WHERE workspace_id=?',s.ws)!.n);
-export function idleOpenWork(s:Store,actor:string):string[] {
+export function idleOpenWork(s:Store,actor:string,spare=false):string[] {
   const roles=workspaceSettings(s).open_work_roles,takesOpen=roles===null||roles.includes(actor)?1:0;
-  return s.all(`SELECT t.id FROM tasks t WHERE t.workspace_id=? AND t.status='open'
+  return s.all(`SELECT t.id FROM tasks t WHERE t.workspace_id=? AND t.status='open' AND t.spare=?
     AND (t.owner IS NULL OR t.owner=?) AND (t.for_role IS NULL OR t.for_role=?)
     AND (t.owner IS NOT NULL OR t.for_role IS NOT NULL OR ?=1) AND (t.human_only=0 OR ?=1)
     AND NOT EXISTS (SELECT 1 FROM blockers b WHERE b.workspace_id=t.workspace_id AND b.task_id=t.id AND b.status='open')
     AND NOT EXISTS (SELECT 1 FROM questions q WHERE q.workspace_id=t.workspace_id AND q.task_id=t.id AND q.status='pending')
     AND NOT EXISTS (SELECT 1 FROM dependencies d JOIN tasks p ON p.workspace_id=d.workspace_id AND p.id=d.depends_on WHERE d.workspace_id=t.workspace_id AND d.task_id=t.id AND p.status!='done')
-    ORDER BY t.priority DESC,t.id LIMIT ?`,s.ws,actor,actor,takesOpen,s.role(actor).kind==='human'?1:0,IDLE_TASK_LIMIT).map(r=>`T${r.id}`);
+    ORDER BY t.priority DESC,t.id LIMIT ?`,s.ws,spare?1:0,actor,actor,takesOpen,s.role(actor).kind==='human'?1:0,spare?SPARE_OFFER_LIMIT:IDLE_TASK_LIMIT).map(r=>`T${r.id}`);
+}
+// Spare work goes only to a role whose provider the human listed (any, when the list is empty), and not at all
+// while spare_work is off (T1102).
+const SPARE_OFFER_LIMIT=3;
+function idleSpareWork(s:Store,actor:string):string[] {
+  const settings=workspaceSettings(s),provider=s.role(actor).provider;
+  if(!settings.spare_work||settings.spare_providers.length&&!settings.spare_providers.includes(provider))return [];
+  return idleOpenWork(s,actor,true);
 }
 function available(s:Store,actor:string,condition:string,params:Param[],includeDoing=false):string[] {
   // These are the same gates as tasks --available, applied to event candidates only, except that a
   // task neither owned nor routed wakes only the roles in open_work_roles (every role when unset).
   const roles=workspaceSettings(s).open_work_roles,takesOpen=roles===null||roles.includes(actor)?1:0;
-  return s.all(`SELECT t.id FROM tasks t WHERE t.workspace_id=? AND (t.status='open'${includeDoing?" OR (t.status='doing' AND t.owner=?)":''})
+  return s.all(`SELECT t.id FROM tasks t WHERE t.workspace_id=? AND ((t.status='open' AND t.spare=0)${includeDoing?" OR (t.status='doing' AND t.owner=?)":''})
     AND (t.owner IS NULL OR t.owner=?) AND (t.for_role IS NULL OR t.for_role=?)
     AND (t.human_only=0 OR ?=1) AND (t.owner IS NOT NULL OR t.for_role IS NOT NULL OR ?=1)
     AND NOT EXISTS (SELECT 1 FROM blockers b WHERE b.workspace_id=t.workspace_id AND b.task_id=t.id AND b.status='open')
@@ -346,7 +354,9 @@ function idleWork(s:Store,actor:string) {
   const doing=s.all("SELECT id FROM tasks WHERE workspace_id=? AND owner=? AND status='doing' ORDER BY priority DESC,id LIMIT ?",s.ws,actor,IDLE_TASK_LIMIT).map(r=>`T${r.id}`);
   if(doing.length)return {reason:'own-work' as const,tasks:doing};
   const open=idleOpenWork(s,actor);
-  return open.length?{reason:'open-work' as const,tasks:open}:undefined;
+  if(open.length)return {reason:'open-work' as const,tasks:open};
+  const spare=idleSpareWork(s,actor);
+  return spare.length?{reason:'spare-work' as const,tasks:spare}:undefined;
 }
 
 const DAY=24*60*60_000;

@@ -8,7 +8,7 @@ import { assertManagedIdentity,assertManagedWrite,type ManagedCredentials,type M
 // SQLite rows deliberately stay flexible at this small adapter boundary.
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 export function databasePath(value?: string): string {
   const path = resolve(value ?? process.env.SASSATO_DB ?? `${process.env.XDG_DATA_HOME ?? `${homedir()}/.local/share`}/sassato/sassato.db`);
   let ancestor = path;
@@ -140,7 +140,8 @@ export class Store {
       if (current === 7) { this.db.exec(MIGRATION_8); current = 8; }
       if (current === 8) { this.db.exec(MIGRATION_9); current = 9; }
       if (current === 9) { this.db.exec(MIGRATION_10); current = 10; }
-      if (current === 10) this.db.exec(MIGRATION_11);
+      if (current === 10) { this.db.exec(MIGRATION_11); current = 11; }
+      if (current === 11) this.db.exec(MIGRATION_12);
     });
   }
   private cancelClosedQuestions(): void {
@@ -326,4 +327,11 @@ CREATE TABLE scored_wake_delivery (
 );
 INSERT INTO schema_migrations VALUES(11,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 PRAGMA user_version=11;
+`;
+
+// Spare tasks: offered only to an idle role, never in ready work or wakes (T1102).
+const MIGRATION_12 = `
+ALTER TABLE tasks ADD COLUMN spare INTEGER NOT NULL DEFAULT 0 CHECK(spare IN (0,1));
+INSERT INTO schema_migrations VALUES(12,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+PRAGMA user_version=12;
 `;

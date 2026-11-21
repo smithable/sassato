@@ -8,7 +8,7 @@ export type TaskStatus = typeof STATUSES[number];
 const terminal = (row: Row): boolean => row.status === 'done' || row.status === 'dropped';
 const human = (s: Store): boolean => s.role(s.requireActor()).kind === 'human';
 const taskId = (row: Row): string => `T${row.id}`;
-const taskView = (row: Row): Row => ({ ...row, id: taskId(row), human_only: Boolean(row.human_only), review_required: Boolean(row.review_required), stale: Boolean(row.lease_until && row.lease_until < now() && !terminal(row)) });
+const taskView = (row: Row): Row => ({ ...row, id: taskId(row), human_only: Boolean(row.human_only), review_required: Boolean(row.review_required), spare: Boolean(row.spare), stale: Boolean(row.lease_until && row.lease_until < now() && !terminal(row)) });
 const blockerView = (row: Row): Row => ({ ...row, id: `B${row.id}`, task_id: `T${row.task_id}` });
 const questionView = (row: Row): Row => ({ ...row, id: `H${row.id}`, task_id: `T${row.task_id}`, blocker_id: `B${row.blocker_id}`, options: JSON.parse(row.options) });
 // What to ask for when a task is another role's: who can pass it on, and the command they run (T972).
@@ -70,7 +70,7 @@ function priority(value = 0): number { return integer(value, 'priority', 0, 100)
 export const NOW = 90;
 const nowRule = 'Only a human sets or lowers priority ' + NOW + ' and above (now)';
 
-export interface AddTaskOptions { title: string; body?: string; owner?: string; forRole?: string; priority?: number; humanOnly?: boolean; reviewRequired?: boolean }
+export interface AddTaskOptions { title: string; body?: string; owner?: string; forRole?: string; priority?: number; humanOnly?: boolean; reviewRequired?: boolean; spare?: boolean }
 export function addTask(s: Store, options: AddTaskOptions): Row {
   return s.tx(() => {
     const actor = s.requireActor(), at = now();
@@ -83,10 +83,12 @@ export function addTask(s: Store, options: AddTaskOptions): Row {
     check(!options.humanOnly || !options.owner || s.role(options.owner).kind === 'human', 'Human-only items can only be assigned to a human', 3);
     check(!options.humanOnly || !target || s.role(target).kind === 'human', 'Human-only items must be for a human', 3);
     const n = s.run('INSERT INTO tasks(workspace_id,title,body,owner,priority,human_only,for_role,creator,review_required,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)', s.ws, options.title, options.body ?? '', options.owner ?? null, priority(options.priority), options.humanOnly ? 1 : 0, target, actor, options.reviewRequired ? 1 : 0, at, at).lastInsertRowid;
+    if (options.spare) s.run('UPDATE tasks SET spare=1 WHERE workspace_id=? AND id=?', s.ws, n);
     const row = s.task(`T${n}`); s.event('task', `T${n}`, 'created', taskView(row)); indexTask(s, row); return taskView(row);
   });
 }
-export interface ListTaskOptions { status?: string; owner?: string; forRole?: string; available?: boolean; limit?: number; after?: string }
+// spare: true lists only spare tasks, false only the others; unset lists both (T1102).
+export interface ListTaskOptions { status?: string; owner?: string; forRole?: string; available?: boolean; limit?: number; after?: string; spare?: boolean }
 function queryTasks(s: Store, options: ListTaskOptions, fetchLimit: number): Row[] {
   const clauses = ['t.workspace_id=?'], params: Param[] = [s.ws];
   if (options.status && options.status !== 'all') {
@@ -95,11 +97,13 @@ function queryTasks(s: Store, options: ListTaskOptions, fetchLimit: number): Row
   } else if (!options.status) clauses.push("t.status NOT IN ('done','dropped')");
   if (options.owner) { s.role(options.owner); clauses.push('t.owner=?'); params.push(options.owner); }
   if (options.forRole) { s.role(options.forRole); clauses.push('t.for_role=?'); params.push(options.forRole); }
+  if (options.spare !== undefined) clauses.push(options.spare ? 't.spare=1' : 't.spare=0');
   if (options.after) { const cursor = s.task(options.after); clauses.push('(t.priority<? OR (t.priority=? AND t.id>?))'); params.push(cursor.priority, cursor.priority, cursor.id); }
   if (options.available) {
     const actor = s.requireActor();
     clauses.push("t.status='open'", '(t.owner IS NULL OR t.owner=?)', '(t.for_role IS NULL OR t.for_role=?)'); params.push(actor, actor);
     if (!human(s)) clauses.push('t.human_only=0');
+    if (options.spare === undefined) clauses.push('t.spare=0');
     clauses.push("NOT EXISTS (SELECT 1 FROM blockers b WHERE b.workspace_id=t.workspace_id AND b.task_id=t.id AND b.status='open')", "NOT EXISTS (SELECT 1 FROM dependencies d JOIN tasks p ON p.workspace_id=d.workspace_id AND p.id=d.depends_on WHERE d.workspace_id=t.workspace_id AND d.task_id=t.id AND p.status!='done')");
   }
   params.push(fetchLimit);
@@ -109,13 +113,18 @@ export function listTasks(s: Store, options: ListTaskOptions = {}): Row[] {
   const limit = integer(options.limit ?? 50, 'limit', 1, 1000);
   return s.snapshot(() => queryTasks(s, options, limit));
 }
-export interface TaskPage { items: Row[]; has_more: boolean; next_after: string | null }
+export interface TaskPage { items: Row[]; has_more: boolean; next_after: string | null; spare?: Row[] }
+const SPARE_LIST_LIMIT = 50;
 export function listTaskPage(s: Store, options: ListTaskOptions = {}): TaskPage {
   const limit = integer(options.limit ?? 50, 'limit', 1, 1000);
   return s.snapshot(() => {
-    const rows = queryTasks(s, options, limit + 1), items = rows.slice(0, limit);
+    // Without --spare, spare tasks are listed apart from the rest, so they never pass for ready work (T1102).
+    const split = options.spare === undefined, rows = queryTasks(s, split ? { ...options, spare: false } : options, limit + 1), items = rows.slice(0, limit);
     const hasMore = rows.length > limit;
-    return { items, has_more: hasMore, next_after: hasMore ? items[items.length - 1].id as string : null };
+    const page: TaskPage = { items, has_more: hasMore, next_after: hasMore ? items[items.length - 1].id as string : null };
+    const spare = split && !options.after ? queryTasks(s, { ...options, spare: true }, SPARE_LIST_LIMIT) : [];
+    if (spare.length) page.spare = spare;
+    return page;
   });
 }
 export function showTask(s: Store, task: string, options: { historyLimit?: number; beforeEvent?: number } = {}): Row {
@@ -163,7 +172,7 @@ export function markFactAnswer(s: Store, task: string, fact: { id: string; key: 
     return change(s, row, {}, 'answered-in-fact', { fact: fact.id, key: fact.key });
   });
 }
-export interface UpdateTaskOptions { version: number; title?: string; body?: string; priority?: number; forRole?: string | null; humanOnly?: boolean; reviewRequired?: boolean }
+export interface UpdateTaskOptions { version: number; title?: string; body?: string; priority?: number; forRole?: string | null; humanOnly?: boolean; reviewRequired?: boolean; spare?: boolean }
 export function updateTask(s: Store, task: string, options: UpdateTaskOptions): Row {
   return s.tx(() => {
     const row = s.task(task); writable(s, row); active(row);
@@ -183,6 +192,8 @@ export function updateTask(s: Store, task: string, options: UpdateTaskOptions): 
       if (options.humanOnly) { patch.owner = null; patch.lease_until = null; patch.for_role = humanRole(s, options.forRole ?? (row.for_role && s.role(row.for_role).kind === 'human' ? row.for_role : undefined)); }
     }
     if (options.reviewRequired !== undefined) { check(options.reviewRequired || !row.review_required || human(s), 'Only a human may remove a required review', 3); patch.review_required = options.reviewRequired ? 1 : 0; }
+    // Setting or clearing spare is an ordinary update: the task's history keeps who changed it, before and after (T1102).
+    if (options.spare !== undefined && (options.spare ? 1 : 0) !== row.spare) patch.spare = options.spare ? 1 : 0;
     const target = patch.for_role !== undefined ? patch.for_role : row.for_role;
     const onlyHuman = patch.human_only ?? row.human_only;
     check(!onlyHuman || !target || s.role(target).kind === 'human', 'Human-only items must be for a human', 3);

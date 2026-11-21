@@ -189,8 +189,8 @@ or model calls. Do not install a development build against a live coordination d
 
 | Command | Behavior |
 | --- | --- |
-| `add TITLE [--body TEXT] [--owner ROLE] [--for ROLE] [--priority 0..100\|now\|normal] [--human-only] [--review-required]` | Create one task; higher priority first. 90 and above (`now`) is set or lowered only by a human role |
-| `tasks [--status all\|open,doing,...] [--owner ROLE] [--for ROLE] [--available] [--limit N] [--after T1]` | Default live tasks, 50 per page (maximum 1000); --after follows priority/ID order; JSON includes items/has_more/next_after |
+| `add TITLE [--body TEXT] [--owner ROLE] [--for ROLE] [--priority 0..100\|now\|normal] [--human-only] [--review-required] [--spare]` | Create one task; higher priority first. `--spare` makes it spare work (below). 90 and above (`now`) is set or lowered only by a human role |
+| `tasks [--status all\|open,doing,...] [--owner ROLE] [--for ROLE] [--available] [--spare] [--limit N] [--after T1]` | Default live tasks, 50 per page (maximum 1000); --after follows priority/ID order; JSON includes items/has_more/next_after. Spare tasks are listed apart (JSON `spare`, at most 50, first page only); `--spare` lists only them; `--available` never includes them |
 | `show T1 [--limit N] [--before-event NUMBER]` | Body, blockers, dependencies, questions and latest 100 audit events by default |
 | `take T1 [--hours 4]` | Atomically claim eligible open work; lease 1–168 hours |
 | `renew T1 [--hours 4]` | Renew owned lease, including stale lease |
@@ -204,7 +204,7 @@ or model calls. Do not install a development build against a live coordination d
 | `drop T1 REASON` | Close without successful completion; cancel pending questions and resolve their linked blockers |
 | `reopen T1 REASON` | Reopen closed work, retain owner, clear approval; explicitly claim again and ask new questions as needed |
 
-`update` also accepts `--human-only`, `--agent-allowed`, `--review-required`, `--no-review`.
+`update` also accepts `--human-only`, `--agent-allowed`, `--review-required`, `--no-review`, `--spare`, `--no-spare`.
 Only a human may downgrade human-only work or remove a required review. To make active
 work human-only, release it first. Setting human-only clears owner and uses `--for`, an existing human target, or the default human routing below. Creating human-only work with `--owner` uses that human as its target unless `--for` is supplied.
 Tasks routed with `--for ROLE` can only be claimed by that role, even if another role
@@ -226,6 +226,25 @@ not to a Git commit: `done --ref` is recorded evidence, not verified artifact id
 
 `task add`, `task take`, etc. are accepted aliases of their top-level task verbs. Use
 `tasks --status done --limit 20` for a bounded completed-work view; task list ordering is priority/ID.
+
+### Spare work (T1102)
+
+A spare task is work worth doing when a role has nothing else: it is never ready work. `context`, `tasks
+--available` and the waiter's ready-task wakes leave it out. It is offered only by the idle reminder
+(`--idle-minutes`), as `spare-work` with at most three tasks, to a role that has no own work and no open
+work it could take. The waiter's digest shows it as `SPARE WORK T1, … offered to ROLE`; it can be left out
+with `--digest-skip` like `open-work`. The task's usual rules still apply (owner, `--for`, human-only,
+dependencies, pending questions).
+
+Two workspace settings, set only by a human:
+
+- `workspace set --spare-work on|off` (default `on`): `off` stops every spare offer.
+- `workspace set --spare-providers codex,claude` (default `any`): only roles whose provider is listed are
+  offered spare work; `any` (an empty list) offers it to every provider.
+
+`add --spare` creates one; `update T1 --spare|--no-spare --expect VERSION` sets or clears the flag, by the
+same roles that may update the task otherwise. A cleared flag makes the task ordinary ready work, and the
+change is in the task's history (`show T1`) with who made it, before and after.
 
 ## Dependencies, blockers and decisions
 
@@ -703,7 +722,7 @@ nor fill its digest:
 sas workspace set --digest-skip '{"fable":["own-work","task-finished"]}' --as johan
 ```
 
-These kinds can be skipped: `own-work`, `open-work`, `task-finished`, `mail`. Urgent mail, replies, answers,
+These kinds can be skipped: `own-work`, `open-work`, `spare-work`, `task-finished`, `mail`. Urgent mail, replies, answers,
 blockers, reviews, ready tasks, dropped dependencies and STOP always reach the role, since they can concern
 its own work.
 The default is none: every role gets its digest as before.
