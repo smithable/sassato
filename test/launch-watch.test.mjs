@@ -83,6 +83,7 @@ test('warning despite exit zero suspends, preserves pending work, explicit close
   assert.ok(f.worker.get("SELECT id FROM messages WHERE sender='b' AND body LIKE '%suspended%'"));
   const urgent=f.worker.all("SELECT body FROM messages WHERE sender='b' AND urgent=1 AND body LIKE 'The Codex waiter for b stopped%'");
   assert.equal(urgent.length,1);assert.match(urgent[0].body,/stopped: queue delivery uncertain\./);assert.doesNotMatch(urgent[0].body,/Deliver once|resume unavailable/);
+  f.operator.event('watch-dispatch','b','exited',{epoch:1,reason:'queue delivery uncertain'});
   const after=status(f.worker).watcher;
   assert.equal(after.state,'exited');assert.equal(after.start_refused,'an earlier enrollment is still open');
   assert.match(renderStatus(status(f.worker)),/watcher exited E\d+ \(queue delivery uncertain\), a restart refused \(an earlier enrollment is still open\)/);
@@ -259,6 +260,8 @@ test('provider output never reaches the mail or the status line (T663)',async t=
   const mail=f.worker.all("SELECT body FROM messages WHERE urgent=1 AND body LIKE 'The Codex waiter%'");
   assert.equal(mail.length,1);assert.equal(mail[0].body,'The Codex waiter for b did not start: Codex CLI version unreadable.');
   assert.doesNotMatch(renderStatus(status(f.worker)),/secret/);
+  f.operator.event('watch-dispatch','b','refused',{reason:'<old provider text>'});
+  assert.equal(status(f.worker).watcher.reason,'see the launcher terminal');
   await assert.rejects(launchWatch(f.operator,'b',f.remote,'not-a-thread'),/UUID/);
   assert.equal(f.worker.all("SELECT body FROM messages WHERE urgent=1 AND body LIKE 'The Codex waiter%'").length,2);
 });

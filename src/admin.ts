@@ -7,6 +7,7 @@ import { closeSync, existsSync, mkdirSync, openSync, realpathSync, statSync, unl
 import { dirname, resolve } from 'node:path';
 import { cpus, freemem, loadavg, totalmem, uptime } from 'node:os';
 import { Store, databasePath, SCHEMA_VERSION, type Row, type Param } from './storage.js';
+import { WATCH_REASONS } from './launch-watch.js';
 import { AppError, check, id, integer, name, now, safe, text } from './errors.js';
 import { normalizeOption, ROLE_OPTION_KEYS, validateRoleOptions } from './role-options.js';
 import { loadConfig, workingDirectory } from './config.js';
@@ -81,9 +82,13 @@ export function status(s: Store): Row {
     // a start refused since the last enrollment event. A closed enrollment with no refusal since shows nothing.
     const enrolled=s.get("SELECT id,action FROM events WHERE workspace_id=? AND entity='wake-enrollment' AND entity_id=? ORDER BY id DESC LIMIT 1",s.ws,actor);
     const openEpoch=enrolled?.action==='opened'?Number(enrolled.id):null;
-    const ended=openEpoch===null?undefined:s.get("SELECT action,detail FROM events WHERE workspace_id=? AND entity='watch-dispatch' AND entity_id=? AND action IN ('exited','suspended') AND id>? ORDER BY id DESC LIMIT 1",s.ws,actor,openEpoch);
+    const ended=openEpoch===null?undefined:s.get("SELECT action,detail FROM events WHERE workspace_id=? AND entity='watch-dispatch' AND entity_id=? AND action IN ('exited','suspended') AND json_extract(detail,'$.epoch')=? ORDER BY id DESC LIMIT 1",s.ws,actor,openEpoch);
     const refusedStart=s.get("SELECT detail FROM events WHERE workspace_id=? AND entity='watch-dispatch' AND entity_id=? AND action='refused' AND id>? ORDER BY id DESC LIMIT 1",s.ws,actor,enrolled?.id??0);
-    const reasonIn=(row:Row|undefined)=>row?String(JSON.parse(row.detail).reason??''):undefined;
+    const reasonIn=(row:Row|undefined)=>{
+      if(!row)return undefined;
+      const reason=String(JSON.parse(row.detail).reason??'');
+      return WATCH_REASONS.has(reason)?reason:'see the launcher terminal';
+    };
     const watcher=openEpoch!==null?{state:ended?ended.action:'enrolled',epoch:`E${openEpoch}`,...(ended?{reason:reasonIn(ended)}:{}),...(refusedStart?{start_refused:reasonIn(refusedStart)}:{})}
       :refusedStart?{state:'refused',reason:reasonIn(refusedStart)}:null;
     const replies=s.all("SELECT m.id,m.sender,substr(m.body,1,200) AS text FROM messages m JOIN receipts r ON r.workspace_id=m.workspace_id AND r.message_id=m.id WHERE m.workspace_id=? AND r.recipient=? AND r.state!='done' AND m.reply=1 ORDER BY m.id LIMIT 7",s.ws,actor);

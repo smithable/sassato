@@ -22,16 +22,19 @@ const deadlineMs=300_000;
 // "run sas wake --pending" line is harmless, since the pending result is consumed once.
 const queueTimeoutMs=30_000,retryPauseMs=2_000;
 // Mail and status carry a fixed reason only, never provider output: the full error stays in the launcher's terminal.
+// Each pattern is anchored at the start of sassato's own message, so quoted provider output cannot pick a reason.
 const reasons:[RegExp,string][]=[
-  [/is older than/,'Codex CLI older than the oldest supported version'],
-  [/Cannot read the Codex CLI version/,'Codex CLI version unreadable'],
-  [/queue interface unavailable/,'Codex queue interface unavailable'],
-  [/session, endpoint or configuration changed/,'session, endpoint or configuration changed'],
-  [/Close the existing waiter enrollment/,'an earlier enrollment is still open'],
-  [/notification progress/,'notification progress missing'],
-  [/Queue delivery is uncertain/,'queue delivery uncertain'],
-  [/Five minutes elapsed/,'no worker receipt within five minutes'],
+  [/^Cannot read the Codex CLI version/,'Codex CLI version unreadable'],
+  [/^Codex CLI [0-9.]+ is older than/,'Codex CLI older than the oldest supported version'],
+  [/^Required Codex queue interface unavailable/,'Codex queue interface unavailable'],
+  [/^Watcher session, endpoint or configuration changed/,'session, endpoint or configuration changed'],
+  [/^Close the existing waiter enrollment/,'an earlier enrollment is still open'],
+  [/^Reconcile the role’s notification progress/,'notification progress missing'],
+  [/^Queue delivery is uncertain/,'queue delivery uncertain'],
+  [/^Five minutes elapsed/,'no worker receipt within five minutes'],
 ];
+/** The only reasons a watcher event carries; status shows any other stored text as the last one. */
+export const WATCH_REASONS=new Set([...reasons.map(([,reason])=>reason),'interrupted','see the launcher terminal']);
 const reasonOf=(error:unknown)=>{
   const text=String(error instanceof Error?error.message:error);
   return reasons.find(([pattern])=>pattern.test(text))?.[1]??'see the launcher terminal';
@@ -110,18 +113,20 @@ export async function launchWatch(operator:Store,role:string,remote:string,threa
     release=acquireLaunchLock(operator,role);
   } catch(error) {throw refused(error);}
   try {
-    const s=new Store(operator.path,role);
-    try {s.use(operator.workspace);return await observe(s,human,remote,thread,clock,timing,refused);}
-    finally {s.close();}
+    let s:Store;
+    try {s=new Store(operator.path,role);} catch(error) {throw refused(error);}
+    try {
+      try {s.use(operator.workspace);} catch(error) {throw refused(error);}
+      return await observe(s,human,remote,thread,clock,timing,refused);
+    } finally {s.close();}
   } finally {release();}
 }
 
 // One urgent mail to the workspace's default human (else the human who started the watch): fixed text, the role
 // and the reason only, so a watcher that stops is seen by someone and not only in a terminal tab (T663).
 function warnHuman(s:Store,human:string,text:string) {
-  const to=workspaceSettings(s).default_human??human;
-  try {send(s,[to],text,{urgent:true});}
-  catch(error) {console.error(`Could not send the urgent mail to ${to}: ${error instanceof Error?error.message:error}`);}
+  try {send(s,[workspaceSettings(s).default_human??human],text,{urgent:true});}
+  catch(error) {console.error(`Could not send the urgent mail: ${error instanceof Error?error.message:error}`);}
 }
 
 async function observe(s:Store,human:string,remote:string,thread:string,clock:()=>number,timing:{queueTimeoutMs:number;retryPauseMs:number},refused:(error:unknown)=>unknown) {
@@ -185,7 +190,9 @@ async function observe(s:Store,human:string,remote:string,thread:string,clock:()
     if(stopping)s.event('watch-dispatch',role,'stop-intent',{epoch});
     let result=await queueClient(client,args,{...options,signal:controller.signal,timeoutMs:timing.queueTimeoutMs});
     // One retry, for work only and only after a silent hang: a STOP notice is never sent twice, and a call that
-    // printed anything is uncertain as it stands. Eligibility is checked again before the second call.
+    // printed anything is uncertain as it stands. Eligibility is checked again before the second call. A hung first
+    // call may still have queued its line; the worker then reads the result once and the second line finds
+    // "No pending wake", which changes nothing (T663 accepts this for a watcher that keeps going under load).
     if(result.timedOut && !stopping && pending!==undefined && !controller.signal.aborted && !result.stdout.trim() && !result.stderr.trim()){
       s.event('watch-dispatch',role,'retry',{epoch});
       await delay(timing.retryPauseMs,undefined,{signal:controller.signal});
@@ -252,8 +259,9 @@ async function observe(s:Store,human:string,remote:string,thread:string,clock:()
       }
     }
     if(stopping){alert('STOP observed. Verify the worker saw STOP and check enrollment status.');throw error;}
-    alert(`automatic dispatch suspended. Inspect the terminal and pending result; explicitly reconcile epoch ${epoch} before restarting.`);
     exited(error);
+    try {alert(`automatic dispatch suspended. Inspect the terminal and pending result; explicitly reconcile epoch ${epoch} before restarting.`);}
+    catch(alertError) {console.error(`Could not send the alert: ${alertError instanceof Error?alertError.message:alertError}`);}
     throw error;
   } finally {process.off('SIGTERM',cancel);process.off('SIGINT',cancel);}
 }
