@@ -317,6 +317,12 @@ sent, tasks created or changed, reviews, facts), or once the first of them is th
 old; `own_changes_since` counts them. Reads, acknowledgements, lease renewals, WIP and
 notification progress do not count.
 
+`checkpoint save` and `wip set` warn, on stderr and as `warnings` in the JSON, when a field
+says it is waiting on a human role by name ("waiting on", "waits on", "wait for" or "waiting for"
+followed within a few words by the role) and names no question (`H12`) and no `humans` list:
+a wait on a human belongs in `ask-human`, where `humans --for NAME` shows it. The save goes
+through either way.
+
 Saving observes repository/worktree, branch, commit and dirty status with bounded
 read-only Git probes, then snapshots current owned/targeted task versions and durable
 notification progress. `--evidence` accepts a version-1 JSON object with `validation`,

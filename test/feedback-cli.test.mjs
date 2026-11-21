@@ -75,3 +75,17 @@ test('wip get shows the version; a non-number --expect says where the version is
  const update=raw(['update',task.id,'--expect','latest','--title','New','--as','a']);assert.notEqual(update.status,0);assert.match(update.stderr,/sassato show ID/);
  const stale=raw(['checkpoint','save','--current','a','--next','b','--notes','c','--expect','9','--as','a']);assert.equal(stale.status,4);assert.match(stale.stderr,/current version is 1/);
 });
+
+test('wip set and checkpoint save warn on a wait on a human with no question recorded, and still save',t=>{
+ const {run,raw}=fixture(t);
+ const warned=raw(['wip','set','--current','Ready','--next','Waiting on human for the logo choice','--as','a','--json']);
+ assert.equal(warned.status,0);assert.match(warned.stderr,/warning: --next names a wait on human with no question recorded/);
+ const saved=JSON.parse(warned.stdout);assert.equal(saved.warnings.length,1);assert.equal(run(['wip','show','--as','a']).next,'Waiting on human for the logo choice');
+ const recorded=raw(['checkpoint','save','--current','Done','--next','Waits on human: H12','--notes','n','--expect','1','--as','a','--json']);
+ assert.equal(recorded.status,0);assert.doesNotMatch(recorded.stderr,/warning/);assert.equal(JSON.parse(recorded.stdout).warnings,undefined);
+ const other=raw(['wip','set','--current','Waiting for CI, then ask the human','--expect','2','--as','a']);
+ assert.equal(other.status,0);assert.doesNotMatch(other.stderr,/warning/);
+ const sentence=raw(["wip","set","--current","Waiting for CI. Ask human then","--notes","Waiting on human to say how many humans come","--expect","3","--as","a","--json"]);
+ assert.equal(JSON.parse(sentence.stdout).warnings.length,1);assert.match(sentence.stderr,/--notes names a wait on human/);
+ const listed=raw(["wip","set","--current","Waiting on human: see sas humans --for human","--expect","4","--as","a"]);assert.doesNotMatch(listed.stderr,/warning/);
+});
