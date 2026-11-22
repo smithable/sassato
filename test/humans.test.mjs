@@ -287,6 +287,11 @@ test('ask-human --new makes the task and asks the question in one step (T1085)',
   assert.ok(run(db,['--as','alice','humans']).some(r=>r.id===q.id));
   const both=raw(db,['--as','builder','ask-human','--new','Again',task.id,'Which host?']);
   assert.equal(both.status,2);assert.match(both.stderr,/either --new TITLE or a task id/);
+  // Options given as two words, not 'a|b', would leave the second in the question text (T1275).
+  for(const argv of [['ask-human',task.id,'Which host?','--options','local','hosted'],['ask-human','--new','Split','Which host?','--options','local','hosted']]) {
+    const extra=raw(db,['--as','builder',...argv]);
+    assert.equal(extra.status,2);assert.match(extra.stderr,/one question text: quote it, and separate options with \|/);
+  }
   // A refused question leaves no task behind: the two writes share one transaction.
   const before=s.get('SELECT count(*) AS n FROM tasks').n;
   const bad=raw(db,['--as','builder','ask-human','--new','Orphan','Which?','--for','nobody']);
