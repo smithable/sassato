@@ -180,12 +180,12 @@ function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
   return undefined;
 }
 /** What one event would put in a role's digest, as the waiter decides it (for the digest statistics
- * behind digest_skip, T977): a waking kind, an extra entry kind while a digest collects, or nothing. */
+ * behind digest_skip, T977): a waking kind (ordinary mail too, T1233), an extra entry kind while a digest collects, or nothing. */
 export function digestKindOf(s:Store,actor:string,event:Row):{kind:string;wakes:boolean}|undefined {
   const wake=workflow(s,actor,event);
   if(wake)return {kind:wake.message?.reply?'reply-needed':wake.reason,wakes:true};
   const extra=extraDuringDigest(s,actor,event);
-  return extra?{kind:extra.kind,wakes:false}:undefined;
+  return extra?{kind:extra.kind,wakes:extra.kind==='mail'}:undefined;
 }
 /** Immediate workflow signals may be behind a full mail page. Deliver them without crossing skipped events. */
 function priorityWorkflow(s:Store,actor:string,cursor:number):{wake:WaitResult;event:Row}[] {
@@ -319,7 +319,9 @@ export async function waitForWork(s:Store, options:WaitOptions={}, observer?:Wai
       for(const event of events) {
         const wake=workflow(s,actor,event);
         if(!settle){cursor=event.id;if(wake&&!skip.has(wake.message?.reply?'reply-needed':wake.reason))return wake;continue;}
-        const entry=wake?entryFor(s,wake,event):entries.size?extraDuringDigest(s,actor,event):undefined;
+        // Ordinary mail opens a digest of its own (T1233): before, it joined one only while another entry was
+        // open, and otherwise the cursor passed it unseen. Other extra kinds still only join an open digest.
+        const entry=wake?entryFor(s,wake,event):entries.size||event.entity==='message'?extraDuringDigest(s,actor,event):undefined;
         if(entry&&!add(entry)) {
           if(wake&&['answer','supervisor-ping'].includes(wake.reason))return digest('immediate',priority??wake);
           return priority?digest('immediate',priority):digest('capacity'); // Never cross an omitted relevant event.
