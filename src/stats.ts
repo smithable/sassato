@@ -60,12 +60,12 @@ export function stats(s: Store, options: StatsOptions = {}): Row {
     // The T1233 symptom: a cursor the role saved reached past the message while it stayed unread for
     // 30 minutes or more after. Saves since 0.1.3 name the mail their wake listed, which splits the
     // listed-but-unread from the never listed; older saves leave it unknown.
-    const saves = s.all(`SELECT entity_id AS role, created_at, json_extract(detail,'$.cursor') AS cursor, json_extract(detail,'$.delivered') AS delivered FROM events
+    const saves = s.all(`SELECT entity_id AS role, created_at, json_extract(detail,'$.cursor') AS cursor, json_extract(detail,'$.delivered') AS delivered, json_extract(detail,'$.delivered_cut') AS cut FROM events
       WHERE workspace_id=? AND entity='notification-progress' AND action='saved' ${role ? 'AND entity_id=?' : ''} ORDER BY id`, ...[s.ws, ...(role ? [role] : [])]);
     const savesByRole = new Map<string, Row[]>();
     for (const save of saves) {
       const list = savesByRole.get(save.role) ?? [];
-      list.push(save);
+      list.push({ ...save, delivered: save.delivered === null ? null : new Set(JSON.parse(save.delivered) as string[]), cut: Boolean(save.cut) });
       savesByRole.set(save.role, list);
     }
     const passed: Row[] = [];
@@ -74,7 +74,7 @@ export function stats(s: Store, options: StatsOptions = {}): Row {
       const save = (savesByRole.get(m.recipient) ?? []).find(x => Number(x.cursor) >= Number(m.event_id) && x.created_at >= m.created_at);
       if (!save || (m.read_at !== null && m.read_at <= save.created_at)) continue;
       const after = minutes(save.created_at, m.read_at ?? now);
-      if (elapsed(save.created_at, m.read_at ?? now) >= PASSED_MINUTES * MINUTE) passed.push({ message: `M${m.id}`, to: m.recipient, class: classOf(m), unread_minutes_after: after, open: m.read_at === null, listed: listedBefore(savesByRole.get(m.recipient) ?? [], `M${m.id}`, m.read_at ?? now) });
+      if (elapsed(save.created_at, m.read_at ?? now) >= PASSED_MINUTES * MINUTE) passed.push({ message: `M${m.id}`, to: m.recipient, class: classOf(m), unread_minutes_after: after, open: m.read_at === null, listed: listedBefore(savesByRole.get(m.recipient) ?? [], `M${m.id}`, m.created_at, m.read_at ?? now) });
     }
     passed.sort((a, b) => b.unread_minutes_after - a.unread_minutes_after);
 
@@ -127,11 +127,12 @@ export function stats(s: Store, options: StatsOptions = {}): Row {
   });
 }
 
-/** Whether a wake listed the mail before it was read: yes, no, or unknown when no save that early names its mail. */
-function listedBefore(saves: Row[], id: string, until: string): 'yes' | 'no' | 'unknown' {
-  const named = saves.filter(x => x.delivered !== null && x.created_at <= until);
-  if (named.some(x => (JSON.parse(x.delivered) as string[]).includes(id))) return 'yes';
-  return named.length ? 'no' : 'unknown';
+/** Whether a wake listed the mail between its sending and its reading: yes when a save names it; no only when
+ * every save in that time names its whole list; otherwise unknown (an older build, a save without a list, a cut list). */
+function listedBefore(saves: Row[], id: string, from: string, until: string): 'yes' | 'no' | 'unknown' {
+  const between = saves.filter(x => x.created_at >= from && x.created_at <= until);
+  if (between.some(x => x.delivered?.has(id))) return 'yes';
+  return between.length && between.every(x => x.delivered !== null && !x.cut) ? 'no' : 'unknown';
 }
 
 function countBy(rows: Row[], key: string): Record<string, number> {

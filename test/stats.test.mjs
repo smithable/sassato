@@ -69,6 +69,15 @@ test('a saved cursor names the mail its wake listed, so stats tells listed-but-u
   const saved=s.get("SELECT detail FROM events WHERE workspace_id=? AND entity='notification-progress' ORDER BY id DESC LIMIT 1",s.ws);
   assert.deepEqual(JSON.parse(saved.detail).delivered,[listed.id]);
   assert.throws(()=>saveNotificationProgress(s,{cursor:context(s).snapshot_cursor,expected_version:first.version,delivered:['T1']}),/Invalid delivered mail list/);
+  // A later save without a list, or with a cut one, leaves the never-listed mail unknown (review).
+  const plain=saveNotificationProgress(s,{cursor:context(s).snapshot_cursor,expected_version:first.version,scored:undefined,idle:undefined});
+  s.actor='a';const third=send(s,['c'],'After the plain save');s.actor='c';
+  assert.equal(stats(s,{now:later(90)}).passed_unread.longest.find(m=>m.message===missed.id).listed,'unknown');
+  const many=Array.from({length:250},(_,i)=>`M${100000+i}`);
+  saveNotificationProgress(s,{cursor:context(s).snapshot_cursor,expected_version:plain.version,delivered:many});
+  const cut=s.get("SELECT detail FROM events WHERE workspace_id=? AND entity='notification-progress' ORDER BY id DESC LIMIT 1",s.ws);
+  assert.equal(JSON.parse(cut.detail).delivered.length,200);assert.equal(JSON.parse(cut.detail).delivered_cut,true);
+  assert.equal(stats(s,{now:later(90)}).passed_unread.longest.find(m=>m.message===third.id).listed,'unknown');
 });
 
 test('stats refuses a since that is not a date and a role that does not exist',t=>{

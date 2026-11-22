@@ -106,7 +106,7 @@ export function saveNotificationProgress(s: Store, input: NotificationProgressIn
   return s.tx(()=>{
     const role=s.requireActor(), old=getNotificationProgress(s);
     const delivery=input.idle??input.scored?.idle;
-    if (!input.scored && !delivery && old && cursor===old.cursor && (expected===old.version || expected===old.version-1)) return old;
+    if (!input.scored && !delivery && !input.delivered?.length && old && cursor===old.cursor && (expected===old.version || expected===old.version-1)) return old;
     check(expected===(old?.version??0),'Notification progress changed; read it and retry with --expect',4);
     check(!old || cursor>=old.cursor,'Notification cursor cannot move backwards; use wait --since for an explicit replay',4);
     const latest=Number(s.get('SELECT coalesce(max(id),0) AS n FROM events WHERE workspace_id=?',s.ws)!.n);
@@ -123,10 +123,12 @@ export function saveNotificationProgress(s: Store, input: NotificationProgressIn
       s.run('INSERT OR IGNORE INTO scored_wake_delivery(workspace_id,role,event_id) VALUES(?,?,?)',s.ws,role,eventId);
     }
     s.run('DELETE FROM scored_wake_delivery WHERE workspace_id=? AND role=? AND event_id<=?',s.ws,role,cursor);
-    const delivered=[...new Set(input.delivered??[])];
-    check(delivered.length<=DELIVERED_LIMIT&&delivered.every(id=>/^M[1-9][0-9]*$/.test(id)),'Invalid delivered mail list');
+    // A list longer than the limit is stored cut and marked, so stats reads a missing id as unknown, not as never listed.
+    const all=[...new Set(input.delivered??[])];
+    check(all.length<=10_000&&all.every(id=>/^M[1-9][0-9]*$/.test(id)),'Invalid delivered mail list');
+    const delivered=all.slice(0,DELIVERED_LIMIT);
     const version=(old?.version??0)+1;
-    const event=s.event('notification-progress',role,'saved',{format:1,cursor,version,...(input.delivered?{delivered}:{}),...(through===undefined?{}:{scored_through:through}),
+    const event=s.event('notification-progress',role,'saved',{format:1,cursor,version,...(input.delivered?{delivered,...(all.length>delivered.length?{delivered_cut:true}:{})}:{}),...(through===undefined?{}:{scored_through:through}),
       ...(scored?{scored_score:scored.score}:{}),...(idle?{idle_delivery:idle}:{})});
     const saved=s.get('SELECT created_at FROM events WHERE workspace_id=? AND id=?',s.ws,event)!;
     return {id:`E${event}`,role,cursor,version,saved_at:saved.created_at};

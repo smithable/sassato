@@ -184,6 +184,9 @@ test('pending CLI prints original digest, advances once and leaves mail unacknow
   assert.equal(pendingCli(f).status,4);
   assert.equal(getNotificationProgress(f.b).cursor,f.result.cursor);
   assert.equal(inbox(f.b,{peek:true}).length,1);
+  // The consumed wake's save names the mail it printed (T1241).
+  const saved=f.b.get("SELECT detail FROM events WHERE workspace_id=? AND entity='notification-progress' ORDER BY id DESC LIMIT 1",f.b.ws);
+  assert.deepEqual(JSON.parse(saved.detail).delivered,[f.mail.id]);
 });
 test('STOP supersedes pending work and resume requires a fresh enrollment',async t=>{
   const f=await staged(t);
