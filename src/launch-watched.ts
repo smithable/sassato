@@ -11,7 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { check, name } from './errors.js';
 import { processIdentity, providerProcess, registerSession } from './coordination.js';
 import { acquireLaunchLock, planLaunch, resolveExecutable } from './launch.js';
-import { launchDirectory } from './launch-admission.js';
+import { launchDirectory, launchLockPath } from './launch-admission.js';
 import { launchWatch } from './launch-watch.js';
 import { Store, type Row } from './storage.js';
 
@@ -120,7 +120,10 @@ async function until<T>(read: () => T | undefined, waitMs: number): Promise<T | 
 async function stopProcess(p: { pid: number; identity: string }) {
   if (!alive(p)) return;
   process.kill(p.pid, 'SIGTERM');
-  await until(() => alive(p) ? undefined : true, 5_000);
+  // Waits until the pid is gone, not only exited: a process not yet reaped still holds it, and planning the launch
+  // again would find a registered pid it cannot verify.
+  const gone = () => { try { const stat = readFileSync(`/proc/${p.pid}/stat`, 'utf8'); return !p.identity.endsWith(`:${stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]}`); } catch { return true; } };
+  await until(() => gone() ? true : undefined, 5_000);
   check(!alive(p), `Process ${p.pid} did not stop; close it by hand`, 4);
 }
 
@@ -140,16 +143,25 @@ function openWindowsTerminal(distro: string) {
  * signalled. A dry run names what it would close and closes nothing. Returns what was (or would be) closed.
  */
 async function clearEarlier(s: Store, role: string, thread: string, endpoint: string, closeStale: boolean, dryRun = false): Promise<string | false> {
-  const earlier = readState(s, role);
-  const record = (pid: number) => earlier ? [earlier.window, earlier.server].find(p => p.pid === pid && alive(p)) : undefined;
+  const state = readState(s, role);
+  // A record counts only for this role's thread and endpoint; a window must match the recorded window, with the
+  // full arguments this command gives it, and a server the recorded server.
+  const earlier = state && state.thread === thread && state.endpoint === endpoint ? state : null;
+  const windowArgs = ['--remote', endpoint, 'resume', thread];
+  const record = (p: { pid: number; what: string }) => {
+    if (!earlier) return undefined;
+    const mine = p.what === 'window' ? earlier.window : earlier.server;
+    const shape = p.what === 'window' ? processesWith(windowArgs).includes(p.pid) : true;
+    return mine.pid === p.pid && shape && alive(mine) ? mine : undefined;
+  };
   const open = [...processesWith(['resume', thread]).map(pid => ({ pid, what: 'window' })), ...processesWith(['--listen', endpoint]).map(pid => ({ pid, what: 'app server' }))];
   if (!open.length) return false;
   const named = open.map(p => `${p.what} pid ${p.pid} (since ${since(p.pid)})`).join(', ');
-  if (closeStale && open.every(p => record(p.pid))) {
-    if (!dryRun) for (const p of open) await stopProcess(record(p.pid)!);
+  if (closeStale && open.every(p => record(p))) {
+    if (!dryRun) for (const p of open) await stopProcess(record(p)!);
     return named;
   }
-  const way = open.every(p => record(p.pid)) ? ' An earlier sas launch --watched started it: add --close-stale to close it, or leave it running.'
+  const way = open.every(p => record(p)) ? ' An earlier sas launch --watched started it: add --close-stale to close it, or leave it running.'
     : ' This command did not start it, so it never closes it: close it by hand when its turn is done.';
   check(false, `${role} already has an open ${named}.${way}`, 4);
 }
@@ -176,7 +188,9 @@ export async function launchWatched(operator: Store, roles: string[], options: W
     const { args, want } = settings(operator, role);
     // Closing an earlier window changes its registered session from running to stale, so plan again after it.
     const closed = await clearEarlier(operator, role, thread, endpoint, options.closeStale === true, options.dryRun === true);
+    const running = `${role} has a registered running session not started by this command; close it first`;
     if (options.dryRun) {
+      check(closed || first.status !== 'already-running', running, 4);
       results.push({ role, thread, cwd: first.cwd, server: [codex, 'app-server', ...args, '--listen', endpoint], window: [codex, '--remote', endpoint, 'resume', thread], ...(closed ? { would_close: closed } : {}), status: 'ready' });
       continue;
     }
@@ -186,10 +200,11 @@ export async function launchWatched(operator: Store, roles: string[], options: W
     try {
       // Checked again under the lock: another launch may have started the role meanwhile.
       await clearEarlier(operator, role, thread, endpoint, false);
-      // Closing an earlier window changes its registered session from running to stale, so plan again after it.
-      const plan = closed ? planned() : first;
+      // Planned again under the lock: closing an earlier window turns its session stale, and another launch may have
+      // registered or saved a session meanwhile.
+      const plan = planned();
       check(plan.sessionId === thread, `${role}'s saved session changed while launching; run the command again`, 4);
-      check(plan.status !== 'already-running', `${role} has a registered running session not started by this command; close it first`, 4);
+      check(plan.status !== 'already-running', running, 4);
       results.push(await startRole(operator, role, plan.cwd, thread, endpoint, codex, args, want, openWindow, waitMs));
       started.push(role);
     } finally { release(); }
@@ -198,10 +213,21 @@ export async function launchWatched(operator: Store, roles: string[], options: W
     // Every role started gets its watcher, also when a later role failed.
     if (started.length) {
       const watcher = (options.startWatcher ?? startWatcher(operator, codex))(started);
-      for (const row of results) if (row.status === 'started') row.watcher = watcher;
+      // The watcher holds each role's launch lock while it watches; a role it has not taken within the wait is unwatched.
+      const unwatched = options.startWatcher ? [] : await enrolled(operator, started, watcher, waitMs);
+      for (const row of results) if (row.status === 'started') {
+        row.watcher = watcher;
+        if (unwatched.includes(String(row.role))) row.warning = `No watcher took ${row.role} within ${waitMs / 1000} seconds; see ${join(stateDir(operator), 'watcher.log')}`;
+      }
     }
   }
   return results;
+}
+
+async function enrolled(operator: Store, roles: string[], watcher: number | undefined, waitMs: number): Promise<string[]> {
+  const holds = (role: string) => { try { return JSON.parse(readFileSync(launchLockPath(operator, role), 'utf8')).pid === watcher; } catch { return false; } };
+  await until(() => roles.every(holds) ? true : undefined, watcher ? waitMs : 0);
+  return roles.filter(role => !holds(role));
 }
 
 function startWatcher(operator: Store, codex: string) {
@@ -239,11 +265,11 @@ async function startRole(operator: Store, role: string, cwd: string, thread: str
       try { worker.use(operator.workspace); registerSession(worker, { provider: 'codex', external_id: thread, pid: windowPid, replace: true }); }
       finally { worker.close(); }
       writeState(operator, { role, thread, endpoint, server: serverId, window: windowId, started_at: new Date().toISOString() });
+      operator.event('watch', role, 'launched', { thread, server: serverId.pid, window: windowId.pid });
     } catch (error) {
       for (const p of [windowId, serverId]) if (p) await stopProcess(p).catch(() => {});
       throw error;
     }
-    operator.event('watch', role, 'launched', { thread, server: serverId.pid, window: windowId.pid });
     return { role, thread, server: serverId.pid, window: windowId.pid, status: 'started' };
 }
 

@@ -7,7 +7,7 @@ import { mkdtempSync,rmSync,writeFileSync,readFileSync,existsSync,readdirSync,mk
 import { setTimeout as delay } from 'node:timers/promises';
 import { Store } from '../dist/storage.js';
 import { initWorkspace } from '../dist/admin.js';
-import { registerSession,endSession,sessionState } from '../dist/coordination.js';
+import { registerSession,endSession,sessionState,processIdentity } from '../dist/coordination.js';
 import { launchWatched,checkSettings } from '../dist/launch-watched.js';
 
 const thread='a3f1c2d4-5b6e-4f70-8a9b-0c1d2e3f4a5b';
@@ -131,6 +131,10 @@ test('a state file that does not match what this command writes is not trusted: 
   const watched=join(f.dir,'db.launch','team','watched');
   mkdirSync(watched,{recursive:true});
   writeFileSync(join(watched,'b.json'),JSON.stringify({role:'b',thread,endpoint:'unix:///x',server:{pid:victim.pid},window:{pid:victim.pid,identity:''}}));
+  await assert.rejects(launchWatched(f.operator,['b'],{...f.options,closeStale:true}),/did not start it/);
+  // Well formed, with the right start time, but for another endpoint: still not this command's window.
+  const id={pid:victim.pid,identity:processIdentity(victim.pid)};
+  writeFileSync(join(watched,'b.json'),JSON.stringify({role:'b',thread,endpoint:'unix:///x',server:id,window:id}));
   await assert.rejects(launchWatched(f.operator,['b'],{...f.options,closeStale:true}),/did not start it/);
   assert.equal(victim.exitCode,null);
 });
