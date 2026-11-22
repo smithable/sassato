@@ -506,13 +506,16 @@ in a scratch database and folder under the launch folder's `codex-round/VERSION-
 2. the probe is started as `launch --watched` starts a role, with a hidden terminal in place of the window, and gets
    its own watcher;
 3. a mail is acknowledged within 180 seconds; a mail asking for a 90 second command and then an acknowledgement is
-   acknowledged within 300 seconds, with the watcher still running;
+   acknowledged within 300 seconds, no sooner than the command could end, with the watcher still running;
 4. `stop` reaches it, and the watcher ends once its window and server are closed.
 The model is the first Codex role's (by name) unless `--model` names one; three short turns are spent in all. A pass
 is the event `codex-round passed VERSION` in the real database, and its folder is removed (`--keep` keeps it); later
 rounds on that version are skipped unless `--force`. A failure is the event `codex-round failed VERSION`, its folder
 is kept, and the role in `nudge_escalate` (else the default human) gets an urgent mail naming the step and the folder.
-The round never touches the real roles.
+Afterwards every process of the round is stopped: those started with its database, their children, their sessions,
+and any working in its folder. Codex's shared daemon is never stopped; if the round started it, the round fails and
+says so. One round per version runs at a time (a claim file beside the round folders); a failure before the probe
+exists (no model, no Codex) is recorded and mailed the same way. The round never touches the real roles.
 
 ## Output contract
 

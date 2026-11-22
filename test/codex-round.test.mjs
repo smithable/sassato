@@ -2,11 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { mkdtempSync,rmSync,writeFileSync,readFileSync,existsSync,readdirSync } from 'node:fs';
+import { mkdtempSync,mkdirSync,rmSync,writeFileSync,readFileSync,existsSync } from 'node:fs';
 import { Store } from '../dist/storage.js';
 import { initWorkspace } from '../dist/admin.js';
 import { setWorkspaceSettings } from '../dist/workspace-settings.js';
-import { codexRound,roundPassed } from '../dist/codex-round.js';
+import { codexRound,roundPassed,roundProcesses } from '../dist/codex-round.js';
 
 // A fake codex: --version prints a version; exec prints a thread when FAKE_EXEC is ok and fails otherwise;
 // app-server --listen exits at once (or, with FAKE_SERVER=stay, runs without opening its socket), so the probe never starts. The run records each call.
@@ -14,7 +14,7 @@ const fake=`#!/usr/bin/env node
 const fs=require('fs'),args=process.argv.slice(2);fs.appendFileSync(process.env.FAKE_LOG,args[0]+' '+(process.env.SASSATO_DB||'-')+'\\n');
 if(args[0]==='--version'){console.log('codex-cli 0.171.0');process.exit(0);}
 if(args[0]==='exec'){if(process.env.FAKE_EXEC!=='ok')process.exit(1);console.log(JSON.stringify({type:'thread.started',thread_id:'b3f1c2d4-5b6e-4f70-8a9b-0c1d2e3f4a5b'}));process.exit(0);}
-if(process.env.FAKE_SERVER==='stay'){setInterval(()=>{},1000);}else process.exit(1);
+if(process.env.FAKE_SERVER==='stay'){const c=require('child_process').spawn('sleep',['300'],{env:{PATH:process.env.PATH},stdio:'ignore'});fs.writeFileSync(process.env.FAKE_LOG+'.child',String(c.pid));setInterval(()=>{},1000);}else process.exit(1);
 `;
 
 function fixture(t,exec='ok') {
@@ -58,12 +58,13 @@ test('a probe that cannot start fails at the start step, after the seed thread w
   assert.equal(f.fable().length,0);assert.deepEqual(f.events().map(e=>e.action),['failed']);
 });
 
-test('a server left running by a failed start is stopped by the sweep of the round\'s folder',async t=>{
+test('a server left running by a failed start is stopped by the sweep, with a child that does not carry the round\'s database',async t=>{
   const f=fixture(t,'ok');process.env.FAKE_SERVER='stay';t.after(()=>{delete process.env.FAKE_SERVER;});
   const result=await codexRound(f.real,{timing});
-  assert.equal(result.status,'failed');assert.equal(result.step,'start');
-  const left=readdirSync('/proc').filter(pid=>/^\d+$/.test(pid)).filter(pid=>{try{return readFileSync(`/proc/${pid}/cmdline`,'utf8').includes(String(result.dir));}catch{return false;}});
-  assert.deepEqual(left,[]);
+  assert.equal(result.status,'failed');assert.equal(result.step,'start');assert.doesNotMatch(String(result.reason),/did not stop/);
+  assert.deepEqual(roundProcesses(join(String(result.dir),'cwd','round.db')),{own:[],shared:[]});
+  const child=Number(readFileSync(f.log+'.child','utf8'));
+  assert.ok(child>0&&!existsSync(`/proc/${child}`)||/^Z/.test(readFileSync(`/proc/${child}/stat`,'utf8').split(') ')[1]),'the server\'s child was stopped');
   assert.ok(readFileSync(f.log,'utf8').includes('app-server'),'the server was started');
 });
 
@@ -75,5 +76,16 @@ test('a version that passed is skipped unless forced; only a human runs a round;
   const agent=new Store(f.db,'b');agent.use('team');
   try{await assert.rejects(codexRound(agent,{timing}),/requires a human role/);}finally{agent.close();}
   f.real.run("UPDATE roles SET model=NULL WHERE name='b'");
-  await assert.rejects(codexRound(f.real,{timing,force:true}),/No Codex role names a model; give --model/);
+  const none=await codexRound(f.real,{timing,force:true});
+  assert.equal(none.status,'failed');assert.equal(none.step,'setup');assert.match(String(none.reason),/No Codex role names a model; give --model/);
+});
+
+test('a round already running on the version is not started twice; a dead holder\'s claim is taken over',async t=>{
+  const f=fixture(t,'fail');
+  const {launchDirectory}=await import('../dist/launch-admission.js');
+  const folder=join(launchDirectory(f.real.path,f.real.workspace),'codex-round'),claim=join(folder,'0.171.0.claim');
+  mkdirSync(folder,{recursive:true});writeFileSync(claim,String(process.ppid));
+  assert.deepEqual(await codexRound(f.real,{timing}),{version:'0.171.0',status:'skipped',reason:'Another round on this version is running'});
+  writeFileSync(claim,'999999999');
+  assert.equal((await codexRound(f.real,{timing})).status,'failed');assert.equal(existsSync(claim),false,'the claim is released');
 });
