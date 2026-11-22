@@ -1,8 +1,11 @@
-import os, pty, select, sys, time
-# Run argv in a pseudo-terminal with no reader: answer cursor-position queries, log the rest.
+import json, os, pty, select, sys
+# Run the command in CODEX_ROUND_ARGV (a JSON list) in a pseudo-terminal with no reader: answer cursor-position
+# queries, log the rest. The command comes from the environment so this process's own command line never looks
+# like the window it runs.
 pid, fd = pty.fork()
 if pid == 0:
-    os.execvp(sys.argv[2], sys.argv[2:])
+    argv = json.loads(os.environ['CODEX_ROUND_ARGV'])
+    os.execvp(argv[0], argv)
 log = open(sys.argv[1], 'ab')
 while True:
     try:

@@ -3,7 +3,7 @@
 // launch --watched starts it after the real roles, detached, so a launch is never slower. A pass is recorded in the
 // real database and later launches skip the round; a fail mails the escalation role and records no pass.
 import { spawn, spawnSync } from 'node:child_process';
-import { closeSync, mkdirSync, openSync, rmSync, symlinkSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -80,7 +80,7 @@ export async function codexRound(real: Store, options: RoundOptions = {}): Promi
     const started = await launchWatched(scratch, [PROBE], {
       waitMs: timing.startMs,
       openWindow: (exe, args, at) => {
-        const child = spawn('python3', ['-I', '-B', helper, term, exe, ...args], { cwd: at, detached: true, stdio: 'ignore', env: { ...process.env, TERM: 'xterm-256color' } });
+        const child = spawn('python3', ['-I', '-B', helper, term], { cwd: at, detached: true, stdio: 'ignore', env: { ...process.env, TERM: 'xterm-256color', CODEX_ROUND_ARGV: JSON.stringify([exe, ...args]) } });
         child.on('error', () => {}); child.unref();
       },
     });
@@ -110,6 +110,7 @@ export async function codexRound(real: Store, options: RoundOptions = {}): Promi
     result = { ...result, step, reason: error instanceof Error ? error.message : String(error) };
   } finally {
     await closeRecorded(scratch, PROBE).catch(() => false);
+    await sweep(dir);
     scratch.close();
     for (const [key, value] of [['SASSATO_DB', saved.db], ['SASSATO_WORKSPACE', saved.workspace], ['SASSATO_ROLE', saved.role], ['PATH', saved.path]] as const)
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
@@ -119,6 +120,16 @@ export async function codexRound(real: Store, options: RoundOptions = {}): Promi
   const to = notifyRole(real);
   if (to) send(real, [to], `Codex round failed on ${version} at step "${result.step}": ${result.reason}. Logs: ${dir}. The roles started as usual; the next launch --watched tries again.`, { urgent: true });
   return result;
+}
+
+/** Stops whatever still runs from the round's folder (its server, terminal and watcher all name it), so a failure at
+ * any step leaves nothing behind. The folder is new for each round, so nothing else names it. */
+async function sweep(dir: string) {
+  const mine = () => readdirSync('/proc').filter(pid => /^\d+$/.test(pid) && Number(pid) !== process.pid).map(Number)
+    .filter(pid => { try { return readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').some(arg => arg.includes(dir)); } catch { return false; } });
+  const signal = (name: NodeJS.Signals) => { for (const pid of mine()) try { process.kill(pid, name); } catch { /* gone */ } };
+  signal('SIGTERM');
+  if (!await until(() => mine().length ? undefined : true, 10_000)) signal('SIGKILL');
 }
 
 /** One short turn that leaves a saved thread whose first prompt is the probe's bootstrap; returns its id. */

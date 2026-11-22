@@ -2,19 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { mkdtempSync,rmSync,writeFileSync,readFileSync,existsSync } from 'node:fs';
+import { mkdtempSync,rmSync,writeFileSync,readFileSync,existsSync,readdirSync } from 'node:fs';
 import { Store } from '../dist/storage.js';
 import { initWorkspace } from '../dist/admin.js';
 import { setWorkspaceSettings } from '../dist/workspace-settings.js';
 import { codexRound,roundPassed } from '../dist/codex-round.js';
 
 // A fake codex: --version prints a version; exec prints a thread when FAKE_EXEC is ok and fails otherwise;
-// app-server --listen exits at once, so the probe never starts. The run records each call.
+// app-server --listen exits at once (or, with FAKE_SERVER=stay, runs without opening its socket), so the probe never starts. The run records each call.
 const fake=`#!/usr/bin/env node
 const fs=require('fs'),args=process.argv.slice(2);fs.appendFileSync(process.env.FAKE_LOG,args[0]+' '+(process.env.SASSATO_DB||'-')+'\\n');
 if(args[0]==='--version'){console.log('codex-cli 0.171.0');process.exit(0);}
 if(args[0]==='exec'){if(process.env.FAKE_EXEC!=='ok')process.exit(1);console.log(JSON.stringify({type:'thread.started',thread_id:'b3f1c2d4-5b6e-4f70-8a9b-0c1d2e3f4a5b'}));process.exit(0);}
-process.exit(1);
+if(process.env.FAKE_SERVER==='stay'){setInterval(()=>{},1000);}else process.exit(1);
 `;
 
 function fixture(t,exec='ok') {
@@ -56,6 +56,15 @@ test('a probe that cannot start fails at the start step, after the seed thread w
   try{assert.deepEqual(scratch.all("SELECT role,external_id FROM sessions").map(r=>({...r})),[{role:'probe',external_id:'b3f1c2d4-5b6e-4f70-8a9b-0c1d2e3f4a5b'}]);}finally{scratch.close();}
   // No escalation role is set and there is no default human, so nobody is mailed; the event is still recorded.
   assert.equal(f.fable().length,0);assert.deepEqual(f.events().map(e=>e.action),['failed']);
+});
+
+test('a server left running by a failed start is stopped by the sweep of the round\'s folder',async t=>{
+  const f=fixture(t,'ok');process.env.FAKE_SERVER='stay';t.after(()=>{delete process.env.FAKE_SERVER;});
+  const result=await codexRound(f.real,{timing});
+  assert.equal(result.status,'failed');assert.equal(result.step,'start');
+  const left=readdirSync('/proc').filter(pid=>/^\d+$/.test(pid)).filter(pid=>{try{return readFileSync(`/proc/${pid}/cmdline`,'utf8').includes(String(result.dir));}catch{return false;}});
+  assert.deepEqual(left,[]);
+  assert.ok(readFileSync(f.log,'utf8').includes('app-server'),'the server was started');
 });
 
 test('a version that passed is skipped unless forced; only a human runs a round; a model is needed',async t=>{
