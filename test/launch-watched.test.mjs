@@ -67,6 +67,25 @@ test('launch --watched checks the settings, starts the server hidden, opens the 
   assert.throws(()=>process.kill(r.server,0));
 });
 
+test('--close-stale closes a recorded window started before the update flag (T1193 review)',async t=>{
+  const f=fixture(t);
+  const [r]=await launchWatched(f.operator,['b'],f.options);
+  t.after(()=>stopServer(r));
+  // Swap the window for one started the way an earlier build did, without the flag, and record it.
+  const file=join(f.dir,'db.launch','team','watched','b.json');
+  const state=JSON.parse(readFileSync(file,'utf8'));
+  process.kill(r.window);await delay(100);
+  const old=spawn(f.codex,['--remote',state.endpoint,'resume',thread],{stdio:'ignore'});
+  t.after(()=>old.kill());
+  await delay(200);
+  state.window={...state.window,pid:old.pid,identity:processIdentity(old.pid)};
+  writeFileSync(file,JSON.stringify(state));
+  const [again]=await launchWatched(f.operator,['b'],{...f.options,closeStale:true});
+  t.after(()=>stopServer(again));
+  await delay(100);
+  assert.ok(old.exitCode!==null||old.signalCode!==null,'the old window was closed');
+});
+
 test('launch --watched refuses a window it did not start, and never closes it',async t=>{
   const f=fixture(t);
   const foreign=spawn(f.codex,['--remote','unix:///elsewhere','resume',thread],{stdio:'ignore'});

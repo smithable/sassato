@@ -148,12 +148,13 @@ function openWindowsTerminal(distro: string) {
 async function clearEarlier(s: Store, role: string, thread: string, endpoint: string, closeStale: boolean, dryRun = false): Promise<string | false> {
   const state = readState(s, role);
   // A record counts only for this role's thread and endpoint; a window must match the recorded window, with the
-  // full arguments this command gives it, and a server the recorded server.
+  // arguments this command gives it (a window from a build before the update flag lacks the flag, so the match
+  // is on its remote and thread), and a server the recorded server.
   const earlier = state && state.thread === thread && state.endpoint === endpoint ? state : null;
   const record = (p: { pid: number; what: string }) => {
     if (!earlier) return undefined;
     const mine = p.what === 'window' ? earlier.window : earlier.server;
-    const shape = p.what === 'window' ? processesWith(windowArgs(endpoint, thread)).includes(p.pid) : true;
+    const shape = p.what === 'window' ? processesWith(windowArgs(endpoint, thread).slice(2)).includes(p.pid) : true;
     return mine.pid === p.pid && shape && alive(mine) ? mine : undefined;
   };
   const open = [...processesWith(['resume', thread]).map(pid => ({ pid, what: 'window' })), ...processesWith(['--listen', endpoint]).map(pid => ({ pid, what: 'app server' }))];
