@@ -347,7 +347,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'workspace settings': empty();result=workspaceSettings(s);break;
         case 'codex versions': empty();result={accepted:workspaceSettings(s).codex_versions};break;
         case 'codex accept': {const version=arg('version');empty();result={accepted:acceptCodexVersion(s,version,bool('replace'))};break;}
-        case 'codex round': empty();result=await codexRound(s,{force:bool('force'),model:str('model'),keep:bool('keep')});break;
+        case 'codex round': {empty();const round=await codexRound(s,{force:bool('force'),model:str('model'),keep:bool('keep')});if(round.status==='failed')process.exitCode=4;result=round;break;}
         case 'workspace wake-audit': empty();result=c.wakeAudit(s,num('limit'));break;
         case 'workspace set': {
           empty();const patch:Partial<WorkspaceSettings>={};

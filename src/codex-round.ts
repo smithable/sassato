@@ -13,6 +13,7 @@ import { bootstrapPrompt, resolveExecutable } from './launch.js';
 import { launchDirectory } from './launch-admission.js';
 import { closeRecorded, launchWatched } from './launch-watched.js';
 import { initWorkspace } from './admin.js';
+import { saveNotificationProgress } from './notification-progress.js';
 import { stop } from './stop.js';
 import { checkCodexVersion, workspaceSettings } from './workspace-settings.js';
 import { Store, type Row } from './storage.js';
@@ -71,7 +72,8 @@ export async function codexRound(real: Store, options: RoundOptions = {}): Promi
     step = 'seed';
     const thread = await seed(codex, cwd, model, `${bootstrapPrompt(scratch, PROBE, 'codex', true)} This is a check of the tooling: reply ready and stop.`, join(dir, 'seed.log'), timing.seedMs);
     const worker = new Store(db, PROBE); worker.use(WORKSPACE);
-    try { registerSession(worker, { provider: 'codex', external_id: thread }); endSession(worker, thread); } finally { worker.close(); }
+    // A watcher enrolls only a role with saved notification progress; a new role starts at the beginning.
+    try { registerSession(worker, { provider: 'codex', external_id: thread }); endSession(worker, thread); saveNotificationProgress(worker, { cursor: 0, expected_version: 0 }); } finally { worker.close(); }
 
     step = 'start';
     const term = join(dir, 'terminal.log');
