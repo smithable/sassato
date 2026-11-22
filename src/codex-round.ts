@@ -3,7 +3,7 @@
 // launch --watched starts it after the real roles, detached, so a launch is never slower. A pass is recorded in the
 // real database and later launches skip the round; a fail mails the escalation role and records no pass.
 import { spawn, spawnSync } from 'node:child_process';
-import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -46,43 +46,54 @@ const alive = (pid: number | undefined) => { if (!pid) return false; try { proce
 export async function codexRound(real: Store, options: RoundOptions = {}): Promise<Row> {
   real.requireHuman();
   const timing = { ...ROUND_TIMING, ...options.timing };
-  let version = 'unknown', result: Row;
+  let version = 'unknown', result: Row, release = () => {};
   // Every failure from here on is recorded and mailed, also one before the probe exists (T1193, Astra).
   try {
-    const codex = resolveExecutable('codex', true);
-    const probe = spawnSync(codex, ['--version'], { encoding: 'utf8', timeout: 30_000 });
-    check(!probe.error && probe.status === 0, 'Cannot read the Codex version', 3);
-    version = checkCodexVersion(String(probe.stdout)).version;
-    if (!options.force && roundPassed(real, version)) return { version, status: 'skipped', reason: 'A round already passed on this version' };
-    const claim = claimRound(real, version);
-    if (!claim) return { version, status: 'skipped', reason: 'Another round on this version is running' };
-    try { result = await runRound(real, codex, version, options, timing); } finally { claim(); }
-  } catch (error) {
-    result = { version, status: 'failed', step: 'setup', reason: error instanceof Error ? error.message : String(error) };
-  }
-  real.event('codex-round', version, String(result.status), { model: result.model, step: result.step, reason: result.reason, dir: result.dir });
-  if (result.status === 'passed') { if (!options.keep) rmSync(String(result.dir), { recursive: true, force: true }); return result; }
-  const to = notifyRole(real);
-  if (to) send(real, [to], `Codex round failed on ${version} at step "${result.step}": ${result.reason}.${result.dir ? ` Logs: ${result.dir}.` : ''} The roles started as usual; the next launch --watched tries again.`, { urgent: true });
-  return result;
+    try {
+      const codex = resolveExecutable('codex', true);
+      const probe = spawnSync(codex, ['--version'], { encoding: 'utf8', timeout: 30_000 });
+      check(!probe.error && probe.status === 0, 'Cannot read the Codex version', 3);
+      version = checkCodexVersion(String(probe.stdout)).version;
+      if (!options.force && roundPassed(real, version)) return { version, status: 'skipped', reason: 'A round already passed on this version' };
+      const claim = claimRound(real, version);
+      if (!claim) return { version, status: 'skipped', reason: 'Another round on this version is running' };
+      release = claim;
+      // A round that passed while this one waited for the claim is not repeated.
+      if (!options.force && roundPassed(real, version)) return { version, status: 'skipped', reason: 'A round already passed on this version' };
+      result = await runRound(real, codex, version, options, timing);
+    } catch (error) {
+      result = { version, status: 'failed', step: 'setup', reason: error instanceof Error ? error.message : String(error) };
+    }
+    // The claim is held until the result is recorded, so a waiting round sees the pass.
+    real.event('codex-round', version, String(result.status), { model: result.model, step: result.step, reason: result.reason, dir: result.dir });
+    if (result.status === 'passed') { if (!options.keep) rmSync(String(result.dir), { recursive: true, force: true }); return result; }
+    const to = notifyRole(real);
+    if (to) send(real, [to], `Codex round failed on ${version} at step "${result.step}": ${result.reason}.${result.dir ? ` Logs: ${result.dir}.` : ''} The roles started as usual; the next launch --watched tries again.`, { urgent: true });
+    return result;
+  } finally { release(); }
 }
 
-/** One round per version at a time on the machine: a claim file holding the pid; a dead holder's claim is taken over.
- * Returns the release, or null while another round holds it. */
+/** One round per version at a time on the machine: a claim file holding the pid, made whole and then linked into
+ * place (so it is never seen empty). A dead holder's claim is moved aside first and checked, so two rounds taking
+ * over the same dead claim cannot both win. Returns the release, or null while another round holds it. */
 function claimRound(real: Store, version: string): (() => void) | null {
   const folder = join(launchDirectory(real.path, real.workspace), 'codex-round');
   mkdirSync(folder, { recursive: true, mode: 0o700 });
-  const path = join(folder, `${version}.claim`), mine = String(process.pid);
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try { writeFileSync(path, mine, { flag: 'wx', mode: 0o600 }); return () => { try { if (readFileSync(path, 'utf8') === mine) rmSync(path); } catch { /* gone */ } }; }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      let holder = 0; try { holder = Number(readFileSync(path, 'utf8')); } catch { /* gone */ }
-      if (alive(holder)) return null;
-      rmSync(path, { force: true });
+  const path = join(folder, `${version}.claim`), mine = String(process.pid), draft = `${path}.${mine}`, aside = `${path}.stale-${mine}`;
+  const holder = (file: string) => { try { return Number(readFileSync(file, 'utf8')); } catch { return 0; } };
+  writeFileSync(draft, mine, { mode: 0o600 });
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { linkSync(draft, path); return () => { if (holder(path) === process.pid) rmSync(path, { force: true }); }; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+      if (alive(holder(path))) return null;
+      try { renameSync(path, aside); } catch { continue; }
+      // Another round may have taken the claim over between the check and the move: then it goes back.
+      if (alive(holder(aside))) { try { linkSync(aside, path); } catch { /* a third claim is in place */ } rmSync(aside, { force: true }); return null; }
+      rmSync(aside, { force: true });
     }
-  }
-  return null;
+    return null;
+  } finally { rmSync(draft, { force: true }); }
 }
 
 async function runRound(real: Store, codex: string, version: string, options: RoundOptions, timing: RoundTiming): Promise<Row> {
@@ -90,11 +101,14 @@ async function runRound(real: Store, codex: string, version: string, options: Ro
   check(model, 'No Codex role names a model; give --model', 3);
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const dir = join(launchDirectory(real.path, real.workspace), 'codex-round', `${version}-${stamp}`), cwd = join(dir, 'cwd'), tools = join(dir, 'bin');
-  for (const d of [dir, cwd, tools]) mkdirSync(d, { recursive: true, mode: 0o700 });
-  // The probe runs this build's sassato on the scratch database only.
-  symlinkSync(bin, join(tools, 'sas')); symlinkSync(bin, join(tools, 'sassato'));
   const db = join(cwd, 'round.db');
-  const scratch = new Store(db, 'human', { create: true });
+  let scratch: Store;
+  try {
+    for (const d of [dir, cwd, tools]) mkdirSync(d, { recursive: true, mode: 0o700 });
+    // The probe runs this build's sassato on the scratch database only.
+    symlinkSync(bin, join(tools, 'sas')); symlinkSync(bin, join(tools, 'sassato'));
+    scratch = new Store(db, 'human', { create: true });
+  } catch (error) { return { version, model, dir, status: 'failed', step: 'setup', reason: error instanceof Error ? error.message : String(error) }; }
   // The round runs alone in its own process (launch --watched starts one; codex round is one), so the scratch identity
   // is set in this process's environment, which the server, the hidden terminal and the watcher inherit.
   const saved = { db: process.env.SASSATO_DB, workspace: process.env.SASSATO_WORKSPACE, role: process.env.SASSATO_ROLE, path: process.env.PATH };
@@ -165,12 +179,11 @@ async function runRound(real: Store, codex: string, version: string, options: Ro
 
 /** The round's processes: every process started with the scratch database in its environment (the server, the hidden
  * terminal and the window, the watcher, the seed), every descendant of one (a command the probe ran), and every
- * process in the session of one or working in the round's folder, so an orphan whose parent was stopped is still found (this process's own session,
- * which a round run from a shell shares with that shell, never counts). Nothing
- * else has that database, which is new for each round. Codex's shared app-server daemon is never one: real sessions
- * may use it, so one the round happened to start is reported in `shared`, not stopped. */
-export function roundProcesses(db: string): { own: number[]; shared: number[] } {
-  const folder = `${dirname(dirname(db))}/`;
+ * process in a session one of them was in: `sessions` carries those across scans, so an orphan whose parent was
+ * stopped is still found. This process's own session (a round run from a shell shares that shell's) never counts.
+ * Nothing else has that database, which is new for each round. Codex's shared app-server daemon is never one, nor is
+ * its session: real sessions may use it, so one the round happened to start is reported in `shared`, not stopped. */
+export function roundProcesses(db: string, sessions = new Set<number>()): { own: number[]; shared: number[] } {
   const pids = readdirSync('/proc').filter(pid => /^\d+$/.test(pid)).map(Number).filter(pid => pid !== process.pid);
   const marker = `SASSATO_DB=${db}`, parent = new Map<number, number>(), session = new Map<number, number>(), found = new Set<number>(), shared = new Set<number>();
   const stat = (pid: number) => { const text = readFileSync(`/proc/${pid}/stat`, 'utf8'), fields = text.slice(text.lastIndexOf(')') + 2).split(' '); return { ppid: Number(fields[1]), sid: Number(fields[3]) }; };
@@ -179,12 +192,11 @@ export function roundProcesses(db: string): { own: number[]; shared: number[] } 
     try { const { ppid, sid } = stat(pid); parent.set(pid, ppid); session.set(pid, sid); } catch { continue; }
     try { if (readFileSync(`/proc/${pid}/cmdline`, 'utf8').includes('/app-server-daemon/')) { shared.add(pid); continue; } } catch { continue; }
     try { if (readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0').includes(marker)) found.add(pid); } catch { /* gone or not ours */ }
-    try { if (`${readlinkSync(`/proc/${pid}/cwd`)}/`.startsWith(folder)) found.add(pid); } catch { /* gone or not ours */ }
   }
-  const sessions = new Set<number>();
+  const sharedSessions = new Set([...shared].map(pid => session.get(pid)));
   for (let grew = true; grew;) {
     grew = false;
-    for (const pid of found) { const sid = session.get(pid); if (sid && sid !== mySession) sessions.add(sid); }
+    for (const pid of found) { const sid = session.get(pid); if (sid && sid !== mySession && !sharedSessions.has(sid)) sessions.add(sid); }
     for (const [pid, ppid] of parent) if (!found.has(pid) && !shared.has(pid) && (found.has(ppid) || sessions.has(session.get(pid)!))) { found.add(pid); grew = true; }
   }
   const sharedMine = [...shared].filter(pid => { try { return readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0').includes(marker); } catch { return false; } });
@@ -193,11 +205,11 @@ export function roundProcesses(db: string): { own: number[]; shared: number[] } 
 
 /** Stops the round's processes, so a failure at any step leaves nothing behind; returns what is still left. */
 async function sweep(db: string): Promise<{ own: number[]; shared: number[] }> {
-  const own = () => roundProcesses(db).own;
+  const sessions = new Set<number>(), own = () => roundProcesses(db, sessions).own;
   const signal = (name: NodeJS.Signals) => { for (const pid of own()) try { process.kill(pid, name); } catch { /* gone */ } };
   signal('SIGTERM');
   if (!await until(() => own().length ? undefined : true, 10_000)) { signal('SIGKILL'); await until(() => own().length ? undefined : true, 5_000); }
-  return roundProcesses(db);
+  return roundProcesses(db, sessions);
 }
 
 /** One short turn that leaves a saved thread whose first prompt is the probe's bootstrap; returns its id. */

@@ -14,7 +14,7 @@ const fake=`#!/usr/bin/env node
 const fs=require('fs'),args=process.argv.slice(2);fs.appendFileSync(process.env.FAKE_LOG,args[0]+' '+(process.env.SASSATO_DB||'-')+'\\n');
 if(args[0]==='--version'){console.log('codex-cli 0.171.0');process.exit(0);}
 if(args[0]==='exec'){if(process.env.FAKE_EXEC!=='ok')process.exit(1);console.log(JSON.stringify({type:'thread.started',thread_id:'b3f1c2d4-5b6e-4f70-8a9b-0c1d2e3f4a5b'}));process.exit(0);}
-if(process.env.FAKE_SERVER==='stay'){const c=require('child_process').spawn('sleep',['300'],{env:{PATH:process.env.PATH},stdio:'ignore'});fs.writeFileSync(process.env.FAKE_LOG+'.child',String(c.pid));setInterval(()=>{},1000);}else process.exit(1);
+if(process.env.FAKE_SERVER==='stay'){const c=require('child_process').spawn('sleep',['300'],{stdio:'ignore'});fs.writeFileSync(process.env.FAKE_LOG+'.child',String(c.pid));setInterval(()=>{},1000);}else process.exit(1);
 `;
 
 function fixture(t,exec='ok') {
@@ -58,7 +58,7 @@ test('a probe that cannot start fails at the start step, after the seed thread w
   assert.equal(f.fable().length,0);assert.deepEqual(f.events().map(e=>e.action),['failed']);
 });
 
-test('a server left running by a failed start is stopped by the sweep, with a child that does not carry the round\'s database',async t=>{
+test('a server left running by a failed start is stopped by the sweep, with its child',async t=>{
   const f=fixture(t,'ok');process.env.FAKE_SERVER='stay';t.after(()=>{delete process.env.FAKE_SERVER;});
   const result=await codexRound(f.real,{timing});
   assert.equal(result.status,'failed');assert.equal(result.step,'start');assert.doesNotMatch(String(result.reason),/did not stop/);
@@ -88,4 +88,24 @@ test('a round already running on the version is not started twice; a dead holder
   assert.deepEqual(await codexRound(f.real,{timing}),{version:'0.171.0',status:'skipped',reason:'Another round on this version is running'});
   writeFileSync(claim,'999999999');
   assert.equal((await codexRound(f.real,{timing})).status,'failed');assert.equal(existsSync(claim),false,'the claim is released');
+});
+
+test('the round\'s processes are those with its database, their children and their sessions; a process only working in its folder is not one',async t=>{
+  const {spawn}=await import('node:child_process');
+  const dir=mkdtempSync(join(tmpdir(),'sas-procs-')),db=join(dir,'cwd','round.db');mkdirSync(join(dir,'cwd'));
+  const env={...process.env,SASSATO_DB:db},clean={...process.env};delete clean.SASSATO_DB;
+  // A stranger working in the round's folder (a person's shell), in a session of its own.
+  const stranger=spawn('sleep',['60'],{cwd:join(dir,'cwd'),env:clean,detached:true,stdio:'ignore'});
+  // A round process in its own session, with a child that does not carry the database.
+  const owner=spawn('sh',['-c','env -u SASSATO_DB sleep 60 & echo $!; wait'],{env,detached:true,stdio:['ignore','pipe','ignore']});
+  const child=Number(await new Promise(done=>owner.stdout.once('data',chunk=>done(String(chunk).trim()))));
+  t.after(()=>{for(const pid of [stranger.pid,owner.pid,child])try{process.kill(pid,'SIGKILL');}catch{}rmSync(dir,{recursive:true,force:true});});
+  const sessions=new Set();
+  const {own}=roundProcesses(db,sessions);
+  assert.ok(own.includes(owner.pid)&&own.includes(child),JSON.stringify({own,owner:owner.pid,child}));
+  assert.ok(!own.includes(stranger.pid),'a process only working in the folder is not the round\'s');
+  // The owner stops; its orphan is still found through the session seen before.
+  process.kill(owner.pid,'SIGKILL');await new Promise(done=>owner.once('exit',done));
+  assert.ok(roundProcesses(db,sessions).own.includes(child));
+  assert.ok(!roundProcesses(db).own.includes(child),'without the earlier scan the orphan has nothing tying it to the round');
 });
