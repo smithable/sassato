@@ -1,10 +1,9 @@
 import { fixtureConfig } from './fixtures/team.mjs';
-import test from 'node:test';
+import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { performance } from 'node:perf_hooks';
 import { Store } from '../dist/storage.js';
 import { initWorkspace } from '../dist/admin.js';
 import { send, inbox } from '../dist/coordination.js';
@@ -14,14 +13,23 @@ import { setWorkspaceSettings } from '../dist/workspace-settings.js';
 import { saveNotificationProgress } from '../dist/notification-progress.js';
 import { idleReason, wake } from '../dist/wake.js';
 
-// T1253: virtual time. Each sleep moves the clock on at once, so fifteen quiet minutes take milliseconds.
+// T1253: virtual time. Date is mocked, so stored event times and the wait's clock move together, and
+// each sleep moves both on at once: fifteen quiet minutes take milliseconds.
 function fixture(t) {
+  mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-22T10:00:00Z') });
+  t.after(() => mock.timers.reset());
   const dir = mkdtempSync(join(tmpdir(), 'sassato-nudge-')), path = join(dir, 'state.db');
   const s = new Store(path, 'human', { create: true }); initWorkspace(s, 'team', fixtureConfig); s.use('team');
   t.after(() => { if (s.db.isOpen) s.close(); rmSync(dir, { recursive: true, force: true }); });
-  let shift = 0;
-  const clock = { now: () => Date.now() + shift, monotonic: () => performance.now() + shift, sleep: async (ms) => { shift += Math.max(ms, 1); await new Promise(setImmediate); } };
-  const as = (role, fn) => { const before = s.actor; s.actor = role; try { return fn(); } finally { s.actor = before; } };
+  const clock = { now: () => Date.now(), monotonic: () => Date.now(), sleep: async (ms) => { mock.timers.tick(Math.max(ms, 1)); await new Promise(setImmediate); } };
+  // The actor stays set until an awaited wait has finished, so the waiter's own writes are its role's.
+  const as = (role, fn) => {
+    const before = s.actor; s.actor = role;
+    let result;
+    try { result = fn(); } catch (error) { s.actor = before; throw error; }
+    if (result instanceof Promise) return result.finally(() => { s.actor = before; });
+    s.actor = before; return result;
+  };
   const latest = () => Number(s.get('SELECT coalesce(max(id),0) n FROM events WHERE workspace_id=?', s.ws).n);
   const wait = (role, timeout = 3600) => as(role, () => waitForWork(s, { settle: 0, timeout, since: latest(), nudge: true, clock, stopFile: join(dir, 'stop') }));
   const nudges = (role, action = 'sent') => s.all("SELECT detail FROM events WHERE workspace_id=? AND entity='nudge' AND entity_id=? AND action=? ORDER BY id", s.ws, role, action).map((e) => JSON.parse(e.detail));
@@ -32,14 +40,19 @@ test('a quiet agent is nudged twice, then the escalation role gets one mail and 
   const f = fixture(t);
   setWorkspaceSettings(f.s, { nudge_escalate: 'lead' });
   f.as('b', () => noteTask(f.s, f.as('b', () => takeTask(f.s, addTask(f.s, { title: 'Held' }).id)).id, 'started'));
+  const start = Date.now();
   const first = await f.wait('b');
   assert.equal(first.reason, 'nudge');
+  assert.ok(Date.now() - start >= 15 * 60_000, 'not before fifteen minutes');
   assert.equal(first.nudge.count, 1);
   assert.match(first.nudge.text, /No write from you for 15 minutes \(nudge 1 of 2\)/);
   assert.match(first.nudge.text, /sassato idle-reason "why" --as b --workspace team/);
   assert.match(first.nudge.text, /Ready for you: T\d+/, 'its doing task is named');
+  const between = Date.now();
   const second = await f.wait('b');
-  assert.equal(second.nudge.count, 2);
+  assert.equal(second.nudge.count, 2, 'a re-armed waiter keeps the count');
+  assert.ok(Date.now() - between >= 14 * 60_000, 'the second nudge waits its own interval');
+  assert.equal(f.s.get("SELECT actor FROM events WHERE entity='nudge' ORDER BY id DESC LIMIT 1").actor, 'b');
   assert.equal((await f.wait('b', 3000)).reason, 'timeout', 'the third interval mails the escalation role and does not wake b');
   assert.equal(f.nudges('b', 'escalated').length, 1);
   const mail = f.as('lead', () => inbox(f.s, { peek: true }));

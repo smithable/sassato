@@ -95,12 +95,19 @@ export async function wake(s: Store, options: WakeOptions = {}): Promise<WakeOut
   const acknowledged = options.ack?.length ? acknowledgeMany(s, options.ack).map((row) => String(row.message_id)) : [];
   // The waiter's own events (T1253) give the time table its waiting spans; they are bookkeeping, never activity.
   s.tx(() => s.event('waiter', actor, 'armed', { since, idle_minutes: options.idleMinutes ?? null, waiting_for: waitingFor || null, expect_minutes: expect }));
-  if (expect !== null && expect >= 10 && options.armNotice) {
-    const ready = idleOpenWork(s, actor).slice(0, 3);
-    if (ready.length) options.armNotice(`Waiting is not idle: ${ready.join(', ')} ${ready.length > 1 ? 'are' : 'is'} ready for you while this wait (about ${expect} minutes) runs.`);
+  let result;
+  try {
+    if (expect !== null && expect >= 10 && options.armNotice) {
+      const ready = idleOpenWork(s, actor).slice(0, 3);
+      if (ready.length) options.armNotice(`Waiting is not idle: ${ready.join(', ')} ${ready.length > 1 ? 'are' : 'is'} ready for you while this wait (about ${expect} minutes) runs.`);
+    }
+    const { waitingFor: _w, expectMinutes: _e, armNotice: _a, ...wait } = options;
+    result = await waitWithManagedObservation(s, { ...wait, since, nudge: true });
+  } catch (error) {
+    // A waiter that failed is not left looking armed.
+    try { s.tx(() => s.event('waiter', actor, 'ended', { reason: 'error', cursor: null })); } catch { /* keep the original error */ }
+    throw error;
   }
-  const { waitingFor: _w, expectMinutes: _e, armNotice: _a, ...wait } = options;
-  const result = await waitWithManagedObservation(s, { ...wait, since, nudge: true });
   s.tx(() => s.event('waiter', actor, 'ended', { reason: result.reason, cursor: result.cursor }));
   return formatWake(s,options,since,result,acknowledged,before.version);
 }

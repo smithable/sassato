@@ -353,17 +353,19 @@ export async function waitForWork(s:Store, options:WaitOptions={}, observer?:Wai
       }
     }
     if(nudgeMinutes&&!nudged&&clock.now()>=nudgeState.next) {
-      const due=s.snapshot(()=>scanNudge(s,actor,nudgeMinutes,Math.floor(clock.now()),nudgeState));
-      if(due?.escalate) {
-        const to=workspaceSettings(s).nudge_escalate;
-        // The mail is the role's own write, so the escalation event comes after it and still marks the end.
-        s.tx(()=>{
+      // The check and its write share one write transaction, so two waiters or a late answer cannot double it.
+      const due=s.tx(()=>{
+        const found=scanNudge(s,actor,nudgeMinutes,Math.floor(clock.now()),nudgeState);
+        if(found?.escalate) {
+          const to=workspaceSettings(s).nudge_escalate;
+          // The mail is the role's own write, so the escalation event comes after it and still marks the end.
           if(to&&to!==actor)send(s,[to],`${actor} has written nothing for ${nudgeMinutes*3} minutes and answered neither of two nudges (an idle reason or a take). No more nudges until it writes.`);
           s.event('nudge',actor,'escalated',{minutes:nudgeMinutes,to});
-        });
-      } else if(due) {
+        } else if(found)s.event('nudge',actor,'sent',{minutes:nudgeMinutes,count:found.count,tasks:found.tasks});
+        return found;
+      });
+      if(due&&!due.escalate) {
         const text=nudgeText(s,actor,nudgeMinutes,due.count,due.tasks);
-        s.tx(()=>s.event('nudge',actor,'sent',{minutes:nudgeMinutes,count:due.count,tasks:due.tasks}));
         const wake:WaitResult={reason:'nudge',role:actor,cursor,...(due.tasks.length?{tasks:due.tasks}:{}),nudge:{minutes:nudgeMinutes,count:due.count,text}};
         if(!settle)return wake;
         if(!add(entryFor(s,wake)))return digest('capacity');
@@ -415,7 +417,11 @@ function changeFor(s:Store,actor:string,after:number):Row|undefined {
   }
 }
 function scanNudge(s:Store,actor:string,minutes:number,wall:number,state:NudgeState):{count:number;tasks:string[];escalate?:true}|undefined {
-  const last=idleActivity(s,actor,0);
+  // A write of the role's own, not a read, an acknowledgement or a lease renewal; with none, its first waiter.
+  const last=s.get(`SELECT id,created_at FROM events WHERE workspace_id=? AND actor=?
+    AND entity NOT IN ('wip','checkpoint','session','notification-progress','wake-enrollment','wake-delivery','watch-dispatch','supervisor-ping','waiter','nudge')
+    AND NOT (entity='message' AND action IN ('read','done')) AND NOT (entity='task' AND action='renewed')
+    ORDER BY id DESC LIMIT 1`,s.ws,actor)??s.get("SELECT id,created_at FROM events WHERE workspace_id=? AND entity='waiter' AND entity_id=? ORDER BY id LIMIT 1",s.ws,actor);
   let base=last?{id:Number(last.id),at:Date.parse(last.created_at)}:state.start;
   const reason=s.get("SELECT id FROM events WHERE workspace_id=? AND entity='idle' AND entity_id=? AND action='reason' ORDER BY id DESC LIMIT 1",s.ws,actor);
   const lastNudge=s.get("SELECT id FROM events WHERE workspace_id=? AND entity='nudge' AND entity_id=? AND action='sent' ORDER BY id DESC LIMIT 1",s.ws,actor);
