@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { spawnError } from './spawn-result.js';
 import { createHash } from 'node:crypto';
 import { constants, fstatSync, lstatSync, openSync, closeSync, readSync, realpathSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -12,7 +13,7 @@ const env={...Object.fromEntries(Object.entries(process.env).filter(([key])=>!ke
 /** Plumbing only: no status/diff worktree comparisons, attributes, clean filters or external diff. */
 export function indexGit(identity:RepositoryIdentity,args:string[],input?:string|Buffer):Buffer {
   const result=spawnSync('git',['-c','core.fsmonitor=false','-c','core.attributesFile=/dev/null','-C',identity.checkout_root,...args],{input,timeout:30_000,maxBuffer:128*1024*1024,env,shell:false});
-  check(!result.error&&result.status===0,'Repository index Git read failed or exceeded its resource limit',4);
+  check(!spawnError(result)&&result.status===0,`Repository index Git read failed or exceeded its resource limit (git ${args[0]}: ${spawnError(result)?.message??`exit ${result.status??result.signal}`})`,4);
   return result.stdout;
 }
 export function resolveCommit(identity:RepositoryIdentity,revision:string):string {
@@ -23,7 +24,7 @@ export function resolveCommit(identity:RepositoryIdentity,revision:string):strin
 }
 export function isAncestor(identity:RepositoryIdentity,older:string,newer:string):boolean {
   const result=spawnSync('git',['-C',identity.checkout_root,'merge-base','--is-ancestor',older,newer],{timeout:5000,env,shell:false});
-  check(!result.error&&[0,1].includes(result.status??-1),'Index ancestry could not be verified',4);
+  check(!spawnError(result)&&[0,1].includes(result.status??-1),`Index ancestry could not be verified (git merge-base: ${spawnError(result)?.message??`exit ${result.status??result.signal}`})`,4);
   return result.status===0;
 }
 /** Git paths are raw bytes. Never invent replacement characters or collide distinct names. */

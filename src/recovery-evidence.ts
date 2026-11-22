@@ -1,3 +1,4 @@
+import { spawnError } from './spawn-result.js';
 import { spawnSync } from 'node:child_process';
 import { type Store } from './storage.js';
 import { check, now, text } from './errors.js';
@@ -77,14 +78,14 @@ export function observeRepository(directory:string|null):RepositoryEvidence {
   const config=['-c','core.fsmonitor=false','-c','core.untrackedCache=false','-c','core.attributesFile=/dev/null'];
   const run=(args:string[],maxBuffer=16_384)=>spawnSync('git',[...config,'-C',directory,...args],{encoding:'utf8',timeout:2_000,maxBuffer,env,shell:false});
   const root=run(['rev-parse','--show-toplevel']);
-  if(root.error || root.status!==0) {result.reason='Git worktree unavailable: not a repository, missing Git, inaccessible directory or bounded probe failure.';return result;}
+  if(spawnError(root) || root.status!==0) {result.reason='Git worktree unavailable: not a repository, missing Git, inaccessible directory or bounded probe failure.';return result;}
   const rootPath=root.stdout.trimEnd();
   if(!rootPath || rootPath.length>4096) {result.reason='Git returned unsupported or oversized repository metadata.';return result;}
   result.root=rootPath;
   // Attributes in the repository can name clean/process drivers. Suppressing only
   // global attributes does not stop them: disable every configured driver first.
   const filters=run(['config','--null','--name-only','--get-regexp','^filter\\..*\\.(clean|process|required)$']);
-  if(filters.error || ![0,1].includes(filters.status??-1)) {result.reason='Git filter configuration could not be inspected safely.';return result;}
+  if(spawnError(filters) || ![0,1].includes(filters.status??-1)) {result.reason='Git filter configuration could not be inspected safely.';return result;}
   const filterKeys=filters.stdout.split('\0').filter(Boolean);
   // `git -c` splits at '='. Unsafe subsection names could otherwise turn an
   // attempted override into another key and leave the original driver active.
@@ -92,11 +93,11 @@ export function observeRepository(directory:string|null):RepositoryEvidence {
   for(const key of new Set(filterKeys.map(key=>key.replace(/\.(clean|process|required)$/,'')))) config.push('-c',`${key}.clean=`,'-c',`${key}.process=`,'-c',`${key}.required=false`);
   // Submodule status can invoke Git with different local filter configuration.
   const index=run(['ls-files','--stage','-z'],262_144);
-  if(index.error || index.status!==0 || index.stdout.split('\0').some(line=>line.startsWith('160000 '))) {result.reason='Repository index is unavailable, oversized or contains submodules; inspect the worktree manually.';return result;}
+  if(spawnError(index) || index.status!==0 || index.stdout.split('\0').some(line=>line.startsWith('160000 '))) {result.reason='Repository index is unavailable, oversized or contains submodules; inspect the worktree manually.';return result;}
   const gitDir=run(['rev-parse','--absolute-git-dir']),commonDir=run(['rev-parse','--path-format=absolute','--git-common-dir']);
   const branch=run(['symbolic-ref','--quiet','--short','HEAD']),head=run(['rev-parse','--verify','--quiet','HEAD']);
   const status=run(['status','--porcelain=v1','-z','--untracked-files=normal'],262_144);
-  if(gitDir.error || gitDir.status!==0 || commonDir.error || commonDir.status!==0 || branch.error || ![0,1].includes(branch.status??-1) || head.error || ![0,1].includes(head.status??-1) || status.error || status.status!==0) {
+  if(spawnError(gitDir) || gitDir.status!==0 || spawnError(commonDir) || commonDir.status!==0 || spawnError(branch) || ![0,1].includes(branch.status??-1) || spawnError(head) || ![0,1].includes(head.status??-1) || spawnError(status) || status.status!==0) {
     result.reason='Git evidence probe failed or exceeded its time/output limit; inspect the worktree before recovery.';return result;
   }
   const paths=[result.root,gitDir.stdout.trimEnd(),commonDir.stdout.trimEnd()];
