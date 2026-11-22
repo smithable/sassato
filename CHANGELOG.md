@@ -8,6 +8,12 @@
   process watches every role started. An open window or server is refused with its pid; `--close-stale` closes only
   what an earlier `launch --watched` started. Before, `--watched` only changed the start prompt.
 
+- `stats [--since DATE] [--role R] [--json]` reports waits from what sassato already stores (T1241): how long
+  mail stayed unread per role and class, urgent mail not acknowledged within 30 minutes, mail a saved cursor
+  passed while it stayed unread, reviews and questions to a human. A saved cursor now also names the mail its
+  wake listed (`delivered` in the progress event), so `stats` says whether such mail was listed before it was
+  read, or never listed (the T1233 fault); saves from earlier builds show as unknown.
+
 - `launch-watch` no longer ends after five minutes without a receipt (T1191): a queued line waits for the
   window's current turn to end, which can take longer. Past five minutes it alerts the enrolling human once per
   enrollment and keeps waiting on the one queued wake; it ends only when the registered window or the app server
