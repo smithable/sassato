@@ -477,11 +477,25 @@ resumes the newest saved Codex session (CODEX_HOME or ~/.codex, sessions/) that 
 whose launch prompt names the role, searching the newest 200; so a plain `launch` of a Codex role now resumes where it
 used to start fresh. --fresh starts a new session; --resume fails when none is found.
 
-The start prompt says who does the waiting. A Codex role launched with `--watched` is told its launcher does the
+The start prompt says who does the waiting. A Codex role started with `--watched` is told its launcher does the
 waiting and to arm no waiter; without it, a Codex role is told that no launcher waits for it and to arm none (it reads
-its inbox and context between tasks). `--watched` changes only the prompt: it does not start `launch-watch`, which is
-a separate step, and until that runs nothing wakes the role. With `--no-prompt` neither sentence is sent. `--watched`
-applies to Codex roles only. A resumed session keeps its first prompt, so each wake `launch-watch` queues says it too.
+its inbox and context between tasks). With `--no-prompt` neither sentence is sent. A resumed session keeps its first
+prompt, so each wake `launch-watch` queues says it too.
+
+`launch --watched ROLE...|--all [--close-stale] [--dry-run] [--distro NAME] --as HUMAN` starts watched Codex roles in
+one command, with nothing asked. For each role it resumes the role's saved session (there must be one) and:
+1. checks the settings: it starts `codex app-server` on stdio with the role's model, sandbox, approval policy and
+   reasoning effort as `-c` settings, opens a throwaway ephemeral thread and compares what that thread reports with
+   the role's settings; a mismatch is refused, naming the setting, and nothing starts;
+2. starts the role's app server with the same settings, hidden (no tab), listening on `ROLE.sock` in the launch
+   folder's `watched/` directory, its log beside it as `ROLE-server.log`;
+3. opens the window as the only tab (`codex --remote ENDPOINT resume SESSION` in Windows Terminal), registers it as
+   the role's session and records both processes (pid and start time) in `watched/ROLE.json`.
+Then one background process (`watch-roles`, log `watched/watcher.log`) runs `launch-watch` for every role started.
+A window or app server already open for the role is refused with its pid and start time. `--close-stale` closes it
+first, but only when an earlier `launch --watched` started it (the same pid and start time); a window or server
+started any other way is never closed. `--dry-run` prints the two commands per role and starts nothing. `--watched`
+takes no `--fresh`, `--terminal`, `--window` or `--new-window`.
 
 ## Output contract
 
@@ -843,8 +857,8 @@ must already have reconciled and saved notification progress.
 
 Start the app server from a shell where `sas --version` works: the worker runs
 `sas wake --pending` in the server’s environment (a terminal opened before fnm or
-the PATH is set up cannot find it). Sassato never starts, stops or removes the
-server or its socket. Stopping a dedicated Codex 0.167 app server can remove
+the PATH is set up cannot find it). Here Sassato never starts, stops or removes the
+server or its socket (`launch --watched` starts and closes only its own). Stopping a dedicated Codex 0.167 app server can remove
 Codex’s shared `/tmp/codex-daemon-UID` folder, where the managed daemon’s socket
 lives too; new Codex launches then fail until that daemon is restarted.
 
