@@ -8,7 +8,7 @@ import { activeStop } from './control.js';
 import { readPendingWake, workerStop } from './pending-wake.js';
 import type { Row, Store } from './storage.js';
 import { waitWithManagedObservation } from './managed-wait.js';
-import { getNotificationProgress, saveNotificationProgress } from './notification-progress.js';
+import { DELIVERED_LIMIT, getNotificationProgress, saveNotificationProgress } from './notification-progress.js';
 import { acknowledgeMany } from './coordination.js';
 import { unchangedIdleText, type WaitOptions, type WaitResult } from './mail-wait.js';
 import { DIGEST_GROUPS, scoreExplanation, type DigestEntry } from './wait-digest.js';
@@ -109,6 +109,7 @@ function formatWake(s: Store, options: WakeOptions, since: number, result: WaitR
   const entries = result.digest?.entries ?? [];
   const shown = new Set([...entries.map((entry) => entry.id), ...(result.message ? [String(result.message.id)] : [])]);
   const { rows: left, more: leftMore } = waiting(s, actor, shown);
+  const delivered = [...[...shown].map((id) => (/^\d+$/.test(id) ? `M${id}` : id)), ...left.map((m) => `M${m.id}`)].filter((id) => /^M\d+$/.test(id)).slice(0, DELIVERED_LIMIT);
   const quiet = !entries.length && !left.length && result.reason === 'timeout';
   const idle=result.idle??result.scored?.idle;
   const unchanged=unchangedIdleText(idle);
@@ -152,7 +153,7 @@ function formatWake(s: Store, options: WakeOptions, since: number, result: WaitR
     try {
       const saved=s.tx(()=>{
         if(activeStop(s,[actor],options.stopFile))return false;
-        saveNotificationProgress(s,{cursor:result.cursor,expected_version:version,scored:result.scored,idle:result.idle});
+        saveNotificationProgress(s,{cursor:result.cursor,expected_version:version,scored:result.scored,idle:result.idle,delivered});
         return true;
       });
       return saved?{saved,line:`Cursor ${result.cursor} saved.`}:

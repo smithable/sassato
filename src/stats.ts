@@ -58,9 +58,9 @@ export function stats(s: Store, options: StatsOptions = {}): Row {
       .sort((a, b) => b.minutes - a.minutes);
 
     // The T1233 symptom: a cursor the role saved reached past the message while it stayed unread for
-    // 30 minutes or more after. Which mail a digest listed is not stored, so listed-but-ignored mail
-    // shows here too.
-    const saves = s.all(`SELECT entity_id AS role, created_at, json_extract(detail,'$.cursor') AS cursor FROM events
+    // 30 minutes or more after. Saves since 0.1.3 name the mail their wake listed, which splits the
+    // listed-but-unread from the never listed; older saves leave it unknown.
+    const saves = s.all(`SELECT entity_id AS role, created_at, json_extract(detail,'$.cursor') AS cursor, json_extract(detail,'$.delivered') AS delivered FROM events
       WHERE workspace_id=? AND entity='notification-progress' AND action='saved' ${role ? 'AND entity_id=?' : ''} ORDER BY id`, ...[s.ws, ...(role ? [role] : [])]);
     const savesByRole = new Map<string, Row[]>();
     for (const save of saves) {
@@ -74,7 +74,7 @@ export function stats(s: Store, options: StatsOptions = {}): Row {
       const save = (savesByRole.get(m.recipient) ?? []).find(x => Number(x.cursor) >= Number(m.event_id) && x.created_at >= m.created_at);
       if (!save || (m.read_at !== null && m.read_at <= save.created_at)) continue;
       const after = minutes(save.created_at, m.read_at ?? now);
-      if (elapsed(save.created_at, m.read_at ?? now) >= PASSED_MINUTES * MINUTE) passed.push({ message: `M${m.id}`, to: m.recipient, class: classOf(m), unread_minutes_after: after, open: m.read_at === null });
+      if (elapsed(save.created_at, m.read_at ?? now) >= PASSED_MINUTES * MINUTE) passed.push({ message: `M${m.id}`, to: m.recipient, class: classOf(m), unread_minutes_after: after, open: m.read_at === null, listed: listedBefore(savesByRole.get(m.recipient) ?? [], `M${m.id}`, m.read_at ?? now) });
     }
     passed.sort((a, b) => b.unread_minutes_after - a.unread_minutes_after);
 
@@ -114,17 +114,24 @@ export function stats(s: Store, options: StatsOptions = {}): Row {
       since: since || null, role: role ?? null, generated_at: now,
       mail_unread: { by_role: unreadByRole, longest: longestUnread },
       urgent_unacknowledged: { threshold_minutes: URGENT_ACK_MINUTES, count: urgentLate.length, longest: urgentLate.slice(0, NAMED) },
-      passed_unread: { threshold_minutes: PASSED_MINUTES, count: passed.length, by_role: countBy(passed, 'to'), longest: passed.slice(0, NAMED) },
+      passed_unread: { threshold_minutes: PASSED_MINUTES, count: passed.length, by_role: countBy(passed, 'to'), listed: countBy(passed, 'listed'), longest: passed.slice(0, NAMED) },
       idle_with_work: idleWithWork,
       reviews: { ...summary(reviews as Wait[]), longest: reviews.slice(0, NAMED) },
       human_questions: { ...summary(questions as Wait[]), longest: questions.slice(0, NAMED) },
       not_stored: [
         'refused writes (take, note, done refused by sassato): a refusal writes nothing, so it cannot be counted',
-        'which mail a wake digest listed: only the saved cursor is kept, so listed-but-ignored mail and never-listed mail look the same in passed_unread',
+        'which mail a wake digest listed, before 0.1.3: older saved cursors do not name it, so those deliveries are listed as unknown',
         'how long a role was idle with work before its first own-work wake after a restart, and idle time with no wake at all (a waiter not armed)',
       ],
     };
   });
+}
+
+/** Whether a wake listed the mail before it was read: yes, no, or unknown when no save that early names its mail. */
+function listedBefore(saves: Row[], id: string, until: string): 'yes' | 'no' | 'unknown' {
+  const named = saves.filter(x => x.delivered !== null && x.created_at <= until);
+  if (named.some(x => (JSON.parse(x.delivered) as string[]).includes(id))) return 'yes';
+  return named.length ? 'no' : 'unknown';
 }
 
 function countBy(rows: Row[], key: string): Record<string, number> {
@@ -148,7 +155,8 @@ export function formatStats(r: Row): string {
   lines.push('', `Urgent deliveries not acknowledged within ${r.urgent_unacknowledged.threshold_minutes} minutes: ${r.urgent_unacknowledged.count}`);
   for (const m of r.urgent_unacknowledged.longest) lines.push(`  ${m.message} to ${m.to}: ${span(m.minutes)}${open(m)}`);
   lines.push('', `Deliveries a saved cursor passed while it stayed unread ${r.passed_unread.threshold_minutes}+ minutes: ${r.passed_unread.count}${r.passed_unread.count ? ` (${Object.entries(r.passed_unread.by_role).map(([k, v]) => `${k} ${v}`).join(', ')})` : ''}`);
-  for (const m of r.passed_unread.longest) lines.push(`  ${m.message} ${m.class} to ${m.to}: unread ${span(m.unread_minutes_after)} after${open(m)}`);
+  if (r.passed_unread.count) lines.push(`  listed by a wake before it was read: ${['yes', 'no', 'unknown'].map(k => `${k} ${r.passed_unread.listed[k] ?? 0}`).join(', ')}`);
+  for (const m of r.passed_unread.longest) lines.push(`  ${m.message} ${m.class} to ${m.to}: unread ${span(m.unread_minutes_after)} after, listed ${m.listed}${open(m)}`);
   lines.push('', 'Idle with ready work before a wake (spells · median · longest):');
   for (const row of r.idle_with_work) lines.push(`  ${row.role}: ${row.count} · ${span(row.median_minutes)} · ${span(row.longest_minutes)}`);
   if (!r.idle_with_work.length) lines.push('  none');

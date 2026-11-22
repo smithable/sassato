@@ -44,7 +44,7 @@ test('stats reports unread mail, late urgent mail, mail a cursor passed unread, 
   assert.ok(!r.mail_unread.longest.some(m=>m.message===ordinary.id&&m.open));
 
   const text=formatStats(r);
-  assert.match(text,/^Stats\./);assert.match(text,new RegExp(`${passed.id} ordinary to c: unread 1h5\\dm? after \\(still open\\)|${passed.id} ordinary to c: unread 2h00 after \\(still open\\)`));
+  assert.match(text,/^Stats\./);assert.match(text,new RegExp(`${passed.id} ordinary to c: unread (?:1h5\\dm?|2h00) after, listed unknown \\(still open\\)`));
   assert.match(text,/Not stored, so not counted:/);
 
   const onlyC=stats(s,{role:'c',now:later(120)});
@@ -53,6 +53,22 @@ test('stats reports unread mail, late urgent mail, mail a cursor passed unread, 
   assert.equal(stats(s,{since:'2999-01-01'}).mail_unread.by_role.length,0);
   assert.match(formatStats(stats(s,{since:'2026-11-22T14:30:00Z'})),/^Stats since 2026-11-22 14:30 UTC\./);
   assert.match(formatStats(stats(s,{since:'2026-11-22'})),/^Stats since 2026-11-22\./);
+});
+
+test('a saved cursor names the mail its wake listed, so stats tells listed-but-unread from never listed (T1241)',t=>{
+  const s=fixture(t);
+  s.actor='a';
+  const listed=send(s,['c'],'Listed and left');
+  const missed=send(s,['c'],'Never listed');
+  s.actor='c';
+  const first=saveNotificationProgress(s,{cursor:context(s).snapshot_cursor,expected_version:0,delivered:[listed.id,listed.id]});
+  const r=stats(s,{now:later(90)});
+  assert.deepEqual(Object.fromEntries(r.passed_unread.longest.map(m=>[m.message,m.listed])),{[listed.id]:'yes',[missed.id]:'no'});
+  assert.deepEqual(r.passed_unread.listed,{yes:1,no:1});
+  assert.match(formatStats(r),/listed by a wake before it was read: yes 1, no 1, unknown 0/);
+  const saved=s.get("SELECT detail FROM events WHERE workspace_id=? AND entity='notification-progress' ORDER BY id DESC LIMIT 1",s.ws);
+  assert.deepEqual(JSON.parse(saved.detail).delivered,[listed.id]);
+  assert.throws(()=>saveNotificationProgress(s,{cursor:context(s).snapshot_cursor,expected_version:first.version,delivered:['T1']}),/Invalid delivered mail list/);
 });
 
 test('stats refuses a since that is not a date and a role that does not exist',t=>{

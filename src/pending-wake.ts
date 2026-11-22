@@ -3,7 +3,7 @@
 import { activeStop, stopStatus } from './control.js';
 import { assertOrdinaryLaunchAllowed } from './launch-admission.js';
 import { check } from './errors.js';
-import { getNotificationProgress, saveNotificationProgress, type NotificationProgress } from './notification-progress.js';
+import { DELIVERED_LIMIT, getNotificationProgress, saveNotificationProgress, type NotificationProgress } from './notification-progress.js';
 import type { Store } from './storage.js';
 import type { WaitResult } from './mail-wait.js';
 import { workspaceSettings } from './workspace-settings.js';
@@ -118,7 +118,8 @@ export function readPendingWake(s: Store, thread: string | undefined) {
       check(latest(s,'wake-delivery')?.id===row.id,'Pending wake already consumed or replaced',4);
       originalProgress(s,pending.progress);
       if (workerStop(s,thread)) return {saved:false,line:'STOP requested during delivery; checkpoint and do not start work.'};
-      saveNotificationProgress(s,{cursor:pending.result.cursor,expected_version:pending.progress.version,scored:pending.result.scored,idle:pending.result.idle});
+      const delivered=(pending.result.digest?.entries??[]).map(entry=>entry.id).filter(id=>/^M[1-9][0-9]*$/.test(id)).slice(0,DELIVERED_LIMIT);
+      saveNotificationProgress(s,{cursor:pending.result.cursor,expected_version:pending.progress.version,scored:pending.result.scored,idle:pending.result.idle,delivered});
       s.event('wake-delivery',s.requireActor(),'consumed',{epoch:pending.epoch,pending:row.id});
       return {saved:true,line:`Cursor ${pending.result.cursor} saved. Pending wake consumed.`};
     });
