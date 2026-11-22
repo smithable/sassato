@@ -91,7 +91,7 @@ function launcherPath(provider: string): string | null {
   return null;
 }
 const versionName = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
-function providerProcess(pid: number, provider: string): boolean {
+export function providerProcess(pid: number, provider: string): boolean {
   try {
     const args = readFileSync(`/proc/${pid}/cmdline`,'utf8').split('\0').filter(Boolean);
     // Node-based wrappers may place their executable script in argv[1]. No substring matches.

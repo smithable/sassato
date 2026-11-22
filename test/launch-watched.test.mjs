@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { mkdtempSync,rmSync,writeFileSync,readFileSync,existsSync } from 'node:fs';
+import { mkdtempSync,rmSync,writeFileSync,readFileSync,existsSync,readdirSync,mkdirSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Store } from '../dist/storage.js';
 import { initWorkspace } from '../dist/admin.js';
@@ -97,4 +97,40 @@ test('launch --watched needs the human, a resumable session and a fully set role
   f.operator.run("UPDATE roles SET approval_policy=NULL WHERE workspace_id=? AND name='b'",f.operator.ws);
   await assert.rejects(launchWatched(f.operator,['b'],f.options),/Set a model, sandbox and approval policy/);
   assert.ok(!existsSync(join(f.dir,'nothing')));
+});
+
+test('a dry run with --close-stale names what it would close and closes nothing (T1193 review)',async t=>{
+  const f=fixture(t);
+  const [r]=await launchWatched(f.operator,['b'],f.options);
+  t.after(()=>stopServer(r));
+  const [plan]=await launchWatched(f.operator,['b'],{...f.options,closeStale:true,dryRun:true});
+  assert.match(plan.would_close,new RegExp(`window pid ${r.window}`));
+  process.kill(r.server,0);process.kill(r.window,0);
+});
+
+test('a window that never opens stops the server again and records nothing; earlier roles still get the watcher',async t=>{
+  const f=fixture(t);
+  await assert.rejects(launchWatched(f.operator,['b'],{...f.options,openWindow:()=>{},waitMs:1000}),/window did not start/);
+  await delay(100);
+  const servers=readdirSync('/proc').filter(p=>/^\d+$/.test(p)).filter(p=>{try{return readFileSync(`/proc/${p}/cmdline`,'utf8').includes(join(f.dir,'db.launch'))&&readFileSync(`/proc/${p}/cmdline`,'utf8').includes('--listen');}catch{return false;}});
+  assert.deepEqual(servers,[]);
+  assert.equal(f.watchers.length,0);
+  // b starts, then an unknown role fails: b still gets its watcher.
+  await assert.rejects(launchWatched(f.operator,['b','nobody'],f.options));
+  assert.deepEqual(f.watchers,[['b']]);
+  const session=f.operator.get("SELECT pid FROM sessions WHERE workspace_id=? AND role='b' AND ended_at IS NULL",f.operator.ws);
+  t.after(()=>{for(const p of readdirSync('/proc').filter(p=>/^\d+$/.test(p))){try{if(readFileSync(`/proc/${p}/cmdline`,'utf8').includes(join(f.dir,'db.launch')))process.kill(Number(p));}catch{}}});
+  assert.ok(session.pid);
+});
+
+test('a state file that does not match what this command writes is not trusted: no process is signalled',async t=>{
+  const f=fixture(t);
+  const victim=spawn(f.codex,['--remote','unix:///x','resume',thread],{stdio:'ignore'});
+  t.after(()=>victim.kill());
+  await delay(200);
+  const watched=join(f.dir,'db.launch','team','watched');
+  mkdirSync(watched,{recursive:true});
+  writeFileSync(join(watched,'b.json'),JSON.stringify({role:'b',thread,endpoint:'unix:///x',server:{pid:victim.pid},window:{pid:victim.pid,identity:''}}));
+  await assert.rejects(launchWatched(f.operator,['b'],{...f.options,closeStale:true}),/did not start it/);
+  assert.equal(victim.exitCode,null);
 });

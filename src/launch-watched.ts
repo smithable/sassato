@@ -9,8 +9,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { check, name } from './errors.js';
-import { processIdentity, registerSession } from './coordination.js';
-import { planLaunch, resolveExecutable } from './launch.js';
+import { processIdentity, providerProcess, registerSession } from './coordination.js';
+import { acquireLaunchLock, planLaunch, resolveExecutable } from './launch.js';
 import { launchDirectory } from './launch-admission.js';
 import { launchWatch } from './launch-watch.js';
 import { Store, type Row } from './storage.js';
@@ -30,8 +30,15 @@ const sandboxes: Record<string, string> = { 'read-only': 'readOnly', 'workspace-
 const stateDir = (s: Store) => join(launchDirectory(s.path, s.workspace), 'watched');
 const statePath = (s: Store, role: string) => join(stateDir(s), `${name(role)}.json`);
 
+const recorded = (p: unknown): p is { pid: number; identity: string } =>
+  !!p && typeof p === 'object' && Number.isSafeInteger((p as Row).pid) && (p as Row).pid > 1 && typeof (p as Row).identity === 'string' && (p as Row).identity !== '';
+/** The record an earlier run wrote, or null when there is none or it is not one this command wrote. */
 function readState(s: Store, role: string): Started | null {
-  try { return JSON.parse(readFileSync(statePath(s, role), 'utf8')); } catch { return null; }
+  let state: Row;
+  try { state = JSON.parse(readFileSync(statePath(s, role), 'utf8')); } catch { return null; }
+  const valid = state && typeof state === 'object' && state.role === role && typeof state.thread === 'string' && typeof state.endpoint === 'string'
+    && state.endpoint.startsWith('unix://') && recorded(state.server) && recorded(state.window);
+  return valid ? state as Started : null;
 }
 function writeState(s: Store, state: Started) {
   const path = statePath(s, state.role), temp = `${path}.${process.pid}.tmp`;
@@ -85,10 +92,13 @@ export async function checkSettings(codex: string, serverArgs: string[], want: R
       for (let at = buffer.indexOf('\n'); at >= 0; at = buffer.indexOf('\n')) {
         const line = buffer.slice(0, at); buffer = buffer.slice(at + 1);
         let message: Row; try { message = JSON.parse(line); } catch { continue; }
+        // Notifications and the server's own requests carry a method; only answers to our two requests count.
+        if (!message || typeof message !== 'object' || 'method' in message) continue;
+        if (message.error && (message.id === 1 || message.id === 2)) { clearTimeout(timer); fail(new Error(`Codex refused the settings check: ${message.error.message ?? 'no reason given'}`)); continue; }
         if (message.id === 1) {
           child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'initialized' })}\n`);
           child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'thread/start', params: { ephemeral: true, cwd } })}\n`);
-        } else if (message.id === 2) { clearTimeout(timer); message.error ? fail(new Error(`Codex refused a thread: ${message.error.message ?? 'no reason given'}`)) : done(message.result); }
+        } else if (message.id === 2) { clearTimeout(timer); message.result && typeof message.result === 'object' ? done(message.result) : fail(new Error('Codex answered the settings check without a thread')); }
       }
     });
   });
@@ -118,22 +128,28 @@ function openWindowsTerminal(distro: string) {
   return (codex: string, args: string[], cwd: string, role: string) => {
     const argv = ['-w', '0', 'new-tab', '--title', role, 'wsl.exe', '-d', distro, '--cd', cwd, '--exec', codex, ...args];
     check(argv.every(a => !/[;\r\n\0"]/.test(a)), 'Windows Terminal arguments cannot contain semicolons, quotes or control characters');
-    spawn('wt.exe', argv, { detached: true, stdio: 'ignore' }).unref();
+    // A failed start shows as no window within the wait, which stops the server again.
+    const child = spawn('wt.exe', argv, { detached: true, stdio: 'ignore' });
+    child.on('error', () => {}); child.unref();
   };
 }
 
-/** The refusal for a role with a window or server already open, or its removal when an earlier run started it. */
-async function clearEarlier(s: Store, role: string, thread: string, endpoint: string, closeStale: boolean) {
+/**
+ * The refusal for a role with a window or server already open, or, with --close-stale, their closing when an earlier
+ * run started every one of them. Only processes seen open now and matching the record (pid and start time) are
+ * signalled. A dry run names what it would close and closes nothing. Returns what was (or would be) closed.
+ */
+async function clearEarlier(s: Store, role: string, thread: string, endpoint: string, closeStale: boolean, dryRun = false): Promise<string | false> {
   const earlier = readState(s, role);
-  const ours = (pid: number) => !!earlier && [earlier.server, earlier.window].some(p => p.pid === pid && alive(p));
+  const record = (pid: number) => earlier ? [earlier.window, earlier.server].find(p => p.pid === pid && alive(p)) : undefined;
   const open = [...processesWith(['resume', thread]).map(pid => ({ pid, what: 'window' })), ...processesWith(['--listen', endpoint]).map(pid => ({ pid, what: 'app server' }))];
   if (!open.length) return false;
   const named = open.map(p => `${p.what} pid ${p.pid} (since ${since(p.pid)})`).join(', ');
-  if (closeStale && open.every(p => ours(p.pid))) {
-    for (const p of [earlier!.window, earlier!.server]) await stopProcess(p);
-    return true;
+  if (closeStale && open.every(p => record(p.pid))) {
+    if (!dryRun) for (const p of open) await stopProcess(record(p.pid)!);
+    return named;
   }
-  const way = open.every(p => ours(p.pid)) ? ' An earlier sas launch --watched started it: add --close-stale to close it, or leave it running.'
+  const way = open.every(p => record(p.pid)) ? ' An earlier sas launch --watched started it: add --close-stale to close it, or leave it running.'
     : ' This command did not start it, so it never closes it: close it by hand when its turn is done.';
   check(false, `${role} already has an open ${named}.${way}`, 4);
 }
@@ -150,6 +166,7 @@ export async function launchWatched(operator: Store, roles: string[], options: W
   if (!options.openWindow && !options.dryRun) check(distro, 'Run inside WSL (WSL_DISTRO_NAME is not set)', 3);
   mkdirSync(stateDir(operator), { recursive: true, mode: 0o700 });
   const results: Row[] = [], started: string[] = [];
+  try {
   for (const role of selected) {
     // planLaunch refuses on STOP, a role that may not launch, and no saved session to resume.
     const planned = () => planLaunch(operator, [role], { watched: true, noPrompt: true, resume: true, codexHome: options.codexHome })[0];
@@ -158,45 +175,76 @@ export async function launchWatched(operator: Store, roles: string[], options: W
     const thread = first.sessionId!, endpoint = `unix://${join(stateDir(operator), `${role}.sock`)}`;
     const { args, want } = settings(operator, role);
     // Closing an earlier window changes its registered session from running to stale, so plan again after it.
-    const plan = await clearEarlier(operator, role, thread, endpoint, options.closeStale === true) ? planned() : first;
-    check(plan.sessionId === thread, `${role}'s saved session changed while launching; run the command again`, 4);
-    check(plan.status !== 'already-running', `${role} has a registered running session not started by this command; close it first`, 4);
-    if (options.dryRun) { results.push({ role, thread, cwd: plan.cwd, server: [codex, 'app-server', ...args, '--listen', endpoint], window: [codex, '--remote', endpoint, 'resume', thread], status: 'ready' }); continue; }
-    await checkSettings(codex, args, want, plan.cwd, waitMs);
-    rmSync(endpoint.slice(7), { force: true });
-    const log = openSync(join(stateDir(operator), `${role}-server.log`), 'a', 0o600);
-    const server = spawn(codex, ['app-server', ...args, '--listen', endpoint], { cwd: plan.cwd, detached: true, stdio: ['ignore', log, log] });
-    server.unref(); closeSync(log);
-    const serverId = { pid: server.pid!, identity: processIdentity(server.pid!) ?? '' };
-    const stopServer = () => stopProcess(serverId).catch(() => {});
-    if (!await until(() => existsSync(endpoint.slice(7)) ? true : undefined, waitMs)) {
-      await stopServer();
-      check(false, `The app server for ${role} did not open its socket within ${waitMs / 1000} seconds; see ${join(stateDir(operator), `${role}-server.log`)}`, 4);
+    const closed = await clearEarlier(operator, role, thread, endpoint, options.closeStale === true, options.dryRun === true);
+    if (options.dryRun) {
+      results.push({ role, thread, cwd: first.cwd, server: [codex, 'app-server', ...args, '--listen', endpoint], window: [codex, '--remote', endpoint, 'resume', thread], ...(closed ? { would_close: closed } : {}), status: 'ready' });
+      continue;
     }
-    openWindow(codex, ['--remote', endpoint, 'resume', thread], plan.cwd, role);
-    const windowPid = await until(() => processesWith(['--remote', endpoint, 'resume', thread])[0], waitMs);
-    if (!windowPid) { await stopServer(); check(false, `The ${role} window did not start within ${waitMs / 1000} seconds; its server is stopped again`, 4); }
-    const worker = new Store(operator.path, role);
-    try { worker.use(operator.workspace); registerSession(worker, { provider: 'codex', external_id: thread, pid: windowPid, replace: true }); }
-    finally { worker.close(); }
-    writeState(operator, { role, thread, endpoint, server: serverId, window: { pid: windowPid!, identity: processIdentity(windowPid!) ?? '' }, started_at: new Date().toISOString() });
-    operator.event('watch', role, 'launched', { thread, server: serverId.pid, window: windowPid });
-    started.push(role);
-    results.push({ role, thread, server: serverId.pid, window: windowPid, status: 'started' });
+    // The role's launch lock, held from here until its record is written, keeps two launches apart; the watcher
+    // takes it next. An earlier watcher lets go of it once its window and server are gone.
+    const release = await until(() => { try { return acquireLaunchLock(operator, role); } catch { return undefined; } }, closed ? waitMs : 0) ?? acquireLaunchLock(operator, role);
+    try {
+      // Checked again under the lock: another launch may have started the role meanwhile.
+      await clearEarlier(operator, role, thread, endpoint, false);
+      // Closing an earlier window changes its registered session from running to stale, so plan again after it.
+      const plan = closed ? planned() : first;
+      check(plan.sessionId === thread, `${role}'s saved session changed while launching; run the command again`, 4);
+      check(plan.status !== 'already-running', `${role} has a registered running session not started by this command; close it first`, 4);
+      results.push(await startRole(operator, role, plan.cwd, thread, endpoint, codex, args, want, openWindow, waitMs));
+      started.push(role);
+    } finally { release(); }
   }
-  if (started.length) {
-    const start = options.startWatcher ?? ((list: string[]) => {
-      const log = openSync(join(stateDir(operator), 'watcher.log'), 'a', 0o600);
-      const cli = join(dirname(fileURLToPath(import.meta.url)), 'cli.js');
-      const child = spawn(process.execPath, [cli, 'watch-roles', ...list, '--db', operator.path, '--workspace', operator.workspace, '--as', operator.actor!],
-        { detached: true, stdio: ['ignore', log, log], env: { ...process.env, PATH: `${dirname(codex)}:${process.env.PATH ?? ''}` } });
-      child.unref(); closeSync(log);
-      return child.pid;
-    });
-    const watcher = start(started);
-    for (const row of results) if (row.status === 'started') row.watcher = watcher;
+  } finally {
+    // Every role started gets its watcher, also when a later role failed.
+    if (started.length) {
+      const watcher = (options.startWatcher ?? startWatcher(operator, codex))(started);
+      for (const row of results) if (row.status === 'started') row.watcher = watcher;
+    }
   }
   return results;
+}
+
+function startWatcher(operator: Store, codex: string) {
+  return (list: string[]) => {
+    const log = openSync(join(stateDir(operator), 'watcher.log'), 'a', 0o600);
+    const bin = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'sassato.js');
+    const child = spawn(process.execPath, [bin, 'watch-roles', ...list, '--db', operator.path, '--workspace', operator.workspace, '--as', operator.actor!],
+      { detached: true, stdio: ['ignore', log, log], env: { ...process.env, PATH: `${dirname(codex)}:${process.env.PATH ?? ''}` } });
+    child.on('error', () => {}); child.unref(); closeSync(log);
+    return child.pid;
+  };
+}
+
+/** Starts one role: settings check, hidden server, window, registration, record. Anything started is stopped again on failure. */
+async function startRole(operator: Store, role: string, cwd: string, thread: string, endpoint: string, codex: string, args: string[], want: Row,
+  openWindow: NonNullable<WatchedOptions['openWindow']>, waitMs: number): Promise<Row> {
+    await checkSettings(codex, args, want, cwd, waitMs);
+    const socket = endpoint.slice(7);
+    rmSync(socket, { force: true });
+    const logPath = join(stateDir(operator), `${role}-server.log`), log = openSync(logPath, 'a', 0o600);
+    const server = spawn(codex, ['app-server', ...args, '--listen', endpoint], { cwd, detached: true, stdio: ['ignore', log, log] });
+    server.on('error', () => {}); server.unref(); closeSync(log);
+    check(server.pid, `Codex app server for ${role} could not start; see ${logPath}`, 4);
+    const serverId = { pid: server.pid!, identity: processIdentity(server.pid!) ?? '' };
+    let windowId: { pid: number; identity: string } | undefined;
+    try {
+      check(await until(() => existsSync(socket) && processesWith(['--listen', endpoint]).includes(serverId.pid) ? true : undefined, waitMs),
+        `The app server for ${role} did not open its socket within ${waitMs / 1000} seconds; see ${logPath}`, 4);
+      openWindow(codex, ['--remote', endpoint, 'resume', thread], cwd, role);
+      // A wrapper (env, node) is found before it runs Codex itself; registration needs Codex, so wait for it.
+      const windowPid = await until(() => processesWith(['--remote', endpoint, 'resume', thread]).find(pid => providerProcess(pid, 'codex')), waitMs);
+      check(windowPid, `The ${role} window did not start within ${waitMs / 1000} seconds`, 4);
+      windowId = { pid: windowPid!, identity: processIdentity(windowPid!) ?? '' };
+      const worker = new Store(operator.path, role);
+      try { worker.use(operator.workspace); registerSession(worker, { provider: 'codex', external_id: thread, pid: windowPid, replace: true }); }
+      finally { worker.close(); }
+      writeState(operator, { role, thread, endpoint, server: serverId, window: windowId, started_at: new Date().toISOString() });
+    } catch (error) {
+      for (const p of [windowId, serverId]) if (p) await stopProcess(p).catch(() => {});
+      throw error;
+    }
+    operator.event('watch', role, 'launched', { thread, server: serverId.pid, window: windowId.pid });
+    return { role, thread, server: serverId.pid, window: windowId.pid, status: 'started' };
 }
 
 /** The one background process: watches every role this command started, each with its own enrollment. */
