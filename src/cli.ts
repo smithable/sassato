@@ -13,6 +13,7 @@ import * as c from './coordination.js';
 import * as fb from './feedback.js';
 import * as m from './migration.js';
 import * as l from './launch.js';
+import * as lw from './launch-watched.js';
 import { retitleImportedTasks } from './retitle.js';
 import { setup } from './setup.js';
 import { promptSetup } from './setup-prompt.js';
@@ -104,7 +105,7 @@ Read:       context [--brief] [--since EVENT_CURSOR] [--line-length N] | status 
 Migration:  import --backlog FILE --wip FILE --actions DIR --sessions FILE
             --dry-run (preview), then same paths --confirm DIGEST [--repair]
             export NEW_DIRECTORY
-Launch:     launch ROLE [--fresh|--resume] [--dry-run] [--no-prompt] [--watched]
+Launch:     launch ROLE [--fresh|--resume] [--dry-run] [--no-prompt]; launch --watched ROLE...|--all [--close-stale] [--dry-run] (as the human)
             [--terminal native|windows-terminal] [--new-window] [--all] | launch-unlock ROLE
             launch-watch ROLE --remote unix:///PATH --session-id UUID | watch-status ROLE | watch-close ROLE --epoch N
 Maintenance: migrate | doctor | backup NEW_FILE --as HUMAN | restore BACKUP --db NEW_FILE
@@ -117,7 +118,7 @@ Lists default to bounded results; --limit N. Context never consumes inbox receip
 Exit codes: 0 success/no matches; 1 storage/runtime; 2 input; 3 identity/access; 4 conflict; 5 mail-wait timeout.
 `;
 export const strings = ['reviewer','feedback-closers','author','fact','dropped','spare-work','spare-providers','new','asked','remote','epoch','role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes','digest-skip','ack','autocompact','advisor','wake-mode','speed','wake-roles','urgency','reason','scored-receipt','idle-receipt'];
-export const booleans = ['watched','spare','no-spare','pending','untouched','unread','attended','now','json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','wait','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
+export const booleans = ['watched','close-stale','spare','no-spare','pending','untouched','unread','attended','now','json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','wait','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
 export const globalFlags = ['db','workspace','as','json','help'];
 export const allowed: Record<string,string[]> = {
   'index build':['repo','cache'],'index update':['repo','cache','diff'],'index find':['repo','cache','limit'],'index show':['repo','cache','limit'],
@@ -132,7 +133,7 @@ export const allowed: Record<string,string[]> = {
   'supervise attended':['attended','role'],'supervise enroll':['role','file'],'supervise attach':['role'],'supervise assignment':[],'supervise reconcile':['session-id'],'supervise ready':['file','expect'],'supervise status':[],'supervise ping':[],'supervise ack':['generation'],
   'checkout register':['dir'],'checkout list':[],'checkout show':[],'checkout bind':['dir','task','provider','session-id','mode'],'checkout resolve':['task'],'checkout release':[],'brief save':['file','expect'],'brief show':[],
   'checkpoint show':[], 'checkpoint save':['current','next','notes','expect','evidence'], 'progress show':[], 'progress save':['cursor','expect','scored-receipt','idle-receipt','stop-file'],
-  import:['backlog','wip','actions','sessions','dry-run','confirm','repair'],export:[],launch:['fresh','resume','dry-run','no-prompt','terminal','distro','window','stop-file','all','new-window','watched'],'launch-watch':['remote','session-id'],'watch-status':[],'watch-close':['epoch'],'launch-unlock':[],migrate:[],doctor:[],backup:[],restore:[],machine:[]
+  import:['backlog','wip','actions','sessions','dry-run','confirm','repair'],export:[],launch:['fresh','resume','dry-run','no-prompt','terminal','distro','window','stop-file','all','new-window','watched','close-stale'],'launch-watch':['remote','session-id'],'watch-roles':[],'watch-status':[],'watch-close':['epoch'],'launch-unlock':[],migrate:[],doctor:[],backup:[],restore:[],machine:[]
 };
 function checkpointEvidence(path: string | undefined): unknown {
   if (path===undefined) return undefined;
@@ -508,7 +509,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'search': result=a.search(s,rest('query'),{type:str('type'),role:str('owner'),status:str('status'),since:str('since'),limit:num('limit'),phrase:bool('phrase'),prefix:bool('prefix')});break;
         case 'import': empty();{const input={backlog:str('backlog'),wip:str('wip'),actions:str('actions'),sessions:str('sessions'),repair:bool('repair')};check(bool('dry-run')!==!!str('confirm'),'Use --dry-run to preview or --confirm DIGEST to apply');result=bool('dry-run')?m.previewImport(s,input):m.applyImport(s,input,need('confirm'));}break;
         case 'export': {const path=arg('new directory');empty();result=m.exportMarkdown(s,path);break;}
-        case 'launch': {jsonLaunch();result=await l.launch(s,p.splice(0),launchOptions);break;}
+        case 'launch': {
+          if(bool('watched')){
+            check(!bool('fresh')&&!str('terminal')&&!bool('new-window')&&!str('window'),'--watched resumes each role in its own Windows Terminal tab; drop --fresh, --terminal, --window and --new-window');
+            result=await lw.launchWatched(s,p.splice(0),{all:bool('all'),closeStale:bool('close-stale'),dryRun:bool('dry-run'),distro:str('distro')});break;
+          }
+          check(!bool('close-stale'),'--close-stale applies to --watched only');
+          jsonLaunch();result=await l.launch(s,p.splice(0),launchOptions);break;
+        }
+        case 'watch-roles': result=await lw.watchRoles(s,p.splice(0));break;
         case 'launch-watch': {
           const role=arg('role');empty();
           result=await launchWatch(s,role,need('remote'),need('session-id'));
