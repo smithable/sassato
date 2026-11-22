@@ -85,7 +85,7 @@ Stats:      stats [--since DATE] [--role ROLE] (read-only: mail unread times, ur
 Rules:      rule propose KEY (--file PATH | TEXT) [--scope all|ROLE] [--kind always|step] [--for HUMAN]
             (asks the human; the answer 1 approve or 2 reject decides; relays: workspace set --rule-relays)
             rule retire KEY REASON [--for HUMAN] | rule withdraw P1 REASON (its proposer or a human)
-            rule get KEY|P1 | rule list [--for ROLE] [--pending] | rule diff SET_VERSION | rule export
+            rule get KEY|P1 | rule list [--for ROLE] [--pending] | rule diff SET_VERSION | rule export [--force --as HUMAN]
 Feedback:   feedback add workflow|tokens|untested|sampleusers|sassato TEXT [--re T1] (one line; wakes nobody)
             feedback list [--kind K] [--author ROLE] [--all] [--limit N] [--after K1]
             feedback close K1 --task T1 | --fact KEY | --dropped REASON (a human, or a role in --feedback-closers)
@@ -139,7 +139,7 @@ export const allowed: Record<string,string[]> = {
   add:['title','body','for','owner','priority','human-only','review-required','spare'],tasks:['status','owner','for','available','limit','after','spare'],show:['limit','before-event'],
   take:['hours'],renew:['hours'],note:[],update:['expect','title','body','priority','for','human-only','agent-allowed','review-required','no-review','spare','no-spare'],handoff:['brief-file','expect'],release:[],submit:['reviewer'],review:['approve','reject','note','expect'],done:['ref'],drop:[],reopen:[],after:[],unafter:[],block:['kind','waits-on','on'],blockers:['task','chain','limit','all'],resolve:[],
   'ask-human':['for','options','recommend','command','new'],answer:['close','relayed-by','asked','on','new'],withdraw:[],humans:['for','limit','untouched'],send:['re','urgent','needs-reply','now','urgency','reason'],wait:['urgent','timeout','stop-file','since','idle-minutes','settle','settle-max'],inbox:['peek','state','limit','unread'],wake:['pending','since','ack','timeout','stop-file','idle-minutes','settle','settle-max','waiting-for','expect-minutes'],'idle-reason':[],outbox:['limit'],sent:['limit'],retitle:['owner','apply'],ack:[],
-  'fact set':['source','checked-at','expect','answers'],'feedback add':['re'],'feedback list':['kind','author','all','limit','after'],'feedback close':['task','fact','dropped'],'fact get':[],'fact history':[],'rule propose':['file','scope','kind','for'],'rule retire':['for'],'rule withdraw':[],'rule get':[],'rule list':['for','pending'],'rule diff':[],'rule export':[],'codex accept':['replace'],'codex versions':[],facts:['limit'],
+  'fact set':['source','checked-at','expect','answers'],'feedback add':['re'],'feedback list':['kind','author','all','limit','after'],'feedback close':['task','fact','dropped'],'fact get':[],'fact history':[],'rule propose':['file','scope','kind','for'],'rule retire':['for'],'rule withdraw':[],'rule get':[],'rule list':['for','pending'],'rule diff':[],'rule export':['force'],'codex accept':['replace'],'codex versions':[],facts:['limit'],
   'wip show':[],'wip set':['current','next','notes','expect'],sessions:[], 'session register':['provider','session-id','pid','replace'],'session heartbeat':['session-id'],'session end':['session-id'],usage:['until'],
   stop:['all','timeout','no-wait','force'],'stop-status':['quiet','stop-file'],stopped:[],'resume-work':['all'],
   context:['brief','since','limit','line-length'],status:['line-length'],'job run':['kind','wait','no-wait','job-version','load','mem'],'job list':[],'job stats':[],stats:['since','role','day'],search:['type','owner','status','since','limit','phrase','prefix'],
@@ -464,7 +464,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'rule get': {const ref=arg('key or proposal');empty();result=rules.getRule(s,ref);break;}
         case 'rule list': empty();result=rules.listRules(s,{forRole:str('for'),pending:bool('pending')});break;
         case 'rule diff': {const since=arg('set version');empty();result=rules.diffRules(s,since);break;}
-        case 'rule export': empty();result=s.tx(()=>rules.exportRules(s));check(result,'A database in memory has no export');break;
+        case 'rule export': empty();result=s.tx(()=>{if(!bool('force'))return rules.exportRules(s);s.requireHuman();const done=rules.exportRules(s,{allowOlder:true});if(done)s.event('rule-set',s.workspace,'export-forced',{set_version:done.set_version});return done;});check(result,'A database in memory has no export');break;
         case 'facts': empty();result=c.facts(s,{limit:num('limit')});break;
         case 'wip show': {const role=p.shift();empty();result=c.getWip(s,role);break;}
         case 'wip set': empty();{const warnings=humanWaits(s,{current:str('current'),next:str('next'),notes:str('notes')});result=withWarnings(c.setWip(s,{current:str('current'),next:str('next'),notes:str('notes'),expected_version:num('expect')}),warnings);}break;

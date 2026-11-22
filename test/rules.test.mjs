@@ -66,6 +66,11 @@ test('an export never replaces a newer set, nor another set at the same version'
   try { assert.throws(() => old.tx(() => exportRules(old)), code(4)); } finally { old.close(); }
   assert.equal(JSON.parse(readFileSync(rulesExportPath(path, 'team'), 'utf8')).set_version, 1);
   const cliCopy = cli(copy, 'rule', 'export', '--as', 'c'); assert.equal(cliCopy.status, 4, cliCopy.stderr);
+  s.close(); writeFileSync(rulesExportPath(path, 'team'), 'not json');
+  assert.equal(cli(path, 'rule', 'export', '--as', 'c').status, 4, 'an unreadable export is not replaced silently');
+  assert.notEqual(cli(path, 'rule', 'export', '--force', '--as', 'c').status, 0, 'only a human forces');
+  assert.equal(cli(path, 'rule', 'export', '--force', '--as', 'human').status, 0);
+  assert.equal(JSON.parse(readFileSync(rulesExportPath(path, 'team'), 'utf8')).set_version, 1);
 });
 
 test('an answer other than approve or reject is refused; reject records it and changes no rule', t => {
@@ -188,5 +193,9 @@ test('a restore counts every export: a workspace the backup lacks, an unreadable
   await assert.rejects(restoreDatabase(backup, join(dir, 'c.db')), code(4));
   writeFileSync(exportPath, kept);
   assert.equal((await restoreDatabase(path, join(dir, 'd.db'))).older_rules_accepted, undefined, 'a current copy restores');
+  writeFileSync(rulesExportPath(path, 'other'), JSON.stringify({ set_version: 1, digest: 'x' }));
+  await restoreDatabase(backup, join(dir, 'e.db'), { force: true, actor: 'human' });
+  assert.equal(existsSync(rulesExportPath(path, 'other')), false, 'a forced restore drops the export of a workspace it lacks');
+  assert.equal(JSON.parse(readFileSync(exportPath, 'utf8')).set_version, 0);
   for (const name of ['a.db', 'b.db', 'c.db']) assert.equal(existsSync(join(dir, name)), false);
 });

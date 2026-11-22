@@ -182,8 +182,10 @@ export function exportRules(s: Store, options: { allowOlder?: boolean } = {}): R
   if (s.path === ':memory:') return null;
   const set = ruleSet(s), path = rulesExportPath(s.path, s.workspace), body = JSON.stringify({ ...set, exported_at: now() }, null, 2) + '\n';
   const existing = readExport(s.path, s.workspace);
+  const repair = 'if this database is the live one, a human rewrites the export from it: rule export --force --as HUMAN';
+  if (!options.allowOlder && existing === 'unreadable') check(false, `The rule export cannot be read; ${repair}`, 4);
   if (!options.allowOlder && existing && existing !== 'unreadable')
-    check(existing.set_version < set.set_version || existing.set_version === set.set_version && existing.digest === set.digest, `The rule export holds set version ${existing.set_version}, not older than this database's ${set.set_version}; is this an older copy of the database?`, 4);
+    check(existing.set_version < set.set_version || existing.set_version === set.set_version && existing.digest === set.digest, `The rule export holds set version ${existing.set_version}, not older than this database's ${set.set_version}; is this an older copy of the database? Otherwise ${repair}`, 4);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.tmp`, fd = openSync(temporary, 'w', 0o600);
   try { writeSync(fd, body); fsyncSync(fd); } finally { closeSync(fd); }

@@ -13,7 +13,7 @@ import { AppError, check, id, integer, name, now, safe, text } from './errors.js
 import { normalizeOption, ROLE_OPTION_KEYS, validateRoleOptions } from './role-options.js';
 import { loadConfig, workingDirectory } from './config.js';
 import { validateSettings } from './workspace-settings.js';
-import { EMPTY_SET_DIGEST, exportRules, readExport, ruleSet } from './rules.js';
+import { EMPTY_SET_DIGEST, exportRules, readExport, ruleSet, rulesExportPath } from './rules.js';
 
 export function initWorkspace(s: Store, workspace: string, configPath?: string | Row, humans?: string[]): Row {
   name(workspace);
@@ -149,7 +149,7 @@ export async function backupDatabase(s: Store, output: string): Promise<Row> {
 // A restore whose rules differ from the export beside its destination (T1276) is refused: every export
 // file counts, a workspace the backup lacks has the empty set, and an export that cannot be read or holds
 // another set at the same version counts as newer. A human may accept the restored set with force; the
-// decision is recorded in each workspace the backup holds, and the export is rewritten after the restore.
+// decision is recorded in each workspace the backup holds, and the exports are rewritten before the restore.
 // The check is against accidents (a restore of the wrong file), not an authority: whoever runs restore
 // can already copy the files.
 function olderRules(databasePath: string, beside: string, options: { force?: boolean; actor?: string }): Row[] {
@@ -171,9 +171,12 @@ function olderRules(databasePath: string, beside: string, options: { force?: boo
   const list = older.map(w => `${w.workspace} (set version ${w.set_version}, export ${w.export_set_version})`).join(', ');
   check(options.force, `The restored rules differ from their export and are not newer: ${list}. A human decides: restore again with --force --as HUMAN to accept them`, 4);
   check(options.actor, 'Accepting older rules needs --as HUMAN', 3);
-  for (const w of older.filter(w => w.held)) {
+  // Accepted: recorded, and each export rewritten from the restored rules before the destination appears;
+  // a workspace the backup lacks loses its export.
+  for (const w of older) {
+    if (!w.held) { unlinkSync(rulesExportPath(beside, w.workspace)); continue; }
     const s = new Store(databasePath, options.actor);
-    try { s.use(w.workspace); s.tx(() => { s.requireHuman(); s.event('rule-set', w.workspace, 'restored-older', { set_version: w.set_version, export_set_version: w.export_set_version }); }); } finally { s.close(); }
+    try { s.use(w.workspace); s.tx(() => { s.requireHuman(); s.event('rule-set', w.workspace, 'restored-older', { set_version: w.set_version, export_set_version: w.export_set_version }); exportRules(s, { allowOlder: true }); }); } finally { s.close(); }
   }
   return older;
 }
@@ -197,10 +200,6 @@ export async function restoreDatabase(source: string, target: string, options: {
       older = olderRules(building, dest, options);
       linkSync(building,dest);
     } finally {unlinkSync(building);}
-    for (const w of older.filter(w => w.held)) {
-      const s = new Store(dest, options.actor);
-      try { s.use(w.workspace); s.tx(() => exportRules(s, { allowOlder: true })); } finally { s.close(); }
-    }
     return {path:dest,scope:'all workspaces',schema:SCHEMA_VERSION,source_schema:sourceVersion,...(older.length?{older_rules_accepted:older}:{})};
   } finally {db.close();}
 }
