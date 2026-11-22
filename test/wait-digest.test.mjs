@@ -27,8 +27,10 @@ test('ordinary mail alone opens a digest, and the cursor never passes it unseen 
   const f=fixture(t),since=f.cursor(),ordinary=mail(f,'Ready for your read: PR 7');
   const result=await wait(f,since);assert.equal(result.reason,'digest');
   assert.deepEqual(result.digest.entries.map(e=>[e.id,e.kind]),[[ordinary.id,'mail']]);assert.equal(result.cursor,f.cursor());
+  assert.equal((await wait(f,result.cursor,{timeout:1})).reason,'timeout'); // re-armed, it does not wake again
+  f.reader.actor='a';try{assert.equal((await wait(f,since,{timeout:1})).reason,'timeout');}finally{f.reader.actor='b';} // the sender is not woken
   as(f.s,'human',()=>setWorkspaceSettings(f.s,{digest_skip:{b:['mail']}}));
-  const after=f.cursor();mail(f,'Skipped by choice');const skipped=await wait(f,after,{timeout:1});assert.equal(skipped.reason,'timeout');
+  const after=f.cursor();mail(f,'Skipped by choice');const skipped=await wait(f,after,{timeout:1});assert.equal(skipped.reason,'timeout');assert.equal(skipped.cursor,f.cursor());
 });
 test('message aliases are rejected before atomic acknowledgement and canonical now lookup is exact',t=>{
   const f=fixture(t),one=mail(f,'Immediate',{now:true}),before=f.cursor();
