@@ -80,14 +80,16 @@ test('a version that passed is skipped unless forced; only a human runs a round;
   assert.equal(none.status,'failed');assert.equal(none.step,'setup');assert.match(String(none.reason),/No Codex role names a model; give --model/);
 });
 
-test('a round already running on the version is not started twice; a dead holder\'s claim is taken over',async t=>{
+test('a round already running on the version is not started twice; the lock is let go when the round ends',async t=>{
   const f=fixture(t,'fail');
   const {launchDirectory}=await import('../dist/launch-admission.js');
-  const folder=join(launchDirectory(f.real.path,f.real.workspace),'codex-round'),claim=join(folder,'0.171.0.claim');
-  mkdirSync(folder,{recursive:true});writeFileSync(claim,String(process.ppid));
+  const {DatabaseSync}=await import('node:sqlite');
+  const folder=join(launchDirectory(f.real.path,f.real.workspace),'codex-round');mkdirSync(folder,{recursive:true});
+  const other=new DatabaseSync(join(folder,'0.171.0.lock'));other.exec('BEGIN EXCLUSIVE');
   assert.deepEqual(await codexRound(f.real,{timing}),{version:'0.171.0',status:'skipped',reason:'Another round on this version is running'});
-  writeFileSync(claim,'999999999');
-  assert.equal((await codexRound(f.real,{timing})).status,'failed');assert.equal(existsSync(claim),false,'the claim is released');
+  other.exec('ROLLBACK');other.close();
+  assert.equal((await codexRound(f.real,{timing})).status,'failed');
+  assert.equal((await codexRound(f.real,{timing})).status,'failed','the first round let the lock go');
 });
 
 test('the round\'s processes are those with its database, their children and their sessions; a process only working in its folder is not one',async t=>{

@@ -3,7 +3,8 @@
 // launch --watched starts it after the real roles, detached, so a launch is never slower. A pass is recorded in the
 // real database and later launches skip the round; a fail mails the escalation role and records no pass.
 import { spawn, spawnSync } from 'node:child_process';
-import { closeSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -73,27 +74,16 @@ export async function codexRound(real: Store, options: RoundOptions = {}): Promi
   } finally { release(); }
 }
 
-/** One round per version at a time on the machine: a claim file holding the pid, made whole and then linked into
- * place (so it is never seen empty). A dead holder's claim is moved aside first and checked, so two rounds taking
- * over the same dead claim cannot both win. Returns the release, or null while another round holds it. */
+/** One round per version at a time on the machine: an exclusive transaction on a small lock database beside the round
+ * folders. SQLite's lock is the kernel's, so it is let go when the holder ends, however it ends, and no stale claim is
+ * ever taken over by hand. Returns the release, or null while another round holds it. */
 function claimRound(real: Store, version: string): (() => void) | null {
   const folder = join(launchDirectory(real.path, real.workspace), 'codex-round');
   mkdirSync(folder, { recursive: true, mode: 0o700 });
-  const path = join(folder, `${version}.claim`), mine = String(process.pid), draft = `${path}.${mine}`, aside = `${path}.stale-${mine}`;
-  const holder = (file: string) => { try { return Number(readFileSync(file, 'utf8')); } catch { return 0; } };
-  writeFileSync(draft, mine, { mode: 0o600 });
-  try {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try { linkSync(draft, path); return () => { if (holder(path) === process.pid) rmSync(path, { force: true }); }; }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
-      if (alive(holder(path))) return null;
-      try { renameSync(path, aside); } catch { continue; }
-      // Another round may have taken the claim over between the check and the move: then it goes back.
-      if (alive(holder(aside))) { try { linkSync(aside, path); } catch { /* a third claim is in place */ } rmSync(aside, { force: true }); return null; }
-      rmSync(aside, { force: true });
-    }
-    return null;
-  } finally { rmSync(draft, { force: true }); }
+  const lock = new DatabaseSync(join(folder, `${version}.lock`));
+  try { lock.exec('PRAGMA busy_timeout=0; BEGIN EXCLUSIVE'); }
+  catch (error) { lock.close(); if (/locked|busy/i.test(String((error as Error).message))) return null; throw error; }
+  return () => { try { lock.exec('ROLLBACK'); } catch { /* ended */ } lock.close(); };
 }
 
 async function runRound(real: Store, codex: string, version: string, options: RoundOptions, timing: RoundTiming): Promise<Row> {
@@ -103,16 +93,20 @@ async function runRound(real: Store, codex: string, version: string, options: Ro
   const dir = join(launchDirectory(real.path, real.workspace), 'codex-round', `${version}-${stamp}`), cwd = join(dir, 'cwd'), tools = join(dir, 'bin');
   const db = join(cwd, 'round.db');
   let scratch: Store;
+  let made = false;
   try {
-    for (const d of [dir, cwd, tools]) mkdirSync(d, { recursive: true, mode: 0o700 });
+    mkdirSync(dir, { recursive: true, mode: 0o700 }); made = true;
+    for (const d of [cwd, tools]) mkdirSync(d, { recursive: true, mode: 0o700 });
     // The probe runs this build's sassato on the scratch database only.
     symlinkSync(bin, join(tools, 'sas')); symlinkSync(bin, join(tools, 'sassato'));
     scratch = new Store(db, 'human', { create: true });
-  } catch (error) { return { version, model, dir, status: 'failed', step: 'setup', reason: error instanceof Error ? error.message : String(error) }; }
+  } catch (error) { return { version, model, ...made ? { dir } : {}, status: 'failed', step: 'setup', reason: error instanceof Error ? error.message : String(error) }; }
   // The round runs alone in its own process (launch --watched starts one; codex round is one), so the scratch identity
   // is set in this process's environment, which the server, the hidden terminal and the watcher inherit.
   const saved = { db: process.env.SASSATO_DB, workspace: process.env.SASSATO_WORKSPACE, role: process.env.SASSATO_ROLE, path: process.env.PATH };
   let step = 'setup', result: Row = { version, model, dir, status: 'failed' };
+  // The sessions of the round's processes are noted while they run, so the sweep finds an orphan whose parent ended.
+  const sessions = new Set<number>(), note = () => { roundProcesses(db, sessions); };
   try {
     initWorkspace(scratch, WORKSPACE, { roles: [{ name: 'human', kind: 'human' }, { name: PROBE, provider: 'codex', working_dir: cwd, model, sandbox_mode: 'workspace-write', approval_policy: 'never' }] });
     scratch.use(WORKSPACE);
@@ -137,6 +131,7 @@ async function runRound(real: Store, codex: string, version: string, options: Ro
     check(started[0]?.status === 'started', `The probe did not start: ${started[0]?.warning ?? JSON.stringify(started[0])}`, 4);
     check(!started[0].warning, String(started[0].warning), 4);
     const watcher = Number(started[0].watcher);
+    note();
 
     const ask = (body: string) => Number(String(send(scratch, [PROBE], body).id).replace(/^M/, ''));
     const doneAt = (message: number) => { const row = scratch.get("SELECT done_at FROM receipts WHERE workspace_id=? AND recipient=? AND message_id=? AND state='done'", scratch.ws, PROBE, message); return row ? Date.parse(String(row.done_at)) : undefined; };
@@ -154,6 +149,7 @@ async function runRound(real: Store, codex: string, version: string, options: Ro
     check(acked !== undefined, `M${second} was not acknowledged within ${timing.longMs / 1000} seconds`, 4);
     check(acked! - askedAt >= timing.sleepSeconds * 1000 - 1000, `M${second} was acknowledged after ${Math.round((acked! - askedAt) / 1000)} seconds, before the ${timing.sleepSeconds} second command could end`, 4);
 
+    note();
     step = 'stop';
     const stopped = await stop(scratch, [PROBE], { timeout: Math.ceil(timing.stopMs / 1000) });
     check(stopped.complete, `The probe did not report stopped within ${timing.stopMs / 1000} seconds`, 4);
@@ -161,6 +157,7 @@ async function runRound(real: Store, codex: string, version: string, options: Ro
     check(await until(() => alive(watcher) ? undefined : true, 30_000), 'The watcher did not exit after the window and server closed', 4);
     result = { version, model, dir, status: 'passed', thread };
   } catch (error) {
+    note();
     result = { ...result, step, reason: error instanceof Error ? error.message : String(error) };
   } finally {
     for (const [key, value] of [['SASSATO_DB', saved.db], ['SASSATO_WORKSPACE', saved.workspace], ['SASSATO_ROLE', saved.role], ['PATH', saved.path]] as const)
@@ -168,7 +165,7 @@ async function runRound(real: Store, codex: string, version: string, options: Ro
     await closeRecorded(scratch, PROBE).catch(() => false);
     try { scratch.close(); } catch { /* recorded below if anything is left */ }
   }
-  const left = await sweep(db), problems = [
+  const left = await sweep(db, sessions), problems = [
     ...left.own.length ? [`processes ${left.own.join(', ')} did not stop`] : [],
     ...left.shared.length ? [`Codex's shared daemon ${left.shared.join(', ')} was started by the round and carries its database; it was left running for the real sessions, restart it`] : [],
   ];
@@ -193,19 +190,21 @@ export function roundProcesses(db: string, sessions = new Set<number>()): { own:
     try { if (readFileSync(`/proc/${pid}/cmdline`, 'utf8').includes('/app-server-daemon/')) { shared.add(pid); continue; } } catch { continue; }
     try { if (readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0').includes(marker)) found.add(pid); } catch { /* gone or not ours */ }
   }
+  // Sessions are seeded only from the processes carrying the database, never from a descendant found through them.
+  for (const pid of found) { const sid = session.get(pid); if (sid) sessions.add(sid); }
   const sharedSessions = new Set([...shared].map(pid => session.get(pid)));
+  const ours = (sid: number | undefined) => sid !== undefined && sid !== mySession && !sharedSessions.has(sid) && sessions.has(sid);
   for (let grew = true; grew;) {
     grew = false;
-    for (const pid of found) { const sid = session.get(pid); if (sid && sid !== mySession && !sharedSessions.has(sid)) sessions.add(sid); }
-    for (const [pid, ppid] of parent) if (!found.has(pid) && !shared.has(pid) && (found.has(ppid) || sessions.has(session.get(pid)!))) { found.add(pid); grew = true; }
+    for (const [pid, ppid] of parent) if (!found.has(pid) && !shared.has(pid) && (found.has(ppid) || ours(session.get(pid)))) { found.add(pid); grew = true; }
   }
   const sharedMine = [...shared].filter(pid => { try { return readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0').includes(marker); } catch { return false; } });
   return { own: [...found], shared: sharedMine };
 }
 
 /** Stops the round's processes, so a failure at any step leaves nothing behind; returns what is still left. */
-async function sweep(db: string): Promise<{ own: number[]; shared: number[] }> {
-  const sessions = new Set<number>(), own = () => roundProcesses(db, sessions).own;
+async function sweep(db: string, sessions: Set<number>): Promise<{ own: number[]; shared: number[] }> {
+  const own = () => roundProcesses(db, sessions).own;
   const signal = (name: NodeJS.Signals) => { for (const pid of own()) try { process.kill(pid, name); } catch { /* gone */ } };
   signal('SIGTERM');
   if (!await until(() => own().length ? undefined : true, 10_000)) { signal('SIGKILL'); await until(() => own().length ? undefined : true, 5_000); }

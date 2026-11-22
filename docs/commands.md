@@ -514,7 +514,7 @@ rounds on that version are skipped unless `--force`. A failure is the event `cod
 is kept, and the role in `nudge_escalate` (else the default human) gets an urgent mail naming the step and the folder.
 Afterwards every process of the round is stopped: those started with its database, their children and the sessions
 they were seen in (never the caller's own). Codex's shared daemon is never stopped; if the round started it, the round fails and
-says so. One round per version runs at a time (a claim file beside the round folders, held until the result is recorded); a failure before the probe
+says so. One round per version runs at a time (an exclusive lock on `codex-round/VERSION.lock`, which the system lets go when the round ends, held until the result is recorded); a failure before the probe
 exists (no model, no Codex) is recorded and mailed the same way. The round never touches the real roles.
 
 ## Output contract
