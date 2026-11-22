@@ -545,4 +545,8 @@ test('a Claude role\'s advisor model is passed by launch after --model; off clea
   assert.equal(setRoleAdvisor(f.s,'a','off'),null);
   assert(!planLaunch(f.s,['a'],{fresh:true})[0].args.includes('--advisor'),'off: nothing passed again');
   assert.equal(setRoleAdvisor(f.s,'c','off'),null,'off is fine for any role');
+  // A stored value that is not a model name (written by an older build or by hand) is refused at launch.
+  const saved=workspaceSettings(f.s);f.s.event('workspace','test','settings-updated',{settings:{...saved,advisor:{a:'-x'}}});
+  assert.equal(roleAdvisor(workspaceSettings(f.s),'a'),'-x');
+  assert.throws(()=>planLaunch(f.s,['a'],{fresh:true}),/not a model name/);
 });

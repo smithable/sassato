@@ -363,6 +363,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           if(compactValue!==undefined)check(compactValue==='auto'||(/^[0-9]+$/.test(compactValue)&&Number(compactValue)>=100_000&&Number(compactValue)<=10_000_000),'--autocompact takes a whole number of tokens from 100000 to 10000000, or auto');
           const advisorValue=str('advisor');
           if(advisorValue!==undefined)check(advisorValue==='off'||validAdvisor(advisorValue),'--advisor takes a model name such as opus or claude-opus-5-5, or off');
+          // Refused before the role is saved, so --provider codex --advisor opus changes nothing (T1224).
+          if(advisorValue!==undefined&&advisorValue!=='off')check((str('provider')??s.get('SELECT provider FROM roles WHERE workspace_id=? AND name=?',s.ws,role)?.provider)==='claude',`advisor is for Claude roles; ${role} would not be one`);
           result=c.setRole(s,role,{provider:str('provider'),model:str('model'),reasoning_effort:str('effort'),permission_mode:str('permission-mode'),sandbox_mode:str('sandbox'),approval_policy:str('approval'),working_dir:str('dir'),kind:str('kind') as 'agent'|'human'|undefined});
           if(compactValue!==undefined)result={...(result as Row),autocompact:setRoleAutocompact(s,role,compactValue)};
           if(advisorValue!==undefined)result={...(result as Row),advisor:setRoleAdvisor(s,role,advisorValue)};

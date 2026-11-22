@@ -779,7 +779,7 @@ sas role set builder --advisor opus --as alice   # launch passes: claude --model
 sas role set builder --advisor off --as alice    # no advisor again
 ```
 
-A human sets it. It applies to Claude roles only (refused for a Codex role) and takes a model name such as
+A human sets it. It applies to Claude roles only (setting one for a Codex role is refused, before anything is saved; `off` works for any role) and takes a model name such as
 `opus` or `claude-opus-5-5`, never one starting with a dash. `sas roles` shows it as `advisor` (null when
 unset). Like the auto-compact window, it is kept in the workspace settings, so it needs no schema change, and
 an entry for a role that stops being a Claude role is dropped. It is a flag per role rather than `/advisor` in
