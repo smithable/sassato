@@ -51,6 +51,8 @@ test('stats reports unread mail, late urgent mail, mail a cursor passed unread, 
   assert.deepEqual(onlyC.mail_unread.by_role.map(row=>row.role),['c']);
   assert.equal(onlyC.urgent_unacknowledged.count,0);
   assert.equal(stats(s,{since:'2999-01-01'}).mail_unread.by_role.length,0);
+  assert.match(formatStats(stats(s,{since:'2026-11-22T14:30:00Z'})),/^Stats since 2026-11-22 14:30 UTC\./);
+  assert.match(formatStats(stats(s,{since:'2026-11-22'})),/^Stats since 2026-11-22\./);
 });
 
 test('stats refuses a since that is not a date and a role that does not exist',t=>{

@@ -17,10 +17,12 @@ const NAMED = 5;
 type Wait = { minutes: number; open: boolean };
 const classOf = (m: Row): 'now' | 'urgent' | 'needs-reply' | 'ordinary' =>
   m.immediate ? 'now' : m.urgent ? 'urgent' : m.reply ? 'needs-reply' : 'ordinary';
-const minutes = (from: string | number, to: string | number) => Math.max(0, Math.round((new Date(to).getTime() - new Date(from).getTime()) / MINUTE));
+const elapsed = (from: string | number, to: string | number) => Math.max(0, new Date(to).getTime() - new Date(from).getTime());
+const minutes = (from: string | number, to: string | number) => Math.round(elapsed(from, to) / MINUTE);
 function summary(waits: Wait[]) {
   const sorted = waits.map(w => w.minutes).sort((a, b) => a - b);
-  const median = sorted.length ? sorted[Math.floor((sorted.length - 1) / 2)] : null;
+  const mid = sorted.length >> 1;
+  const median = !sorted.length ? null : sorted.length % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
   return { count: waits.length, open: waits.filter(w => w.open).length, median_minutes: median, longest_minutes: sorted.at(-1) ?? null };
 }
 
@@ -51,7 +53,7 @@ export function stats(s: Store, options: StatsOptions = {}): Row {
     }));
     const longestUnread = unread.sort((a, b) => b.minutes - a.minutes).slice(0, NAMED);
 
-    const urgentLate = mail.filter(m => (m.urgent || m.immediate) && minutes(m.created_at, m.done_at ?? now) > URGENT_ACK_MINUTES)
+    const urgentLate = mail.filter(m => (m.urgent || m.immediate) && elapsed(m.created_at, m.done_at ?? now) > URGENT_ACK_MINUTES * MINUTE)
       .map(m => ({ message: `M${m.id}`, to: m.recipient, minutes: minutes(m.created_at, m.done_at ?? now), open: m.done_at === null }))
       .sort((a, b) => b.minutes - a.minutes);
 
@@ -59,16 +61,20 @@ export function stats(s: Store, options: StatsOptions = {}): Row {
     // 30 minutes or more after. Which mail a digest listed is not stored, so listed-but-ignored mail
     // shows here too.
     const saves = s.all(`SELECT entity_id AS role, created_at, json_extract(detail,'$.cursor') AS cursor FROM events
-      WHERE workspace_id=? AND entity='notification-progress' AND action='saved' ORDER BY id`, s.ws);
+      WHERE workspace_id=? AND entity='notification-progress' AND action='saved' ${role ? 'AND entity_id=?' : ''} ORDER BY id`, ...[s.ws, ...(role ? [role] : [])]);
     const savesByRole = new Map<string, Row[]>();
-    for (const save of saves) savesByRole.set(save.role, [...(savesByRole.get(save.role) ?? []), save]);
+    for (const save of saves) {
+      const list = savesByRole.get(save.role) ?? [];
+      list.push(save);
+      savesByRole.set(save.role, list);
+    }
     const passed: Row[] = [];
     for (const m of mail) {
       if (m.event_id === null) continue;
       const save = (savesByRole.get(m.recipient) ?? []).find(x => Number(x.cursor) >= Number(m.event_id) && x.created_at >= m.created_at);
       if (!save || (m.read_at !== null && m.read_at <= save.created_at)) continue;
       const after = minutes(save.created_at, m.read_at ?? now);
-      if (after >= PASSED_MINUTES) passed.push({ message: `M${m.id}`, to: m.recipient, class: classOf(m), unread_minutes_after: after, open: m.read_at === null });
+      if (elapsed(save.created_at, m.read_at ?? now) >= PASSED_MINUTES * MINUTE) passed.push({ message: `M${m.id}`, to: m.recipient, class: classOf(m), unread_minutes_after: after, open: m.read_at === null });
     }
     passed.sort((a, b) => b.unread_minutes_after - a.unread_minutes_after);
 
@@ -132,16 +138,16 @@ const open = (row: Row) => row.open ? ' (still open)' : '';
 
 /** One screen of text. */
 export function formatStats(r: Row): string {
-  const lines = [`Stats${r.role ? ` for ${r.role}` : ''}${r.since ? ` since ${String(r.since).slice(0, 10)}` : ''}.`, '', 'Mail unread (count · median · longest; open = still unread):'];
+  const lines = [`Stats${r.role ? ` for ${r.role}` : ''}${r.since ? ` since ${String(r.since).endsWith('T00:00:00.000Z') ? String(r.since).slice(0, 10) : String(r.since).slice(0, 16).replace('T', ' ') + ' UTC'}` : ''}.`, '', 'Mail unread, per delivery (one per recipient; count · median · longest; open = still unread):'];
   for (const row of r.mail_unread.by_role) {
     const parts = ['now', 'urgent', 'needs-reply', 'ordinary'].filter(k => row[k]).map(k => `${k} ${row[k].count} · ${span(row[k].median_minutes)} · ${span(row[k].longest_minutes)}${row[k].open ? ` · ${row[k].open} open` : ''}`);
     lines.push(`  ${row.role}: ${parts.join('; ')}`);
   }
   if (!r.mail_unread.by_role.length) lines.push('  none');
   for (const m of r.mail_unread.longest) lines.push(`  longest: ${m.message} ${m.class} ${m.from}→${m.to} ${span(m.minutes)}${open(m)}`);
-  lines.push('', `Urgent mail not acknowledged within ${r.urgent_unacknowledged.threshold_minutes} minutes: ${r.urgent_unacknowledged.count}`);
+  lines.push('', `Urgent deliveries not acknowledged within ${r.urgent_unacknowledged.threshold_minutes} minutes: ${r.urgent_unacknowledged.count}`);
   for (const m of r.urgent_unacknowledged.longest) lines.push(`  ${m.message} to ${m.to}: ${span(m.minutes)}${open(m)}`);
-  lines.push('', `Mail a saved cursor passed while it stayed unread ${r.passed_unread.threshold_minutes}+ minutes: ${r.passed_unread.count}${r.passed_unread.count ? ` (${Object.entries(r.passed_unread.by_role).map(([k, v]) => `${k} ${v}`).join(', ')})` : ''}`);
+  lines.push('', `Deliveries a saved cursor passed while it stayed unread ${r.passed_unread.threshold_minutes}+ minutes: ${r.passed_unread.count}${r.passed_unread.count ? ` (${Object.entries(r.passed_unread.by_role).map(([k, v]) => `${k} ${v}`).join(', ')})` : ''}`);
   for (const m of r.passed_unread.longest) lines.push(`  ${m.message} ${m.class} to ${m.to}: unread ${span(m.unread_minutes_after)} after${open(m)}`);
   lines.push('', 'Idle with ready work before a wake (spells · median · longest):');
   for (const row of r.idle_with_work) lines.push(`  ${row.role}: ${row.count} · ${span(row.median_minutes)} · ${span(row.longest_minutes)}`);
