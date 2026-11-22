@@ -793,6 +793,24 @@ The default is none: every role gets its digest as before.
 waiter would have put in each digest over the last days, so a list can rest on numbers. Run it on a copy:
 it reads current task states, so it shows what still applies, not every past wake.
 
+### Stats (read-only)
+
+`sas stats [--since DATE] [--role ROLE]` counts, from stored records: mail unread times, urgent mail not
+acknowledged, mail a cursor passed unread, idle with ready work, and review and question waits.
+
+`sas stats --day DATE [--role ROLE]` shows where each agent role's day went, in the machine's time zone,
+minute by minute, summing to the part of the day gone:
+
+- working: a write of the role's own in the 15 minutes before (the same writes the nudge counts; a checkpoint,
+  a read, an acknowledgement or an idle reason is not one), per task it held then, else "no task";
+- waiting: inside a waiter, per what it was armed for (`on fable` for a block on Fable, the `--waiting-for`
+  text, or "nothing named"); a waiter that never ended runs to the role's next waiter, its session's end, or now;
+- not running: the rest. This is not proof a session was down.
+
+Working wins over a waiter running in the background. Under each role: its nudges that day, sent, answered
+(an idle reason or a take before the next nudge), escalated, and the idle reasons given. `--day` and `--since`
+do not go together. Waits are only known from builds that record waiter events.
+
 ### Inbox
 
 `sas inbox` lists newest first within unread, read and done. `--unread` is short for `--state unread`.

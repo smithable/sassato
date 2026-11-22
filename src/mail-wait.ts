@@ -421,11 +421,13 @@ function changeFor(s:Store,actor:string,after:number):Row|undefined {
     after=events[events.length-1].id;
   }
 }
+/** A role's own write in SQL (T1253): not its bookkeeping, a read, an acknowledgement or a lease renewal. Shared by
+ * the nudge and the stats time table, so 'working' there means what the nudge counts. */
+export const OWN_WRITE=`entity NOT IN ('wip','checkpoint','session','notification-progress','wake-enrollment','wake-delivery','watch-dispatch','supervisor-ping','waiter','nudge')
+    AND NOT (entity='message' AND action IN ('read','done')) AND NOT (entity='task' AND action='renewed')`;
 function scanNudge(s:Store,actor:string,minutes:number,wall:number,state:NudgeState):{count:number;tasks:string[];escalate?:true;text?:string}|undefined {
   // A write of the role's own, not a read, an acknowledgement or a lease renewal; with none, its first waiter.
-  const last=s.get(`SELECT id,created_at FROM events WHERE workspace_id=? AND actor=?
-    AND entity NOT IN ('wip','checkpoint','session','notification-progress','wake-enrollment','wake-delivery','watch-dispatch','supervisor-ping','waiter','nudge')
-    AND NOT (entity='message' AND action IN ('read','done')) AND NOT (entity='task' AND action='renewed')
+  const last=s.get(`SELECT id,created_at FROM events WHERE workspace_id=? AND actor=? AND ${OWN_WRITE}
     ORDER BY id DESC LIMIT 1`,s.ws,actor)??s.get("SELECT id,created_at FROM events WHERE workspace_id=? AND entity='waiter' AND entity_id=? ORDER BY id LIMIT 1",s.ws,actor);
   let base=last?{id:Number(last.id),at:Date.parse(last.created_at)}:state.start;
   // A session that starts or resumes gets the full interval from its start, not from its last write.
