@@ -22,7 +22,7 @@ async function until(fn) {
   for(let i=0;i<150;i++){if(fn())return;await delay(40);}
   throw Error('Fixture condition timed out');
 }
-async function fixture(t,mode='success',link=false,version='0.167.0') {
+async function fixture(t,mode='success',link=false,version='0.167.0',settings=[]) {
   const dir=mkdtempSync(join(tmpdir(),'sas-lwatch-')), db=join(dir,'db'),log=join(dir,'calls');
   const endpoint=join(dir,'server'),server=createServer();server.listen(endpoint);await once(server,'listening');
   if(link)symlinkSync(endpoint,join(dir,'server.sock'));
@@ -39,7 +39,7 @@ else if(args[0]==='queue'){
  console.log('Queued message ${thread} for thread ${thread}.');
 }else {fs.writeFileSync(${JSON.stringify(join(dir,'up'))},'1');setInterval(()=>{},1000)}
 `,{mode:0o700});
-  const child=spawn(provider,['--remote',remote,'resume',thread],{stdio:'ignore'});
+  const child=spawn(provider,[...settings,'--remote',remote,'resume',thread],{stdio:'ignore'});
   const exited=once(child,'exit');await until(()=>existsSync(join(dir,'up')));
   const originalPath=process.env.PATH;process.env.PATH=dir+':'+originalPath;
   const operator=new Store(db,'human',{create:true});
@@ -335,4 +335,15 @@ test('status says an enrolled watcher whose launcher left no word is not running
   assert.equal(watcher.state,'enrolled');
   assert.equal(watcher.launcher_running,false);
   assert.match(renderStatus(status(f.worker)),/watcher enrolled E\d+, launcher not running/);
+});
+
+test('the watcher accepts the window watched start opens, with its settings in front (#69), and nothing else in front',async t=>{
+  const f=await fixture(t,'success',false,'0.167.0',['-c','check_for_update_on_startup=false']);
+  const run=launchWatch(f.operator,'b',f.remote,thread);run.catch(()=>{});
+  send(f.operator,['b'],'First',{now:true});
+  await until(()=>f.calls().length===1);
+  requestStop(f.operator,['b']);
+  assert.equal((await run).reason,'stopped');
+  const other=await fixture(t,'success',false,'0.167.0',['-c','model=other']);
+  await assert.rejects(launchWatch(other.operator,'b',other.remote,thread),/Expected a Codex TUI attached/);
 });

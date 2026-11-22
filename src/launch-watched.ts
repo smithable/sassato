@@ -12,7 +12,7 @@ import { check, name } from './errors.js';
 import { processIdentity, providerProcess, registerSession } from './coordination.js';
 import { acquireLaunchLock, planLaunch, resolveExecutable } from './launch.js';
 import { launchDirectory, launchLockPath } from './launch-admission.js';
-import { launchWatch } from './launch-watch.js';
+import { launchWatch, WINDOW_SETTINGS } from './launch-watch.js';
 import { Store, type Row } from './storage.js';
 
 export interface WatchedOptions {
@@ -48,7 +48,7 @@ function writeState(s: Store, state: Started) {
 const commandLine = (pid: number) => { try { return readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean); } catch { return null; } };
 /** Live processes (not this one) whose arguments hold `needle` as consecutive arguments. */
 /** The visible window's arguments. It never asks to update on start: a question in a tab stalls the role (F313). */
-const windowArgs = (endpoint: string, thread: string) => ['-c', 'check_for_update_on_startup=false', '--remote', endpoint, 'resume', thread];
+const windowArgs = (endpoint: string, thread: string) => [...WINDOW_SETTINGS, '--remote', endpoint, 'resume', thread];
 
 function processesWith(needle: string[]): number[] {
   const found: number[] = [];
