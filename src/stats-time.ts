@@ -14,10 +14,12 @@ const MINUTE = 60_000, WORKING_MINUTES = 15;
 type Span = { from: number; to: number; what: string };
 
 export function timeTable(s: Store, options: TimeOptions): Row {
-  check(/^\d{4}-\d{2}-\d{2}$/.test(options.day) && !Number.isNaN(Date.parse(`${options.day}T00:00:00`)), 'Use --day with a date, such as 2026-11-22', 2);
-  // The day in the machine's own time zone.
-  const start = new Date(`${options.day}T00:00:00`).getTime(), dayEnd = new Date(start + 36 * 3600_000).setHours(0, 0, 0, 0);
+  // The day in the machine's own time zone; a date that does not exist (2026-02-30) is refused, not moved.
+  const local = /^(\d{4})-(\d{2})-(\d{2})$/.exec(options.day), first = local ? new Date(+local[1], +local[2] - 1, +local[3]) : undefined;
+  check(!!first && first.getFullYear() === +local![1] && first.getMonth() === +local![2] - 1 && first.getDate() === +local![3], 'Use --day with a date, such as 2026-11-22', 2);
+  const start = first!.getTime(), dayEnd = new Date(start + 36 * 3600_000).setHours(0, 0, 0, 0);
   const now = (options.now ?? new Date()).getTime(), end = Math.min(dayEnd, now);
+  check(start < now, `${options.day} has not begun`, 2);
   const role = options.role === undefined ? undefined : name(options.role);
   if (role !== undefined) s.role(role);
   const iso = (t: number) => new Date(t).toISOString();
@@ -26,15 +28,15 @@ export function timeTable(s: Store, options: TimeOptions): Row {
     const rows = roles.map(r => {
       const writes = s.all(`SELECT entity,entity_id,action,created_at FROM events WHERE workspace_id=? AND actor=? AND ${OWN_WRITE}
         AND entity!='idle' AND created_at>=? AND created_at<? ORDER BY id`, s.ws, r, iso(start - WORKING_MINUTES * MINUTE), iso(end));
-      // The task held at each moment: from the role's own claim to its completion, drop, hand-over, release or submission.
+      // The task held at each moment: from the role's own claim to its completion, drop, hand-over, release, submission or another's claim.
       const held = heldTasks(s, r, iso(end));
       const waiters = waiterSpans(s, r, start, end);
       const minutes: Record<string, number> = {}, working: Record<string, number> = {}, waiting: Record<string, number> = {};
       let w = 0, sp = 0, lastWrite: { at: number; task: string } | undefined;
-      for (let t = start; t < end; t += MINUTE) {
+      for (let t = start; t + MINUTE <= end; t += MINUTE) {
         while (w < writes.length && Date.parse(writes[w].created_at) <= t) {
           const at = Date.parse(writes[w].created_at);
-          lastWrite = { at, task: writes[w].entity === 'task' && ['note', 'claimed', 'completed', 'blocked', 'submitted', 'updated'].includes(writes[w].action) ? writes[w].entity_id : heldAt(held, at) ?? 'no task' };
+          lastWrite = { at, task: writes[w].entity === 'task' && ['note', 'claimed', 'completed', 'blocked', 'submitted'].includes(writes[w].action) ? writes[w].entity_id : heldAt(held, at) ?? 'no task' };
           w++;
         }
         while (sp < waiters.length && waiters[sp].to <= t) sp++;
@@ -50,6 +52,7 @@ export function timeTable(s: Store, options: TimeOptions): Row {
       not_stored: [
         'work with no write for 15 minutes (one long tool call, a long edit) counts as waiting or not running',
         "a waiter that never ended (its session died) is counted as waiting until the role's next waiter, its session's end, or now",
+        "an ended event is taken as the end of the role's latest waiter, which it is not if an old waiter exits after a new one armed",
         'idle with ready work is in stats without --day (before a wake)',
       ] };
   });
@@ -63,8 +66,8 @@ function heldTasks(s: Store, role: string, until: string): { task: string; from:
   for (const e of s.all(`SELECT entity_id,action,actor,detail,created_at FROM events WHERE workspace_id=? AND entity='task'
       AND action IN ('claimed','completed','dropped','handed-off','released','submitted') AND created_at<? ORDER BY id`, s.ws, until)) {
     const at = Date.parse(e.created_at);
-    if (e.action === 'claimed' && e.actor === role) open.set(e.entity_id, at);
-    else if (e.action !== 'claimed' && open.has(e.entity_id)) { out.push({ task: e.entity_id, from: open.get(e.entity_id)!, to: at }); open.delete(e.entity_id); }
+    if (e.action === 'claimed' && e.actor === role) { if (!open.has(e.entity_id)) open.set(e.entity_id, at); }
+    else if (open.has(e.entity_id)) { out.push({ task: e.entity_id, from: open.get(e.entity_id)!, to: at }); open.delete(e.entity_id); }
   }
   for (const [task, from] of open) out.push({ task, from, to: Infinity });
   return out;
@@ -76,14 +79,15 @@ function waiterSpans(s: Store, role: string, start: number, end: number): Span[]
   const events = s.all(`SELECT id,action,detail,created_at FROM events WHERE workspace_id=? AND entity='waiter' AND entity_id=? AND created_at<?
     AND id>=coalesce((SELECT max(id) FROM events WHERE workspace_id=? AND entity='waiter' AND entity_id=? AND action='armed' AND created_at<?),0) ORDER BY id`,
     s.ws, role, new Date(end).toISOString(), s.ws, role, new Date(start).toISOString());
-  const sessionEnds = s.all(`SELECT created_at FROM events WHERE workspace_id=? AND entity='session' AND action IN ('ended','replaced')
-    AND json_extract(detail,'$.role')=? AND created_at<? ORDER BY id`, s.ws, role, new Date(end).toISOString()).map(e => Date.parse(e.created_at));
+  // A session's end closes the waiter armed before it (by event order, so one armed in the same millisecond after it is not).
+  const sessionEnds = s.all(`SELECT id,created_at FROM events WHERE workspace_id=? AND entity='session' AND action IN ('ended','replaced')
+    AND json_extract(detail,'$.role')=? AND created_at<? ORDER BY id`, s.ws, role, new Date(end).toISOString()).map(e => ({ id: Number(e.id), at: Date.parse(e.created_at) }));
   const spans: Span[] = [];
-  let open: { from: number; what: string } | undefined;
-  const close = (to: number) => { if (open) { const stop = Math.min(to, sessionEnds.find(x => x >= open!.from) ?? Infinity); if (stop > open.from) spans.push({ from: open.from, to: stop, what: open.what }); open = undefined; } };
+  let open: { id: number; from: number; what: string } | undefined;
+  const close = (to: number) => { if (open) { const stop = Math.min(to, sessionEnds.find(x => x.id > open!.id)?.at ?? Infinity); if (stop > open.from) spans.push({ from: open.from, to: stop, what: open.what }); open = undefined; } };
   for (const e of events) {
     const at = Date.parse(e.created_at);
-    if (e.action === 'armed') { close(at); open = { from: at, what: waitingFor(e.detail) }; }
+    if (e.action === 'armed') { close(at); open = { id: Number(e.id), from: at, what: waitingFor(e.detail) }; }
     else if (e.action === 'ended') close(at);
   }
   close(end);
@@ -112,6 +116,12 @@ function nudges(s: Store, role: string, from: string, to: string): Row {
       if (e.entity === 'idle') try { reasons.push(String(JSON.parse(e.detail).reason)); } catch { /* unreadable detail */ }
       if (waiting) { answered++; waiting = false; }
     }
+  }
+  // A nudge still open at the day's end counts as answered if the next thing after it is an answer (not another nudge).
+  if (waiting) {
+    const next = s.get(`SELECT entity FROM events WHERE workspace_id=? AND created_at>=? AND ((entity='nudge' AND entity_id=?)
+      OR (actor=? AND entity='idle' AND action='reason') OR (actor=? AND entity='task' AND action='claimed')) ORDER BY id LIMIT 1`, s.ws, to, role, role, role);
+    if (next && next.entity !== 'nudge') answered++;
   }
   return { sent, answered, escalated, reasons };
 }

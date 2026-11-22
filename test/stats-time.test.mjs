@@ -50,6 +50,24 @@ test("a role's day sums to the day: working per held task, waiting per what for,
   assert.match(text, /Working means a write of the role's own in the 15 minutes before/);
 });
 
+test('only whole minutes count; a repeat claim keeps its start and another role\'s claim ends the hold; a nudge answered after midnight counts', (t) => {
+  const f = fixture(t);
+  const id = f.as('a', () => addTask(f.s, { title: 'Shared', forRole: 'b' })).id;
+  f.as('b', () => takeTask(f.s, id));
+  f.at('10:20'); f.event('a', 'task', id, 'claimed', {});
+  f.at('10:40'); f.event('b', 'fact', 'k', 'set', {});
+  f.at('23:59'); f.event('b', 'nudge', 'b', 'sent', { minutes: 15, count: 1 });
+  const day = timeTable(f.s, { day: '2026-11-22', role: 'b', now: new Date('2026-11-23T00:01:00Z') });
+  const b = day.roles[0];
+  assert.equal(b.working_minutes + b.waiting_minutes + b.not_running_minutes, 1440);
+  assert.deepEqual(b.working, [{ what: id, minutes: 15 }, { what: 'no task', minutes: 15 }], "after a's claim, b's write is not on the task");
+  assert.equal(b.nudges.answered, 0);
+  mock.timers.tick(2 * 60_000); f.as('b', () => idleReason(f.s, 'night'));
+  assert.equal(timeTable(f.s, { day: '2026-11-22', role: 'b', now: new Date('2026-11-23T00:05:00Z') }).roles[0].nudges.answered, 1);
+  const partial = timeTable(f.s, { day: '2026-11-22', role: 'b', now: new Date('2026-11-22T12:00:30Z') }).roles[0];
+  assert.equal(partial.working_minutes + partial.waiting_minutes + partial.not_running_minutes, 720, 'a part minute is not counted');
+});
+
 test('working wins over a waiter in the background; a session end closes a waiter that never ended', (t) => {
   const f = fixture(t);
   f.event('c', 'waiter', 'c', 'armed', { waiting_for: 'CI on #70' });
@@ -71,5 +89,7 @@ test('the CLI takes --day, refuses a bad day and --day with --since, and lists e
   assert.match(out.stdout, /^Time on 2026-11-21/);
   assert.match(out.stdout, /\na: working 0m · waiting 0m · not running 24h00/);
   assert.equal(cli('--day', '22 Nov').status, 2);
+  assert.match(cli('--day', '2026-02-30').stderr, /Use --day with a date/, 'a date that does not exist is refused, not moved');
+  assert.match(cli('--day', '2099-01-01').stderr, /has not begun/);
   assert.match(cli('--day', '2026-11-21', '--since', '2026-11-20').stderr, /--day or --since/);
 });
