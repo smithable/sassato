@@ -107,7 +107,7 @@ export class Store {
     safe(detail);
     const actor = this.requireActor(), at = now();
     const n = this.run('INSERT INTO events(workspace_id,entity,entity_id,actor,action,detail,created_at) VALUES(?,?,?,?,?,?,?)', this.ws, entity, entityId, actor, action, JSON.stringify(detail), at).lastInsertRowid;
-    if (!((entity==='session'&&action==='heartbeat') || (entity==='message'&&['read','done'].includes(action)) || entity==='notification-progress')) {
+    if (!((entity==='session'&&action==='heartbeat') || (entity==='message'&&['read','done'].includes(action)) || entity==='notification-progress' || entity==='waiter' || entity==='nudge')) {
       this.index('event', `E${n}`, `${entityId} ${action}`, JSON.stringify(detail), { role: actor, updated_at: at });
     }
     return n;

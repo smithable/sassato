@@ -752,6 +752,29 @@ it is acknowledged.
 A wake is then: one `sas wake`; the handling; one command with the writes (notes, replies, one
 `checkpoint save`); the re-arm, in the same response as the last write.
 
+### What the wait is for, and the nudge
+
+Each `wake` records two events of the role's own, `waiter armed` and `waiter ended`; they are bookkeeping,
+never activity (they do not restart an idle period, count as changes since a checkpoint, or show in search).
+`armed` says what the wait is for: `--waiting-for TEXT` (at most 300 characters), else the role's open blocks
+(`T12 on fable`), and `--expect-minutes N` how long it should take. With `--expect-minutes 10` or more and
+work ready for the role, `wake` says so at once on stderr (`Waiting is not idle: T15 is ready for you …`).
+
+The nudge asks a quiet agent why. When a role has written nothing for the workspace's `nudge_minutes`
+(15 by default; apart from `--idle-minutes`), its `wake` returns a `nudge` entry, whether or not work is
+ready, naming the ready tasks or saying nothing is ready. The role answers with
+`sas idle-reason TEXT --as ROLE` (at most 500 characters), or by taking a task. Once answered, it is not
+nudged again until something changes for it: mail to it, or an event that would wake it (a task assigned or
+made ready, a block resolved, an answer, a review). Unanswered, it is nudged once more after the same
+interval; one interval after that, the role named in `nudge_escalate` gets one ordinary mail, and the nudges stop
+until the role writes again. Humans are never nudged, nor is a plain `wait`; scored wake mode has no nudge
+yet.
+
+```sh
+sas workspace set --nudge-minutes 15 --nudge-escalate fable --as HUMAN  # 0 turns it off; none clears the role
+sas idle-reason "waiting for Fable's read of #68; no task ready" --as builder
+```
+
 ### Leaving out what a role never acts on
 
 `workspace set --digest-skip JSON` (a human) names, per role, the digest entry kinds that neither wake it

@@ -23,9 +23,9 @@ export function checkpointFingerprint(s: Store, role: string): string {
 // there are this many, or once the first is this old (T674).
 const OWN_CHANGES_MAX=10, OWN_CHANGES_MINUTES=30;
 
-/** The role's own writes after a checkpoint event: not reads, acks, lease renewals, heartbeats, progress or WIP. */
+/** The role's own writes after a checkpoint event: not reads, acks, lease renewals, heartbeats, progress, WIP, its waiter or its nudges. */
 export function ownChangesSince(s: Store, role: string, eventId: number): { count: number; first: string } {
-  const row=s.get("SELECT count(*) AS n,min(created_at) AS first FROM events WHERE workspace_id=? AND id>? AND actor=? AND entity NOT IN ('checkpoint','notification-progress','session','wip','stop') AND NOT (entity='message' AND action IN ('read','done')) AND NOT (entity='task' AND action='renewed')",s.ws,eventId,role)!;
+  const row=s.get("SELECT count(*) AS n,min(created_at) AS first FROM events WHERE workspace_id=? AND id>? AND actor=? AND entity NOT IN ('checkpoint','notification-progress','session','wip','stop','waiter','nudge') AND NOT (entity='message' AND action IN ('read','done')) AND NOT (entity='task' AND action='renewed')",s.ws,eventId,role)!;
   return {count:Number(row.n),first:String(row.first??'')};
 }
 

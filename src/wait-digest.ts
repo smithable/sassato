@@ -28,7 +28,7 @@ export function messageIsNow(s:Store,messageId:string):boolean {
   try{return JSON.parse(event.detail).now===true;}catch{return false;}
 }
 export function digestGroup(kind:string):DigestGroup {
-  if(['answer','reply-needed','blocker-assigned','dependency-dropped'].includes(kind))return 'needs-a-decision';
+  if(['answer','reply-needed','blocker-assigned','dependency-dropped','nudge'].includes(kind))return 'needs-a-decision';
   if(kind==='review-submitted')return 'review-requested';
   if(['task-finished','review-approved','blocker-resolved'].includes(kind))return 'finished';
   return 'other';
