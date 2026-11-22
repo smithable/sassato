@@ -2,6 +2,12 @@
 
 ## 0.1.3 — unreleased
 
+- `launch --watched ROLE...|--all` starts watched Codex roles in one command, with no question asked (T1193): a
+  settings check on a throwaway thread (model, sandbox, approval, effort) replaces the `/status` look, the app server
+  runs hidden with its log in the launch folder, the window is the only tab and is registered, and one background
+  process watches every role started. An open window or server is refused with its pid; `--close-stale` closes only
+  what an earlier `launch --watched` started. Before, `--watched` only changed the start prompt.
+
 - `launch-watch` no longer ends after five minutes without a receipt (T1191): a queued line waits for the
   window's current turn to end, which can take longer. Past five minutes it alerts the enrolling human once per
   enrollment and keeps waiting on the one queued wake; it ends only when the registered window or the app server
