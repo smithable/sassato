@@ -117,6 +117,12 @@ export async function checkSettings(codex: string, serverArgs: string[], want: R
   } finally { child.kill(); }
 }
 
+/** Closes the window and app server an earlier launch --watched recorded for the role, if any (the Codex round, T1193). */
+export async function closeRecorded(s: Store, role: string): Promise<string | false> {
+  const state = readState(s, role);
+  return state ? clearEarlier(s, role, state.thread, state.endpoint, true) : false;
+}
+
 async function until<T>(read: () => T | undefined, waitMs: number): Promise<T | undefined> {
   for (const end = Date.now() + waitMs; Date.now() < end; await delay(200)) { const value = read(); if (value !== undefined) return value; }
   return read();
