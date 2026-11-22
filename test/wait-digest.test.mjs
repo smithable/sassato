@@ -13,6 +13,7 @@ import { requestStop } from '../dist/control.js';
 import { waitForWork } from '../dist/mail-wait.js';
 import { DIGEST_LIMIT,formatDigest } from '../dist/wait-digest.js';
 import { fixtureConfig } from './fixtures/team.mjs';
+import { setWorkspaceSettings } from '../dist/workspace-settings.js';
 function fixture(t) {
   const dir=mkdtempSync(join(tmpdir(),'sassato-digest-')),path=join(dir,'state.db'),s=new Store(path,'human',{create:true});initWorkspace(s,'team',fixtureConfig);s.use('team');
   const reader=new Store(path,'b',{readonly:true});reader.use('team');t.after(()=>{reader.close();s.close();rmSync(dir,{recursive:true,force:true});});
@@ -22,6 +23,15 @@ function as(s,actor,fn){const old=s.actor;s.actor=actor;try{return fn();}finally
 const mail=(f,body,options={})=>as(f.s,'a',()=>send(f.s,['b'],body,options));
 const wait=(f,since,options={})=>waitForWork(f.reader,{since,stopFile:f.stopFile,timeout:3,settle:1,settleMax:2,...options});
 function later(t,ms,fn){const timer=setTimeout(fn,ms);t.after(()=>clearTimeout(timer));}
+test('ordinary mail alone opens a digest, and the cursor never passes it unseen (T1233)',async t=>{
+  const f=fixture(t),since=f.cursor(),ordinary=mail(f,'Ready for your read: PR 7');
+  const result=await wait(f,since);assert.equal(result.reason,'digest');
+  assert.deepEqual(result.digest.entries.map(e=>[e.id,e.kind]),[[ordinary.id,'mail']]);assert.equal(result.cursor,f.cursor());
+  assert.equal((await wait(f,result.cursor,{timeout:1})).reason,'timeout'); // re-armed, it does not wake again
+  f.reader.actor='a';try{assert.equal((await wait(f,since,{timeout:1})).reason,'timeout');}finally{f.reader.actor='b';} // the sender is not woken
+  as(f.s,'human',()=>setWorkspaceSettings(f.s,{digest_skip:{b:['mail']}}));
+  const after=f.cursor();mail(f,'Skipped by choice');const skipped=await wait(f,after,{timeout:1});assert.equal(skipped.reason,'timeout');assert.equal(skipped.cursor,f.cursor());
+});
 test('message aliases are rejected before atomic acknowledgement and canonical now lookup is exact',t=>{
   const f=fixture(t),one=mail(f,'Immediate',{now:true}),before=f.cursor();
   for(const alias of [one.id.toLowerCase(),'M0'+one.id.slice(1),' '+one.id]) {
