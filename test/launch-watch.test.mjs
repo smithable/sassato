@@ -268,6 +268,10 @@ test('any Codex version from the floor up starts silently, an older one is refus
   assert.deepEqual(checkCodexVersion('codex-cli 0.167.0'),{version:'0.167.0'});
   assert.deepEqual(checkCodexVersion('codex-cli 0.171.0'),{version:'0.171.0'},'not on the list, starts without a warning');
   assert.deepEqual(checkCodexVersion('codex-cli 1.0.0'),{version:'1.0.0'});
+  assert.deepEqual(checkCodexVersion('codex-cli 0.172.0-alpha.1'),{version:'0.172.0-alpha.1'},'a prerelease starts too');
+  assert.deepEqual(checkCodexVersion('codex-cli 0.171.0+abc'),{version:'0.171.0+abc'});
+  assert.throws(()=>checkCodexVersion('codex-cli 0.166.0-alpha.9'),/older than/);
+  assert.throws(()=>checkCodexVersion('codex-cli 0.171.0 extra'),/Cannot read the Codex CLI version/);
   assert.throws(()=>checkCodexVersion('codex-cli 0.166.9'),/Codex CLI 0\.166\.9 is older than 0\.167\.0/);
   assert.throws(()=>checkCodexVersion('codex-cli 0.99.0'),/older than/);
   assert.throws(()=>acceptCodexVersion(f.worker,'0.168.0'),/Only a human accepts a Codex version/);

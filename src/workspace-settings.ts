@@ -156,9 +156,10 @@ const atLeast=(version:string,floor:string)=>{
 /** Reads a Codex CLI's --version output: one older than MIN_CODEX_VERSION is refused, any other starts. codex_versions
  * stays a record of the versions a human marked tested; it no longer gates or warns (T1193). */
 export function checkCodexVersion(output:string):{version:string} {
-  const version=/^codex(?:-cli)? ([0-9]+\.[0-9]+\.[0-9]+)$/.exec(output.trim())?.[1];
+  // A prerelease or build suffix (0.172.0-alpha.1, 0.171.0+abc) is kept in the name; the floor reads the three numbers.
+  const [,version,core]=/^codex(?:-cli)? (([0-9]+\.[0-9]+\.[0-9]+)(?:[-+][0-9A-Za-z.+-]{1,64})?)$/.exec(output.trim())??[];
   check(version!==undefined,`Cannot read the Codex CLI version from "${output.trim().slice(0,80)}"`,4);
-  check(atLeast(version!,MIN_CODEX_VERSION),`Codex CLI ${version} is older than ${MIN_CODEX_VERSION}, the oldest sassato starts`,4);
+  check(atLeast(core!,MIN_CODEX_VERSION),`Codex CLI ${version} is older than ${MIN_CODEX_VERSION}, the oldest sassato starts`,4);
   return {version:version!};
 }
 /** The nudge's default interval (T1253): the rules' fifteen minutes. */
