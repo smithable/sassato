@@ -2,6 +2,12 @@
 
 ## 0.1.3 — unreleased
 
+- `launch --watched ROLE...|--all` starts watched Codex roles in one command, with no question asked (T1193): a
+  settings check on a throwaway thread (model, sandbox, approval, effort) replaces the `/status` look, the app server
+  runs hidden with its log in the launch folder, the window is the only tab and is registered, and one background
+  process watches every role started. An open window or server is refused with its pid; `--close-stale` closes only
+  what an earlier `launch --watched` started. Before, `--watched` only changed the start prompt.
+
 - `stats [--since DATE] [--role R] [--json]` reports waits from what sassato already stores (T1241): how long
   mail stayed unread per role and class, urgent mail not acknowledged within 30 minutes, mail a saved cursor
   passed while it stayed unread, reviews and questions to a human. A saved cursor now also names the mail its
