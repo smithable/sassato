@@ -346,4 +346,6 @@ test('the watcher accepts the window watched start opens, with its settings in f
   assert.equal((await run).reason,'stopped');
   const other=await fixture(t,'success',false,'0.167.0',['-c','model=other']);
   await assert.rejects(launchWatch(other.operator,'b',other.remote,thread),/Expected a Codex TUI attached/);
+  const split=await fixture(t,'success',false,'0.167.0',['-c','','check_for_update_on_startup=false']);
+  await assert.rejects(launchWatch(split.operator,'b',split.remote,thread),/Expected a Codex TUI attached/,'an empty argument splits the pair');
 });
