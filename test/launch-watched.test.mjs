@@ -91,7 +91,7 @@ test('launch --watched needs the human, a resumable session and a fully set role
   const f=fixture(t);
   await assert.rejects(launchWatched(f.worker,['b'],f.options));
   const [plan]=await launchWatched(f.operator,['b'],{...f.options,dryRun:true});
-  assert.equal(plan.status,'ready');assert.deepEqual(plan.window.slice(1),['--remote',plan.server.at(-1),'resume',thread]);
+  assert.equal(plan.status,'ready');assert.deepEqual(plan.window.slice(1),['-c','check_for_update_on_startup=false','--remote',plan.server.at(-1),'resume',thread]);
   assert.ok(plan.server.includes('model="gpt-test"'));
   assert.equal(f.children.length,0);
   f.operator.run("UPDATE roles SET approval_policy=NULL WHERE workspace_id=? AND name='b'",f.operator.ws);

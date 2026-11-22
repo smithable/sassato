@@ -47,6 +47,9 @@ function writeState(s: Store, state: Started) {
 }
 const commandLine = (pid: number) => { try { return readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean); } catch { return null; } };
 /** Live processes (not this one) whose arguments hold `needle` as consecutive arguments. */
+/** The visible window's arguments. It never asks to update on start: a question in a tab stalls the role (F313). */
+const windowArgs = (endpoint: string, thread: string) => ['-c', 'check_for_update_on_startup=false', '--remote', endpoint, 'resume', thread];
+
 function processesWith(needle: string[]): number[] {
   const found: number[] = [];
   for (const entry of readdirSync('/proc')) {
@@ -147,11 +150,10 @@ async function clearEarlier(s: Store, role: string, thread: string, endpoint: st
   // A record counts only for this role's thread and endpoint; a window must match the recorded window, with the
   // full arguments this command gives it, and a server the recorded server.
   const earlier = state && state.thread === thread && state.endpoint === endpoint ? state : null;
-  const windowArgs = ['--remote', endpoint, 'resume', thread];
   const record = (p: { pid: number; what: string }) => {
     if (!earlier) return undefined;
     const mine = p.what === 'window' ? earlier.window : earlier.server;
-    const shape = p.what === 'window' ? processesWith(windowArgs).includes(p.pid) : true;
+    const shape = p.what === 'window' ? processesWith(windowArgs(endpoint, thread)).includes(p.pid) : true;
     return mine.pid === p.pid && shape && alive(mine) ? mine : undefined;
   };
   const open = [...processesWith(['resume', thread]).map(pid => ({ pid, what: 'window' })), ...processesWith(['--listen', endpoint]).map(pid => ({ pid, what: 'app server' }))];
@@ -191,7 +193,7 @@ export async function launchWatched(operator: Store, roles: string[], options: W
     const running = `${role} has a registered running session not started by this command; close it first`;
     if (options.dryRun) {
       check(closed || first.status !== 'already-running', running, 4);
-      results.push({ role, thread, cwd: first.cwd, server: [codex, 'app-server', ...args, '--listen', endpoint], window: [codex, '--remote', endpoint, 'resume', thread], ...(closed ? { would_close: closed } : {}), status: 'ready' });
+      results.push({ role, thread, cwd: first.cwd, server: [codex, 'app-server', ...args, '--listen', endpoint], window: [codex, ...windowArgs(endpoint, thread)], ...(closed ? { would_close: closed } : {}), status: 'ready' });
       continue;
     }
     // The role's launch lock, held from here until its record is written, keeps two launches apart; the watcher
@@ -256,9 +258,9 @@ async function startRole(operator: Store, role: string, cwd: string, thread: str
     try {
       check(await until(() => existsSync(socket) && processesWith(['--listen', endpoint]).includes(serverId.pid) ? true : undefined, waitMs),
         `The app server for ${role} did not open its socket within ${waitMs / 1000} seconds; see ${logPath}`, 4);
-      openWindow(codex, ['--remote', endpoint, 'resume', thread], cwd, role);
+      openWindow(codex, windowArgs(endpoint, thread), cwd, role);
       // A wrapper (env, node) is found before it runs Codex itself; registration needs Codex, so wait for it.
-      const windowPid = await until(() => processesWith(['--remote', endpoint, 'resume', thread]).find(pid => providerProcess(pid, 'codex')), waitMs);
+      const windowPid = await until(() => processesWith(windowArgs(endpoint, thread)).find(pid => providerProcess(pid, 'codex')), waitMs);
       check(windowPid, `The ${role} window did not start within ${waitMs / 1000} seconds`, 4);
       windowId = { pid: windowPid!, identity: processIdentity(windowPid!) ?? '' };
       const worker = new Store(operator.path, role);
