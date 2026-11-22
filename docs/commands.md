@@ -872,8 +872,14 @@ A queue call waits up to 30 seconds; after a timeout it is tried once more
 after a short pause, for work only and only when the first call printed
 nothing; STOP, the binding and whether the worker already consumed the result
 are checked again first, and a STOP notice is never sent twice. A queue
-warning (even with exit zero), a second timeout, a changed binding or five
-minutes without consumption suspends dispatch and alerts the enrolling human.
+warning (even with exit zero), a second timeout or a changed binding suspends
+dispatch and alerts the enrolling human. A queued line reaches the window only
+when its current turn ends, so a wake without consumption after five minutes is
+not an error: the launcher alerts the enrolling human once per enrollment, keeps
+the one queued wake (it never queues a second line for it) and goes on waiting.
+While it waits it checks every ten seconds that the registered window still runs
+and that the app server still answers on its socket; when either is gone it
+suspends with the reason `the Codex window is gone` or `the Codex app server is gone`.
 A suspended watcher, and any start refused once the role name is valid (the
 launch lock included), also sends one urgent mail to the workspace's default
 human, with a fixed reason and never the provider's output. `sas status` shows
