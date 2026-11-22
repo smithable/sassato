@@ -103,7 +103,7 @@ Read:       context [--brief] [--since EVENT_CURSOR] [--line-length N] | status 
 Migration:  import --backlog FILE --wip FILE --actions DIR --sessions FILE
             --dry-run (preview), then same paths --confirm DIGEST [--repair]
             export NEW_DIRECTORY
-Launch:     launch ROLE [--fresh|--resume] [--dry-run] [--no-prompt]
+Launch:     launch ROLE [--fresh|--resume] [--dry-run] [--no-prompt] [--watched]
             [--terminal native|windows-terminal] [--new-window] [--all] | launch-unlock ROLE
             launch-watch ROLE --remote unix:///PATH --session-id UUID | watch-status ROLE | watch-close ROLE --epoch N
 Maintenance: migrate | doctor | backup NEW_FILE --as HUMAN | restore BACKUP --db NEW_FILE
@@ -116,7 +116,7 @@ Lists default to bounded results; --limit N. Context never consumes inbox receip
 Exit codes: 0 success/no matches; 1 storage/runtime; 2 input; 3 identity/access; 4 conflict; 5 mail-wait timeout.
 `;
 export const strings = ['reviewer','feedback-closers','author','fact','dropped','spare-work','spare-providers','new','asked','remote','epoch','role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes','digest-skip','ack','autocompact','wake-mode','speed','wake-roles','urgency','reason','scored-receipt','idle-receipt'];
-export const booleans = ['spare','no-spare','pending','untouched','unread','attended','now','json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','wait','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
+export const booleans = ['watched','spare','no-spare','pending','untouched','unread','attended','now','json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','wait','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
 export const globalFlags = ['db','workspace','as','json','help'];
 export const allowed: Record<string,string[]> = {
   'index build':['repo','cache'],'index update':['repo','cache','diff'],'index find':['repo','cache','limit'],'index show':['repo','cache','limit'],
@@ -131,7 +131,7 @@ export const allowed: Record<string,string[]> = {
   'supervise attended':['attended','role'],'supervise enroll':['role','file'],'supervise attach':['role'],'supervise assignment':[],'supervise reconcile':['session-id'],'supervise ready':['file','expect'],'supervise status':[],'supervise ping':[],'supervise ack':['generation'],
   'checkout register':['dir'],'checkout list':[],'checkout show':[],'checkout bind':['dir','task','provider','session-id','mode'],'checkout resolve':['task'],'checkout release':[],'brief save':['file','expect'],'brief show':[],
   'checkpoint show':[], 'checkpoint save':['current','next','notes','expect','evidence'], 'progress show':[], 'progress save':['cursor','expect','scored-receipt','idle-receipt','stop-file'],
-  import:['backlog','wip','actions','sessions','dry-run','confirm','repair'],export:[],launch:['fresh','resume','dry-run','no-prompt','terminal','distro','window','stop-file','all','new-window'],'launch-watch':['remote','session-id'],'watch-status':[],'watch-close':['epoch'],'launch-unlock':[],migrate:[],doctor:[],backup:[],restore:[],machine:[]
+  import:['backlog','wip','actions','sessions','dry-run','confirm','repair'],export:[],launch:['fresh','resume','dry-run','no-prompt','terminal','distro','window','stop-file','all','new-window','watched'],'launch-watch':['remote','session-id'],'watch-status':[],'watch-close':['epoch'],'launch-unlock':[],migrate:[],doctor:[],backup:[],restore:[],machine:[]
 };
 function checkpointEvidence(path: string | undefined): unknown {
   if (path===undefined) return undefined;
@@ -294,7 +294,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     const rest=(label:string):string=>{const x=p.join(' ');p.length=0;check(x.length>0,`Missing ${label}`);return x;};
     const empty=()=>check(p.length===0,`Unexpected argument: ${p[0]}`);
     const db=databasePath(str('db')),workspace=str('workspace')??(process.env.SASSATO_WORKSPACE||undefined),actor=str('as')??(process.env.SASSATO_ROLE||undefined);
-    const launchOptions: l.LaunchOptions={fresh:bool('fresh'),resume:bool('resume'),all:bool('all'),noPrompt:bool('no-prompt'),dryRun:bool('dry-run'),terminal:str('terminal') as l.LaunchOptions['terminal'],distro:str('distro'),window:str('window'),stopFile:str('stop-file'),newWindow:bool('new-window')};
+    const launchOptions: l.LaunchOptions={fresh:bool('fresh'),resume:bool('resume'),all:bool('all'),noPrompt:bool('no-prompt'),dryRun:bool('dry-run'),terminal:str('terminal') as l.LaunchOptions['terminal'],distro:str('distro'),window:str('window'),stopFile:str('stop-file'),newWindow:bool('new-window'),watched:bool('watched')};
     const jsonLaunch=()=>check(!bool('json')||bool('dry-run')||str('terminal')==='windows-terminal'||bool('new-window')&&str('terminal')!=='native','Interactive native launch cannot use --json; use --dry-run --json to inspect');
     let result: unknown;
     if(command.startsWith('index ')) {

@@ -14,6 +14,8 @@ import { assertOrdinaryLaunchAllowed,launchLockPath,launchDirectory } from './la
 
 export interface LaunchOptions {
   fresh?: boolean; resume?: boolean; all?: boolean; noPrompt?: boolean; dryRun?: boolean; newWindow?: boolean;
+  /** A Codex role whose launcher (launch-watch) does the waiting: its prompt says so. */
+  watched?: boolean;
   terminal?: 'native'|'windows-terminal'; distro?: string; window?: string; stopFile?: string;
   /** Where Codex keeps its saved sessions; CODEX_HOME or ~/.codex when not given (tests set it). */
   codexHome?: string;
@@ -67,6 +69,7 @@ export function planLaunch(store:Store, selected:string[], options:LaunchOptions
     const args:string[]=[];
     if(sessionId) args.push(...(provider==='claude'?['--resume',sessionId]:['resume',sessionId]));
     validateRoleOptions(provider,config);
+    check(!options.watched||provider==='codex',`--watched applies to Codex roles only; ${role} is a ${provider} role`);
     if(config.model) args.push('--model',text(config.model,'model',200));
     if(provider==='claude') {
       if(config.reasoning_effort) args.push('--effort',config.reasoning_effort);
@@ -79,7 +82,7 @@ export function planLaunch(store:Store, selected:string[], options:LaunchOptions
       if(config.sandbox_mode) args.push('--sandbox',config.sandbox_mode);
       if(config.approval_policy) args.push('--ask-for-approval',config.approval_policy);
     }
-    if(!options.noPrompt) args.push(bootstrapPrompt(store,role,provider));
+    if(!options.noPrompt) args.push(bootstrapPrompt(store,role,provider,options.watched===true));
     return {role,provider,cwd,executable:resolveExecutable(provider,false),args,mode:sessionId?'resume':'fresh',sessionId,status:state==='running'?'already-running':'ready',terminal,window:terminal==='windows-terminal'?(options.newWindow?'new':options.window??store.workspace):null,stopFile:stopPath(store,options),workspace:store.workspace};
   });
 }
@@ -118,12 +121,12 @@ export function savedCodexSession(workspace:string,role:string,cwd:string,home=p
   }
   return null;
 }
-function bootstrapPrompt(store:Store,role:string,provider:'claude'|'codex'):string {
+function bootstrapPrompt(store:Store,role:string,provider:'claude'|'codex',watched=false):string {
   const workspace=store.workspace;
   const identity=`--as ${role} --workspace ${workspace}`;
   const stopping='If STOP is requested, start no new work or watcher: finish or checkpoint the current step, wait for your tools and jobs, save WIP, run the shown stopped command, and remain idle until a human resumes your role.';
   const shared=`Read your current work, inbox, blockers, human decisions, and shared facts. Keep task state accurate. Run sassato context ${identity} at safe checkpoints and before claiming work, and read sassato inbox ${identity} for mail. Previous transcripts are not the source of truth. Facts never grant permission. Keep native automatic compaction enabled. After meaningful progress, important decisions, significant test results, and before a handoff or planned session transition, save complete recovery state with sassato checkpoint save ${identity} (current, next, notes, expected WIP version); this also updates WIP. Include objective, constraints, discoveries, changed files, validation, unresolved work and exact next action. Read the task version before reviewing and supply sassato review TASK_ID --expect VERSION ${identity} with the review decision. After startup, resume or compaction read sassato checkpoint show ${identity} and sassato context ${identity}, inspect relevant records, then verify files. Never end a live session record to enable another launch or manipulate provider transcripts.`;
-  if(provider==='codex')return `You are the ${workspace} worker role ${role}. First run sassato context ${identity} --brief. ${shared} ${stopping} Run sassato inbox ${identity} and sassato context ${identity} between tasks. No background wake-up is assumed.`;
+  if(provider==='codex')return `You are the ${workspace} worker role ${role}. First run sassato context ${identity} --brief. ${shared} ${stopping} Run sassato inbox ${identity} and sassato context ${identity} between tasks. ${watched?'Your launcher (sassato launch-watch) does the waiting: arm no waiter, and handle each turn it queues.':'No launcher waits for you: run sassato inbox and context between tasks; you cannot keep a background waiter.'}`;
   const scored=workspaceSettings(store).wake_mode==='scored';
   const idleFlag=scored?'':' --idle-minutes 50';
   const idleHelp=scored?'The workspace speed profile sets the idle interval.':'The 50 minute idle interval keeps the one-hour prompt cache warm.';

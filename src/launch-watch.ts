@@ -189,7 +189,7 @@ async function observe(s:Store,human:string,remote:string,thread:string,clock:()
     if(!stopping && pendingStop(s))return false;
     if(!stopping)enrollment(s,epoch);
     const message=stopping?`Check Sassato STOP for ${role}. Run sas context --as ${role} --workspace ${s.workspace}; follow the stop instructions and do not re-arm.`:
-      `Run sas wake --pending --as ${role} --workspace ${s.workspace}.`;
+      `Run sas wake --pending --as ${role} --workspace ${s.workspace}. Your launcher does the waiting: arm no waiter.`;
     const args=['queue','--thread',thread,'--remote',bound.endpoint,'--message',message,'--resume'];
     // Staging is the durable intent for work. Record STOP intent too, before crossing processes.
     if(stopping)s.event('watch-dispatch',role,'stop-intent',{epoch});
