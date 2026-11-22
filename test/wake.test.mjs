@@ -188,6 +188,15 @@ test('pending CLI prints original digest, advances once and leaves mail unacknow
   const saved=f.b.get("SELECT detail FROM events WHERE workspace_id=? AND entity='notification-progress' ORDER BY id DESC LIMIT 1",f.b.ws);
   assert.deepEqual(JSON.parse(saved.detail).delivered,[f.mail.id]);
 });
+test('a consumed pending wake saves every mail it printed, the still-to-acknowledge list too (T1241)',async t=>{
+  const f=await staged(t);
+  const extra=as(f.s,'a',()=>send(f.s,['b'],'Answer when you can',{needsReply:true}));
+  const read=pendingCli(f);
+  assert.equal(read.status,0,read.stderr);
+  assert.match(read.stdout,new RegExp(`still to acknowledge:\\n  ${extra.id}`));
+  const saved=f.b.get("SELECT detail FROM events WHERE workspace_id=? AND entity='notification-progress' ORDER BY id DESC LIMIT 1",f.b.ws);
+  assert.deepEqual(JSON.parse(saved.detail).delivered.sort(),[f.mail.id,extra.id].sort());
+});
 test('STOP supersedes pending work and resume requires a fresh enrollment',async t=>{
   const f=await staged(t);
   requestStop(f.s,['b']);

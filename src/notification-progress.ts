@@ -125,7 +125,7 @@ export function saveNotificationProgress(s: Store, input: NotificationProgressIn
     s.run('DELETE FROM scored_wake_delivery WHERE workspace_id=? AND role=? AND event_id<=?',s.ws,role,cursor);
     // A list longer than the limit is stored cut and marked, so stats reads a missing id as unknown, not as never listed.
     const all=[...new Set(input.delivered??[])];
-    check(all.length<=10_000&&all.every(id=>/^M[1-9][0-9]*$/.test(id)),'Invalid delivered mail list');
+    check(all.every(id=>typeof id==='string'&&/^M[1-9][0-9]*$/.test(id)),'Invalid delivered mail list');
     const delivered=all.slice(0,DELIVERED_LIMIT);
     const version=(old?.version??0)+1;
     const event=s.event('notification-progress',role,'saved',{format:1,cursor,version,...(input.delivered?{delivered,...(all.length>delivered.length?{delivered_cut:true}:{})}:{}),...(through===undefined?{}:{scored_through:through}),
