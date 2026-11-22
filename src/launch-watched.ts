@@ -48,7 +48,8 @@ function writeState(s: Store, state: Started) {
 const commandLine = (pid: number) => { try { return readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean); } catch { return null; } };
 /** Live processes (not this one) whose arguments hold `needle` as consecutive arguments. */
 /** The visible window's arguments. It never asks to update on start: a question in a tab stalls the role (F313). */
-const windowArgs = (endpoint: string, thread: string) => [...WINDOW_SETTINGS, '--remote', endpoint, 'resume', thread];
+/** The watched window's arguments after the executable; the watcher's check accepts exactly these. */
+export const windowArgs = (endpoint: string, thread: string) => [...WINDOW_SETTINGS, '--remote', endpoint, 'resume', thread];
 
 function processesWith(needle: string[]): number[] {
   const found: number[] = [];
