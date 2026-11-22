@@ -106,7 +106,7 @@ async function runRound(real: Store, codex: string, version: string, options: Ro
   const saved = { db: process.env.SASSATO_DB, workspace: process.env.SASSATO_WORKSPACE, role: process.env.SASSATO_ROLE, path: process.env.PATH };
   let step = 'setup', result: Row = { version, model, dir, status: 'failed' };
   // The sessions of the round's processes are noted while they run, so the sweep finds an orphan whose parent ended.
-  const sessions = new Set<number>(), note = () => { roundProcesses(db, sessions); };
+  const sessions = new Set<number>(), sharedSessions = new Set<number>(), note = () => { roundProcesses(db, sessions, sharedSessions); };
   try {
     initWorkspace(scratch, WORKSPACE, { roles: [{ name: 'human', kind: 'human' }, { name: PROBE, provider: 'codex', working_dir: cwd, model, sandbox_mode: 'workspace-write', approval_policy: 'never' }] });
     scratch.use(WORKSPACE);
@@ -165,7 +165,7 @@ async function runRound(real: Store, codex: string, version: string, options: Ro
     await closeRecorded(scratch, PROBE).catch(() => false);
     try { scratch.close(); } catch { /* recorded below if anything is left */ }
   }
-  const left = await sweep(db, sessions), problems = [
+  const left = await sweep(db, sessions, sharedSessions), problems = [
     ...left.own.length ? [`processes ${left.own.join(', ')} did not stop`] : [],
     ...left.shared.length ? [`Codex's shared daemon ${left.shared.join(', ')} was started by the round and carries its database; it was left running for the real sessions, restart it`] : [],
   ];
@@ -180,7 +180,7 @@ async function runRound(real: Store, codex: string, version: string, options: Ro
  * stopped is still found. This process's own session (a round run from a shell shares that shell's) never counts.
  * Nothing else has that database, which is new for each round. Codex's shared app-server daemon is never one, nor is
  * its session: real sessions may use it, so one the round happened to start is reported in `shared`, not stopped. */
-export function roundProcesses(db: string, sessions = new Set<number>()): { own: number[]; shared: number[] } {
+export function roundProcesses(db: string, sessions = new Set<number>(), sharedSessions = new Set<number>()): { own: number[]; shared: number[] } {
   const pids = readdirSync('/proc').filter(pid => /^\d+$/.test(pid)).map(Number).filter(pid => pid !== process.pid);
   const marker = `SASSATO_DB=${db}`, parent = new Map<number, number>(), session = new Map<number, number>(), found = new Set<number>(), shared = new Set<number>();
   const stat = (pid: number) => { const text = readFileSync(`/proc/${pid}/stat`, 'utf8'), fields = text.slice(text.lastIndexOf(')') + 2).split(' '); return { ppid: Number(fields[1]), sid: Number(fields[3]) }; };
@@ -192,7 +192,8 @@ export function roundProcesses(db: string, sessions = new Set<number>()): { own:
   }
   // Sessions are seeded only from the processes carrying the database, never from a descendant found through them.
   for (const pid of found) { const sid = session.get(pid); if (sid) sessions.add(sid); }
-  const sharedSessions = new Set([...shared].map(pid => session.get(pid)));
+  // A session the shared daemon was ever seen in stays excluded, also after the daemon ended.
+  for (const pid of shared) { const sid = session.get(pid); if (sid) sharedSessions.add(sid); }
   const ours = (sid: number | undefined) => sid !== undefined && sid !== mySession && !sharedSessions.has(sid) && sessions.has(sid);
   for (let grew = true; grew;) {
     grew = false;
@@ -203,12 +204,12 @@ export function roundProcesses(db: string, sessions = new Set<number>()): { own:
 }
 
 /** Stops the round's processes, so a failure at any step leaves nothing behind; returns what is still left. */
-async function sweep(db: string, sessions: Set<number>): Promise<{ own: number[]; shared: number[] }> {
-  const own = () => roundProcesses(db, sessions).own;
+async function sweep(db: string, sessions: Set<number>, sharedSessions: Set<number>): Promise<{ own: number[]; shared: number[] }> {
+  const own = () => roundProcesses(db, sessions, sharedSessions).own;
   const signal = (name: NodeJS.Signals) => { for (const pid of own()) try { process.kill(pid, name); } catch { /* gone */ } };
   signal('SIGTERM');
   if (!await until(() => own().length ? undefined : true, 10_000)) { signal('SIGKILL'); await until(() => own().length ? undefined : true, 5_000); }
-  return roundProcesses(db, sessions);
+  return roundProcesses(db, sessions, sharedSessions);
 }
 
 /** One short turn that leaves a saved thread whose first prompt is the probe's bootstrap; returns its id. */
