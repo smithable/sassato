@@ -11,6 +11,7 @@ import * as a from './admin.js';
 import * as t from './tasks.js';
 import * as c from './coordination.js';
 import * as fb from './feedback.js';
+import * as st from './stats.js';
 import * as m from './migration.js';
 import * as l from './launch.js';
 import { retitleImportedTasks } from './retitle.js';
@@ -72,6 +73,7 @@ Mail:       send ROLE[,ROLE]|all TEXT [--re T1] [--urgency 0..10] [--reason TEXT
               (STOP, each entry's full text, mail to acknowledge), save the cursor, and end with the re-arm command
 Knowledge:  fact set KEY TEXT --source LOCATION [--expect VERSION]
             fact get KEY | fact history KEY | facts
+Stats:      stats [--since DATE] [--role ROLE] (read-only: mail unread times, urgent mail not acknowledged, mail a cursor passed unread, idle with work, review and question waits)
 Feedback:   feedback add workflow|tokens|untested|sampleusers|sassato TEXT [--re T1] (one line; wakes nobody)
             feedback list [--kind K] [--author ROLE] [--all] [--limit N] [--after K1]
             feedback close K1 --task T1 | --fact KEY | --dropped REASON (a human, or a role in --feedback-closers)
@@ -128,7 +130,7 @@ export const allowed: Record<string,string[]> = {
   'fact set':['source','checked-at','expect','answers'],'feedback add':['re'],'feedback list':['kind','author','all','limit','after'],'feedback close':['task','fact','dropped'],'fact get':[],'fact history':[],'codex accept':['replace'],'codex versions':[],facts:['limit'],
   'wip show':[],'wip set':['current','next','notes','expect'],sessions:[], 'session register':['provider','session-id','pid','replace'],'session heartbeat':['session-id'],'session end':['session-id'],usage:['until'],
   stop:['all','timeout','no-wait','force'],'stop-status':['quiet','stop-file'],stopped:[],'resume-work':['all'],
-  context:['brief','since','limit','line-length'],status:['line-length'],'job run':['kind','wait','no-wait','job-version','load','mem'],'job list':[],'job stats':[],search:['type','owner','status','since','limit','phrase','prefix'],
+  context:['brief','since','limit','line-length'],status:['line-length'],'job run':['kind','wait','no-wait','job-version','load','mem'],'job list':[],'job stats':[],stats:['since','role'],search:['type','owner','status','since','limit','phrase','prefix'],
   'supervise attended':['attended','role'],'supervise enroll':['role','file'],'supervise attach':['role'],'supervise assignment':[],'supervise reconcile':['session-id'],'supervise ready':['file','expect'],'supervise status':[],'supervise ping':[],'supervise ack':['generation'],
   'checkout register':['dir'],'checkout list':[],'checkout show':[],'checkout bind':['dir','task','provider','session-id','mode'],'checkout resolve':['task'],'checkout release':[],'brief save':['file','expect'],'brief show':[],
   'checkpoint show':[], 'checkpoint save':['current','next','notes','expect','evidence'], 'progress show':[], 'progress save':['cursor','expect','scored-receipt','idle-receipt','stop-file'],
@@ -161,6 +163,7 @@ function humanOutput(value: unknown, command?: string): string {
   if(Array.isArray(value)&&command==='retitle') {
     return value.length?value.map((row:Row)=>`${row.id}${row.applied?' updated':' preview'}: ${row.before} → ${row.title}`).join('\n'):'No imported titles need cleanup.';
   }
+  if(value && typeof value==='object' && command==='stats') return st.formatStats(value as Row);
   if(value && typeof value==='object' && command==='feedback list') {
     const page=value as {items:Row[];has_more:boolean;next_after:string|null};
     const lines=page.items.map(k=>`${k.id} · ${k.kind} · ${k.author} · ${String(k.created_at).slice(0,16).replace('T',' ')}${k.task_id?` · ${k.task_id}`:''}: ${k.body}${k.open?'':` (closed: ${k.outcome} ${k.outcome_ref})`}`);
@@ -325,7 +328,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     else if(command==='restore') {const source=arg('backup');empty();check(str('db'),'Restore requires explicit --db NEW_FILE');result=await a.restoreDatabase(source,db);}
     else if(command==='machine') {empty();result=a.machine();}
     else {
-      const reads=['watch-status','supervise assignment','supervise status','checkout list','checkout show','checkout resolve','brief show','job list','job stats','tasks','show','blockers','humans','outbox','sent','fact get','fact history','feedback list','codex versions','facts','wip show','sessions','roles','workspace settings','workspace wake-audit','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
+      const reads=['watch-status','supervise assignment','supervise status','checkout list','checkout show','checkout resolve','brief show','job list','job stats','stats','tasks','show','blockers','humans','outbox','sent','fact get','fact history','feedback list','codex versions','facts','wip show','sessions','roles','workspace settings','workspace wake-audit','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
       const readonly=reads.includes(command)||command==='retitle'&&!bool('apply')||command==='inbox'&&bool('peek')||['launch','import'].includes(command)&&bool('dry-run');
       store=new Store(db,actor,{readonly,managedWriteMode:command==='supervise reconcile'?'reconcile':command==='supervise ack'?'normal':command==='stopped'?'stop-ack':'normal'});
       const s=store;
@@ -505,6 +508,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'job run': {check(!(bool('wait')&&bool('no-wait')),'Choose --wait or --no-wait');process.exitCode=await jobs.runJob(s,{kind:need('kind'),wait:!bool('no-wait'),command:p.splice(0),estimate:{version:str('job-version'),load:str('load') as jobs.Estimate['load'],mem:num('mem')}});return;}
         case 'job list': empty();result=jobs.listJobs(s);break;
         case 'job stats': empty();result=jobs.jobStats(s);break;
+        case 'stats': empty();result=st.stats(s,{since:str('since'),role:str('role')});break;
         case 'search': result=a.search(s,rest('query'),{type:str('type'),role:str('owner'),status:str('status'),since:str('since'),limit:num('limit'),phrase:bool('phrase'),prefix:bool('prefix')});break;
         case 'import': empty();{const input={backlog:str('backlog'),wip:str('wip'),actions:str('actions'),sessions:str('sessions'),repair:bool('repair')};check(bool('dry-run')!==!!str('confirm'),'Use --dry-run to preview or --confirm DIGEST to apply');result=bool('dry-run')?m.previewImport(s,input):m.applyImport(s,input,need('confirm'));}break;
         case 'export': {const path=arg('new directory');empty();result=m.exportMarkdown(s,path);break;}
