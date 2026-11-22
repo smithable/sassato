@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join,resolve } from 'node:path';
 import { mkdtempSync,readFileSync,rmSync,writeFileSync,existsSync,symlinkSync,realpathSync,chmodSync,lstatSync,statSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
+import { performance } from 'node:perf_hooks';
 import { Store } from '../dist/storage.js';
 import { initWorkspace,status,renderStatus } from '../dist/admin.js';
 import { registerSession,send } from '../dist/coordination.js';
@@ -49,8 +50,8 @@ else if(args[0]==='queue'){
   const calls=()=>existsSync(log)?readFileSync(log,'utf8').trim().split('\n').map(line=>JSON.parse(line)):[];
   const cli=(...args)=>spawnSync(process.execPath,[resolve('bin/sassato.js'),...args,'--db',db,'--as','b','--workspace','team'],
     {encoding:'utf8',env:{...process.env,CODEX_THREAD_ID:thread}});
-  t.after(async()=>{process.env.PATH=originalPath;worker.close();operator.close();child.kill();await exited;server.close();rmSync(dir,{recursive:true,force:true});});
-  return {operator,worker,dir,remote,calls,cli,child};
+  t.after(async()=>{process.env.PATH=originalPath;worker.close();operator.close();child.kill();await exited;if(server.listening)server.close();rmSync(dir,{recursive:true,force:true});});
+  return {operator,worker,dir,remote,calls,cli,child,server};
 }
 test('attached thread gets one fixed prompt per pending result, STOP preempts receipt',async t=>{
   const f=await fixture(t);
@@ -90,13 +91,45 @@ test('warning despite exit zero suspends, preserves pending work, explicit close
   assert.equal(f.cli('wake','--pending').status,0);
   assert.equal(reconcileWatch(f.operator,'b',epoch).closed,epoch);
 });
-test('accepted wake without receipt reaches its deadline once and alerts the operator',async t=>{
+test('a turn longer than the deadline keeps the one queued wake: one alert, receipt later, watch goes on',async t=>{
   const f=await fixture(t);
   send(f.operator,['b'],'Work',{now:true});
   let n=0;const clock=()=>++n*300001;
-  await assert.rejects(launchWatch(f.operator,'b',f.remote,thread,clock),/Five minutes/);
+  const run=launchWatch(f.operator,'b',f.remote,thread,clock);run.catch(()=>{});
+  await until(()=>!!f.worker.get("SELECT id FROM events WHERE entity='watch-dispatch' AND action='overdue'"));
+  await delay(300);
+  assert.equal(f.calls().length,1);
+  assert.equal(f.worker.all("SELECT id FROM events WHERE entity='watch-dispatch' AND action='overdue'").length,1);
+  const alerts=f.worker.all("SELECT body FROM messages WHERE sender='b' AND body LIKE '%no receipt for five minutes%'");
+  assert.equal(alerts.length,1);assert.equal(f.worker.get("SELECT id FROM messages WHERE sender='b' AND urgent=1"),undefined);
+  assert.equal(f.worker.get("SELECT id FROM events WHERE entity='watch-dispatch' AND action='exited'"),undefined);
+  assert.equal(f.cli('wake','--pending').status,0);
+  send(f.operator,['b'],'More work',{now:true});
+  await until(()=>f.calls().length===2);
+  requestStop(f.operator,['b']);
+  assert.equal((await run).reason,'stopped');
+  assert.equal(f.worker.all("SELECT id FROM messages WHERE sender='b' AND body LIKE '%no receipt for five minutes%'").length,1);
+});
+test('a wake waiting for its receipt ends the watch when the app server is gone, saying so',async t=>{
+  const f=await fixture(t);
+  send(f.operator,['b'],'Work',{now:true});
+  const run=launchWatch(f.operator,'b',f.remote,thread,()=>performance.now()*1000);run.catch(()=>{});
+  await until(()=>f.calls().length===1);
+  f.server.close();
+  await assert.rejects(run,/app server/);
+  assert.equal(status(f.worker).watcher.reason,'the Codex app server is gone');
   assert.equal(f.calls().length,1);
   assert.equal(getNotificationProgress(f.worker).cursor,0);
+});
+test('a wake waiting for its receipt ends the watch when the window is gone, saying so',async t=>{
+  const f=await fixture(t);
+  send(f.operator,['b'],'Work',{now:true});
+  const run=launchWatch(f.operator,'b',f.remote,thread);run.catch(()=>{});
+  await until(()=>f.calls().length===1);
+  f.child.kill();
+  await assert.rejects(run,/live registered Codex/);
+  assert.equal(status(f.worker).watcher.reason,'the Codex window is gone');
+  assert.ok(f.worker.get("SELECT id FROM messages WHERE sender='b' AND urgent=1 AND body LIKE '%stopped: the Codex window is gone.%'"));
 });
 test('agent enrollment and a different thread or endpoint fail before dispatch',async t=>{
   const f=await fixture(t);

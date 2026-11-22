@@ -1,6 +1,7 @@
 // An explicit human enrollment of an already-attached Codex thread. No provider launch,
 // transcript access, approval forwarding or automatic re-enrollment.
 import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { connect } from 'node:net';
 import { dirname } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -17,6 +18,8 @@ import { workspaceSettings, checkCodexVersion } from './workspace-settings.js';
 
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const deadlineMs=300_000;
+// While a wake waits for its receipt, how often the app server is asked whether it still answers (T1191).
+const probeEveryMs=10_000,probeTimeoutMs=2_000;
 // A queue call on a loaded machine (a gate running) can take more than ten seconds: wait up to 30, and after a
 // timeout try once more after a short pause (T663). A timed-out call may still have queued its line; a second
 // "run sas wake --pending" line is harmless, since the pending result is consumed once.
@@ -32,6 +35,8 @@ const reasons:[RegExp,string][]=[
   [/^Reconcile the role’s notification progress/,'notification progress missing'],
   [/^Queue delivery is uncertain/,'queue delivery uncertain'],
   [/^Five minutes elapsed/,'no worker receipt within five minutes'],
+  [/^Watch requires the live registered Codex remote TUI/,'the Codex window is gone'],
+  [/^The Codex app server/,'the Codex app server is gone'],
 ];
 /** The only reasons a watcher event carries; status shows any other stored text as the last one. */
 export const WATCH_REASONS=new Set([...reasons.map(([,reason])=>reason),'interrupted','see the launcher terminal']);
@@ -64,14 +69,28 @@ function session(s: Store, thread: string, remote: string) {
     'Expected a Codex TUI attached with --remote ENDPOINT resume UUID',4);
   // Codex 0.167 links the given path to its real socket. Follow the user's own link only through folders no one
   // else can change, bind the identity to the socket itself, and send the queue calls to that resolved path.
-  const given=remote.slice(7),uid=process.getuid?.(),link=lstatSync(given,{bigint:true});
+  const given=remote.slice(7),uid=process.getuid?.();
+  let link:ReturnType<typeof lstatSync>|undefined;
+  try {link=lstatSync(given,{bigint:true});} catch {link=undefined;}
+  check(!!link,'The Codex app server’s socket is missing',4);
   const target=realpathSync(given),endpoint=statSync(target,{bigint:true});
-  check(Number(link.uid)===uid && endpoint.isSocket() && Number(endpoint.uid)===uid &&
+  check(Number(link!.uid)===uid && endpoint.isSocket() && Number(endpoint.uid)===uid &&
     guarded(realpathSync(dirname(given)),uid) && guarded(dirname(target),uid),
     'Expected a local Unix socket owned by the current user, in a folder only that user can change',4);
   return {session:row.id as number,thread,pid:row.pid,start:row.process_start,
     socket:`${endpoint.dev}:${endpoint.ino}:${endpoint.ctimeNs}`,endpoint:`unix://${target}`,cwd:realpathSync(config.working_dir),
     policy:JSON.stringify([config.model,config.reasoning_effort,config.sandbox_mode,config.approval_policy,config.permission_mode,workspaceSettings(s).stop_file])};
+}
+
+/** False only when nothing listens on the socket any more; a slow or busy server counts as alive. */
+function answers(path:string):Promise<boolean> {
+  return new Promise(done=>{
+    const socket=connect({path});
+    const end=(alive:boolean)=>{clearTimeout(timer);socket.destroy();done(alive);};
+    const timer=setTimeout(()=>end(true),probeTimeoutMs);
+    socket.once('connect',()=>end(true));
+    socket.once('error',(error:NodeJS.ErrnoException)=>end(!['ECONNREFUSED','ENOENT'].includes(error.code??'')));
+  });
 }
 
 /** Report only durable identifiers. An open epoch survives a crashed watcher. */
@@ -214,7 +233,7 @@ async function observe(s:Store,human:string,remote:string,thread:string,clock:()
       'Queue delivery is uncertain; inspect the worker and pending result before re-enrolling',4);
     return true;
   };
-  let stopping=false;
+  let stopping=false,overdueSaid=false;
   const stop=async()=>{
     stopping=true;
     // Fence outstanding work before the external STOP notice can block or fail.
@@ -238,12 +257,24 @@ async function observe(s:Store,human:string,remote:string,thread:string,clock:()
       if(pendingStop(s))return await stop();
       inspect();
       if(!await queue(false,pending))return await stop();
-      const deadline=clock()+deadlineMs;
+      // A queued line reaches the window only when its current turn ends, which can take far longer than five
+      // minutes (T1191). Keep the one queued wake and wait for its receipt while the window and the app server
+      // live: past the deadline, say so once per enrollment; leave only when one of them is gone.
+      const deadline=clock()+deadlineMs;let probed=clock();
       for(;;){
         if(pendingStop(s))return await stop();
         inspect();
         if(consumed(pending))break;
-        check(clock()<deadline,'Five minutes elapsed without a worker receipt; inspect the worker and consume the pending result',4);
+        if(clock()-probed>=probeEveryMs){
+          probed=clock();
+          check(await answers(bound.endpoint.slice(7)),'The Codex app server no longer answers on its socket',4);
+        }
+        if(!overdueSaid && clock()>=deadline){
+          overdueSaid=true;
+          record(s,role,'overdue',{epoch,pending});
+          try {alert(`wake ${pending} has had no receipt for five minutes; ${role} is probably in a long turn. It stays queued and the watch keeps waiting while the window and the app server live. Said once per enrollment.`);}
+          catch(alertError) {console.error(`Could not send the alert: ${alertError instanceof Error?alertError.message:alertError}`);}
+        }
         await delay(500);
       }
       const ids=(result.digest?.entries??[]).filter(entry=>entry.id.startsWith('M') &&

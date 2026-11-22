@@ -2,6 +2,11 @@
 
 ## 0.1.3 — unreleased
 
+- `launch-watch` no longer ends after five minutes without a receipt (T1191): a queued line waits for the
+  window's current turn to end, which can take longer. Past five minutes it alerts the enrolling human once per
+  enrollment and keeps waiting on the one queued wake; it ends only when the registered window or the app server
+  is gone, saying which.
+
 - `submit T1 SUMMARY --reviewer ROLE` works: the option was allowed for `submit` but never declared
   to the parser, which refused it as unknown. A test now checks every allowed option is declared, and the
   package smoke runs `submit --reviewer` from the packed tarball.
