@@ -85,7 +85,7 @@ Stats:      stats [--since DATE] [--role ROLE] (read-only: mail unread times, ur
 Rules:      rule propose KEY (--file PATH | TEXT) [--scope all|ROLE] [--kind always|step] [--for HUMAN]
             (asks the human; the answer 1 approve or 2 reject decides; relays: workspace set --rule-relays)
             rule retire KEY REASON [--for HUMAN] | rule withdraw P1 REASON (its proposer or a human)
-            rule get KEY|P1 | rule list [--for ROLE] [--pending] | rule diff SET_VERSION | rule export [--force --as HUMAN] | rule loaded SET_VERSION DIGEST
+            rule get KEY|P1 | rule list [--for ROLE] [--pending] | rule diff SET_VERSION | rule export [--force --as HUMAN] | rule loaded SET_VERSION DIGEST SESSION
 Feedback:   feedback add workflow|tokens|untested|sampleusers|sassato TEXT [--re T1] (one line; wakes nobody)
             feedback list [--kind K] [--author ROLE] [--all] [--limit N] [--after K1]
             feedback close K1 --task T1 | --fact KEY | --dropped REASON (a human, or a role in --feedback-closers)
@@ -464,7 +464,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'rule get': {const ref=arg('key or proposal');empty();result=rules.getRule(s,ref);break;}
         case 'rule list': empty();result=rules.listRules(s,{forRole:str('for'),pending:bool('pending')});break;
         case 'rule diff': {const since=arg('set version');empty();result=rules.diffRules(s,since);break;}
-        case 'rule loaded': {const version=Number(arg('set version')),sum=arg('digest');empty();result=rules.recordRulesLoaded(s,version,sum);break;}
+        case 'rule loaded': {const version=Number(arg('set version')),sum=arg('digest'),session=arg('session');empty();result=rules.recordRulesLoaded(s,version,sum,session);break;}
         case 'rule export': empty();result=s.tx(()=>{if(!bool('force'))return rules.exportRules(s);s.requireHuman();const done=rules.exportRules(s,{allowOlder:true});if(done)s.event('rule-set',s.workspace,'export-forced',{set_version:done.set_version});return done;});check(result,'A database in memory has no export');break;
         case 'facts': empty();result=c.facts(s,{limit:num('limit')});break;
         case 'wip show': {const role=p.shift();empty();result=c.getWip(s,role);break;}

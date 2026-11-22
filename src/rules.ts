@@ -58,12 +58,14 @@ export function ruleBrief(s: Store, role: string): Row {
     always: set.rules.filter((r: Row) => r.kind === 'always').map(({ key, version, text }: Row) => ({ key, version, text })),
     steps: set.rules.filter((r: Row) => r.kind === 'step').map((r: Row) => ({ key: r.key, version: r.version, line: firstLine(r.text) })) };
 }
-/** The session records that it read this set (the digest, or its first 12 characters, as the brief printed it). */
-export function recordRulesLoaded(s: Store, version: number, sum: string): Row {
+/** The session the brief named records that it read this set (the digest, or its first 12 characters, as printed). */
+export function recordRulesLoaded(s: Store, version: number, sum: string, sessionRef: string): Row {
   const actor = s.requireActor();
   return s.tx(() => {
     const session = activeSession(s, actor), set = ruleSet(s, actor);
     check(session, 'No active session is registered for this role; the record of rules read is per session', 3);
+    check(sessionRef === `S${session.id}`, `The brief was read by ${sessionRef}, but ${actor}'s session now is S${session.id}; read the brief again`, 4);
+    check(set.set_version > 0, 'No rule is in force yet; there is nothing to record', 4);
     check(set.set_version === integer(version, 'set version') && typeof sum === 'string' && sum.length >= 12 && set.digest.startsWith(sum),
       `The rules in force for ${actor} are set ${set.set_version} (digest ${set.digest.slice(0, 12)}); read them with sas context --brief and record that`, 4);
     const at = now();
@@ -76,7 +78,7 @@ export function requireRulesLoaded(s: Store, actor: string): void {
   if (setVersion(s) === 0) return;
   const session = activeSession(s, actor);
   if (!session) return;
-  check(s.get('SELECT 1 FROM rule_loads WHERE workspace_id=? AND session_id=?', s.ws, session.id),
+  check(s.get('SELECT 1 FROM rule_loads WHERE workspace_id=? AND session_id=? AND set_version>0', s.ws, session.id),
     `Read the rules before taking work: sas context --brief --as ${actor}, then the sas rule loaded line it prints`, 3);
 }
 

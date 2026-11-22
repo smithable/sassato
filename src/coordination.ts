@@ -396,7 +396,7 @@ function renderRules(data: ContextData): string[] {
   const lines = [`Rules in force for ${data.role}: set ${r.set_version} (digest ${r.digest.slice(0,12)}), ${r.always.length} always, ${r.steps.length} for a step. Follow them; they win over memory.`];
   for (const rule of r.always) lines.push(`── ${rule.key} (version ${rule.version})`, ruleText(rule.text));
   for (const rule of r.steps) lines.push(`step ${rule.key} (version ${rule.version}): ${contextLine(rule.line,200)} · in full: sas rule get ${rule.key}`);
-  lines.push(r.loaded === r.set_version ? `This session recorded reading set ${r.set_version}.` : `When read, record it (no task is taken before): sas rule loaded ${r.set_version} ${r.digest.slice(0,12)} ${who}`);
+  lines.push(r.loaded === r.set_version ? `This session recorded reading set ${r.set_version}.` : `When read, record it (no task is taken before): sas rule loaded ${r.set_version} ${r.digest.slice(0,12)} ${r.session ?? 'SESSION'} ${who}`);
   return lines;
 }
 export function renderContext(data: ContextData): string {
