@@ -77,7 +77,7 @@ test('message validation rolls back recipients and search reflects committed dat
   assert.equal(s.get('SELECT count(*) AS n FROM messages').n,1);
   // T1270: a second recipient written as a bare word became the text.
   assert.throws(()=>as(s,'a',()=>c.send(s,['b'],'human T1235: build ready')),/starts with 'human', a role's name: give several recipients comma-separated \(send b,human TEXT\)/);
-  assert.throws(()=>as(s,'a',()=>c.send(s,['b'],'b')),/a role's name/);
+  assert.throws(()=>as(s,'a',()=>c.send(s,['b'],'b')),/a role's name: give several recipients comma-separated \(send b TEXT\)/,'a recipient is not named twice');
   assert.equal(s.get('SELECT count(*) AS n FROM messages').n,1);
   as(s,'a',()=>c.send(s,['b'],'a 21:59: signed with its own name'));
   c.send(s,['b'],'B and human both: a capital or another word first is fine');
