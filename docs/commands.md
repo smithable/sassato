@@ -498,6 +498,25 @@ first, but only when an earlier `launch --watched` started it (the same pid and 
 started any other way is never closed. `--dry-run` prints the two commands per role and starts nothing. `--watched`
 takes no `--fresh`, `--terminal`, `--window` or `--new-window`.
 
+After the roles started, `launch --watched` starts the **Codex round** in its own process (log `codex-round.log` in
+the launch folder), so the launch is never slower. `codex round [--force] [--model M] [--keep] --as HUMAN` runs the
+same round by hand. Once per installed Codex version, a throwaway role `probe` goes through what a watched role does,
+in a scratch database and folder under the launch folder's `codex-round/VERSION-TIME/`, on the real Codex sign-in:
+1. a short `codex exec` turn starts the probe's thread (its first prompt is the usual Codex start prompt);
+2. the probe is started as `launch --watched` starts a role, with a hidden terminal in place of the window, and gets
+   its own watcher;
+3. a mail is acknowledged within 180 seconds; a mail asking for a 90 second command and then an acknowledgement is
+   acknowledged within 300 seconds, no sooner than the command could end, with the watcher still running;
+4. `stop` reaches it, and the watcher ends once its window and server are closed.
+The model is the first Codex role's (by name) unless `--model` names one; three short turns are spent in all. A pass
+is the event `codex-round passed VERSION` in the real database, and its folder is removed (`--keep` keeps it); later
+rounds on that version are skipped unless `--force`. A failure is the event `codex-round failed VERSION`, its folder
+is kept, and the role in `nudge_escalate` (else the default human) gets an urgent mail naming the step and the folder.
+Afterwards every process of the round is stopped: those started with its database, their children and the sessions
+they were seen in (never the caller's own). Codex's shared daemon is never stopped; if the round started it, the round fails and
+says so. One round per version runs at a time (an exclusive lock on `codex-round/VERSION.lock`, which the system lets go when the round ends, held until the result is recorded); a failure before the probe
+exists (no model, no Codex) is recorded and mailed the same way. The round never touches the real roles.
+
 ## Output contract
 
 --json writes a single JSON value to stdout; errors are on stderr, with no success output.
