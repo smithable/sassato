@@ -51,7 +51,7 @@ test('a quiet agent is nudged twice, then the escalation role gets one mail and 
   const between = Date.now();
   const second = await f.wait('b');
   assert.equal(second.nudge.count, 2, 'a re-armed waiter keeps the count');
-  assert.ok(Date.now() - between >= 14 * 60_000, 'the second nudge waits its own interval');
+  assert.ok(Date.now() - between >= 15 * 60_000, 'the second nudge waits its own interval');
   assert.equal(f.s.get("SELECT actor FROM events WHERE entity='nudge' ORDER BY id DESC LIMIT 1").actor, 'b');
   assert.equal((await f.wait('b', 3000)).reason, 'timeout', 'the third interval mails the escalation role and does not wake b');
   assert.equal(f.nudges('b', 'escalated').length, 1);

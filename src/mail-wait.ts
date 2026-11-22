@@ -361,11 +361,16 @@ export async function waitForWork(s:Store, options:WaitOptions={}, observer?:Wai
           // The mail is the role's own write, so the escalation event comes after it and still marks the end.
           if(to&&to!==actor)send(s,[to],`${actor} has written nothing for ${nudgeMinutes*3} minutes and answered neither of two nudges (an idle reason or a take). No more nudges until it writes.`);
           s.event('nudge',actor,'escalated',{minutes:nudgeMinutes,to});
-        } else if(found)s.event('nudge',actor,'sent',{minutes:nudgeMinutes,count:found.count,tasks:found.tasks});
+        } else if(found) {
+          // The text is built before the event, so a nudge is recorded only when it can be delivered.
+          const text=nudgeText(s,actor,nudgeMinutes,found.count,found.tasks);
+          s.event('nudge',actor,'sent',{minutes:nudgeMinutes,count:found.count,tasks:found.tasks});
+          return {...found,text};
+        }
         return found;
       });
       if(due&&!due.escalate) {
-        const text=nudgeText(s,actor,nudgeMinutes,due.count,due.tasks);
+        const text=due.text!;
         const wake:WaitResult={reason:'nudge',role:actor,cursor,...(due.tasks.length?{tasks:due.tasks}:{}),nudge:{minutes:nudgeMinutes,count:due.count,text}};
         if(!settle)return wake;
         if(!add(entryFor(s,wake)))return digest('capacity');
@@ -416,7 +421,7 @@ function changeFor(s:Store,actor:string,after:number):Row|undefined {
     after=events[events.length-1].id;
   }
 }
-function scanNudge(s:Store,actor:string,minutes:number,wall:number,state:NudgeState):{count:number;tasks:string[];escalate?:true}|undefined {
+function scanNudge(s:Store,actor:string,minutes:number,wall:number,state:NudgeState):{count:number;tasks:string[];escalate?:true;text?:string}|undefined {
   // A write of the role's own, not a read, an acknowledgement or a lease renewal; with none, its first waiter.
   const last=s.get(`SELECT id,created_at FROM events WHERE workspace_id=? AND actor=?
     AND entity NOT IN ('wip','checkpoint','session','notification-progress','wake-enrollment','wake-delivery','watch-dispatch','supervisor-ping','waiter','nudge')
