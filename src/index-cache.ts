@@ -17,7 +17,12 @@ export function indexCacheRoot(path?:string):string {
   function canonical(path:string):string {
     if(existsSync(path))return realpathSync(path);
     const result=join(canonical(dirname(path)),path.slice(dirname(path).length+1));
-    try {mkdirSync(result,{mode:0o700});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;}
+    try {mkdirSync(result,{mode:0o700});}catch(error){
+      const code=(error as NodeJS.ErrnoException).code;
+      // A read-only sandbox (T1258): say what to do instead of a bare EROFS.
+      check(!['EROFS','EACCES','EPERM'].includes(code??''),`Index cache ${requested} cannot be created here (${code}); give --cache with an index built outside this sandbox, or build one where the cache is writable`,4);
+      if(code!=='EEXIST')throw error;
+    }
     privateDirectory(result);return result;
   }
   const root=canonical(requested);privateDirectory(root);cacheRoots.add(root);pruneIndexCache(root);return root;

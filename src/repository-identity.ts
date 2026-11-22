@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { spawnError } from './spawn-result.js';
 import { createHash } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative, sep } from 'node:path';
@@ -29,7 +30,7 @@ export function probeRepositoryIdentity(directory:string,budget?:CaptureBudget):
   const run=(args:string[],optional=false):string|null=>{
     const result=spawnSync('git',['-c','core.fsmonitor=false','-C',working_dir,...args],{encoding:'utf8',timeout:budget?.timeout(2000)??2000,maxBuffer:16384,env,shell:false});
     budget?.check();
-    check(!result.error && (result.status===0 || optional && result.status===1),'Repository identity unavailable; inspect missing or changed checkout before rebinding',4);
+    check(!spawnError(result) && (result.status===0 || optional && result.status===1),`Repository identity unavailable (git ${args.join(' ')}: ${spawnError(result)?.message??`exit ${result.status??result.signal}`}); inspect missing or changed checkout before rebinding`,4);
     if(result.status!==0)return null;
     return text(result.stdout.trimEnd(),'Git identity metadata',4096);
   };

@@ -1,3 +1,4 @@
+import { spawnError } from './spawn-result.js';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { isUtf8 } from 'node:buffer';
@@ -16,7 +17,7 @@ export function dirtyManifest(root:string,budget=new CaptureBudget()):DirtyEntry
   const run=(args:string[],optional=false,maxBuffer=1_048_576):string=>{
     const result=spawnSync('git',[...config,'-C',root,...args],{env,timeout:budget.timeout(5000),maxBuffer,shell:false});
     budget.check();
-    check(!result.error && (result.status===0 || optional && result.status===1),'Dirty manifest Git probe failed or exceeded its time/output bound',4);
+    check(!spawnError(result) && (result.status===0 || optional && result.status===1),`Dirty manifest Git probe failed or exceeded its time/output bound (git ${args[0]}: ${spawnError(result)?.message??`exit ${result.status??result.signal}`})`,4);
     check(isUtf8(result.stdout),'Non-UTF8 Git paths or metadata block dirty-work proof',4);
     return result.stdout.toString('utf8');
   };
