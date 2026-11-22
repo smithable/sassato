@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 import { Store } from '../dist/storage.js';
 import { now } from '../dist/errors.js';
 import { previewImport, applyImport, exportMarkdown } from '../dist/migration.js';
-import { setWorkspaceSettings, setRoleAutocompact, roleAutocompact, workspaceSettings } from '../dist/workspace-settings.js';
+import { setWorkspaceSettings, setRoleAutocompact, roleAutocompact, setRoleAdvisor, roleAdvisor, workspaceSettings } from '../dist/workspace-settings.js';
 import { planLaunch, launch, unlockLaunch, windowsTerminalArgs, savedCodexSession } from '../dist/launch.js';
 import { registerSession, processIdentity, UNVERIFIED_PROVIDER } from '../dist/coordination.js';
 
@@ -521,4 +521,28 @@ test('a Claude role\'s auto-compact window is passed by launch; unset, Codex and
   assert.throws(()=>setWorkspaceSettings(f.s,{autocompact:{a:99999}}),/from 100000/);
   setWorkspaceSettings(f.s,{autocompact:{}});
   assert(!planLaunch(f.s,['a'],{fresh:true})[0].args.includes('--autocompact'),'auto: nothing passed again');
+});
+
+test('a Claude role\'s advisor model is passed by launch after --model; off clears it; Codex roles are refused (T1224)',t=>{
+  const f=fixture(t);
+  assert(!planLaunch(f.s,['a'],{fresh:true})[0].args.includes('--advisor'),'unset: nothing passed');
+  f.s.run("UPDATE roles SET model='sonnet' WHERE workspace_id=? AND name='a'",f.s.ws);
+  assert.equal(setRoleAdvisor(f.s,'a','opus'),'opus');
+  const args=planLaunch(f.s,['a'],{fresh:true})[0].args;
+  assert.equal(args[args.indexOf('--advisor')+1],'opus');
+  assert(args.indexOf('--advisor')>args.indexOf('--model'),'after --model');
+  assert.equal(roleAdvisor(workspaceSettings(f.s),'a'),'opus');
+  // Codex: refused when set, dropped from the settings, never passed.
+  assert.throws(()=>setRoleAdvisor(f.s,'c','opus'),/for Claude roles/);
+  assert.deepEqual(setWorkspaceSettings(f.s,{advisor:{a:'opus',c:'opus'}}).advisor,{a:'opus'});
+  assert(!planLaunch(f.s,['c'],{fresh:true})[0].args.includes('--advisor'));
+  // A value that could read as a flag, or is not a model name, is refused.
+  assert.throws(()=>setRoleAdvisor(f.s,'a','--dangerously-skip-permissions'),/model name/);
+  assert.throws(()=>setRoleAdvisor(f.s,'a','opus 5'),/model name/);
+  assert.throws(()=>setWorkspaceSettings(f.s,{advisor:{a:'-x'}}),/model name/);
+  assert.equal(setRoleAdvisor(f.s,'a','claude-opus-5-5[1m]'),'claude-opus-5-5[1m]');
+  assert.equal(roleAdvisor(workspaceSettings(f.s),'constructor'),null);
+  assert.equal(setRoleAdvisor(f.s,'a','off'),null);
+  assert(!planLaunch(f.s,['a'],{fresh:true})[0].args.includes('--advisor'),'off: nothing passed again');
+  assert.equal(setRoleAdvisor(f.s,'c','off'),null,'off is fine for any role');
 });
