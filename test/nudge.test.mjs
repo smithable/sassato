@@ -123,3 +123,27 @@ test('wake records the waiter armed and ended, says what it waits for, and names
   assert.equal(again.expect_minutes, null);
   assert.equal(f.s.get("SELECT count(*) n FROM documents WHERE type='event' AND entity_id IN (SELECT 'E'||id FROM events WHERE entity='waiter')").n, 0, 'waiter events stay out of search');
 });
+
+test('a session that starts or resumes gets the full interval from its start; a re-arm right after a wake keeps the count', async (t) => {
+  const f = fixture(t);
+  f.as('b', () => noteTask(f.s, f.as('b', () => takeTask(f.s, addTask(f.s, { title: 'Held' }).id)).id, 'yesterday'));
+  f.as('b', () => saveNotificationProgress(f.s, { cursor: f.latest(), expected_version: 0 }));
+  mock.timers.tick(10 * 3600_000);
+  const rearm = () => f.as('b', () => wake(f.s, { settle: 0, timeout: 3600, clock: f.clock, stopFile: join(f.dir, 'stop') }));
+  const started = Date.now();
+  const first = await rearm();
+  assert.equal(first.result.reason, 'nudge');
+  assert.equal(first.result.nudge.count, 1);
+  assert.ok(Date.now() - started >= 15 * 60_000, 'not at once after ten quiet hours: the start counts');
+  const between = Date.now();
+  const second = await rearm();
+  assert.equal(second.result.nudge.count, 2, 'a re-arm right after a wake is no new start');
+  assert.ok(Date.now() - between >= 15 * 60_000);
+  // A waiter that never ended (its session died), then a new one hours later: a new start.
+  f.as('b', () => f.s.tx(() => f.s.event('waiter', 'b', 'armed', {})));
+  mock.timers.tick(5 * 3600_000);
+  const resumed = Date.now();
+  const third = await rearm();
+  assert.equal(third.result.nudge.count, 1, 'the count starts again with the new session');
+  assert.ok(Date.now() - resumed >= 15 * 60_000);
+});

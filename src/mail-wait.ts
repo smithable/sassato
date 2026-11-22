@@ -428,6 +428,9 @@ function scanNudge(s:Store,actor:string,minutes:number,wall:number,state:NudgeSt
     AND NOT (entity='message' AND action IN ('read','done')) AND NOT (entity='task' AND action='renewed')
     ORDER BY id DESC LIMIT 1`,s.ws,actor)??s.get("SELECT id,created_at FROM events WHERE workspace_id=? AND entity='waiter' AND entity_id=? ORDER BY id LIMIT 1",s.ws,actor);
   let base=last?{id:Number(last.id),at:Date.parse(last.created_at)}:state.start;
+  // A session that starts or resumes gets the full interval from its start, not from its last write.
+  const start=sessionStart(s,actor,minutes);
+  if(start&&start.id>base.id)base=start;
   const reason=s.get("SELECT id FROM events WHERE workspace_id=? AND entity='idle' AND entity_id=? AND action='reason' ORDER BY id DESC LIMIT 1",s.ws,actor);
   const lastNudge=s.get("SELECT id FROM events WHERE workspace_id=? AND entity='nudge' AND entity_id=? AND action='sent' ORDER BY id DESC LIMIT 1",s.ws,actor);
   const take=lastNudge?s.get("SELECT id FROM events WHERE workspace_id=? AND entity='task' AND action='claimed' AND actor=? AND id>? ORDER BY id LIMIT 1",s.ws,actor,lastNudge.id):undefined;
@@ -450,6 +453,21 @@ function scanNudge(s:Store,actor:string,minutes:number,wall:number,state:NudgeSt
   state.next=wall+NUDGE_RECHECK;
   if(sent.length>=2)return {count:sent.length,tasks:[],escalate:true};
   return {count:sent.length+1,tasks:idleWork(s,actor)?.tasks??[]};
+}
+// The latest start of the role's session: its registration, or a waiter armed when the one before it never
+// ended (the session died) or ended longer than the nudge interval ago. A re-arm right after a wake is no start.
+function sessionStart(s:Store,actor:string,minutes:number):{id:number;at:number}|undefined {
+  const at=(row:Row)=>({id:Number(row.id),at:Date.parse(row.created_at)});
+  const registered=s.get("SELECT id,created_at FROM events WHERE workspace_id=? AND entity='session' AND action='registered' AND actor=? ORDER BY id DESC LIMIT 1",s.ws,actor);
+  const waiters=s.all("SELECT id,action,created_at FROM events WHERE workspace_id=? AND entity='waiter' AND entity_id=? ORDER BY id DESC LIMIT 200",s.ws,actor);
+  let armed:Row|undefined;
+  for(let i=0;i<waiters.length&&!armed;i++) {
+    if(waiters[i].action!=='armed')continue;
+    const before=waiters[i+1];
+    if(before?before.action==='armed'||Date.parse(waiters[i].created_at)-Date.parse(before.created_at)>minutes*60_000:waiters.length<200)armed=waiters[i];
+  }
+  const found=[registered,armed].filter((row):row is Row=>!!row).map(at).sort((x,y)=>y.id-x.id);
+  return found[0];
 }
 function nudgeText(s:Store,actor:string,minutes:number,count:number,tasks:string[]):string {
   const answer=`Answer with sassato idle-reason "why" --as ${actor} --workspace ${s.workspace}, or take a task`;
