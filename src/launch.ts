@@ -9,7 +9,7 @@ import { check, id, name, now, text } from './errors.js';
 import { processIdentity, registerSession, sessionState, UNVERIFIED_PROVIDER } from './coordination.js';
 import { validateRoleOptions } from './role-options.js';
 import { assertWorkAllowed } from './control.js';
-import { workspaceSettings, roleAutocompact, checkCodexVersion } from './workspace-settings.js';
+import { workspaceSettings, roleAutocompact, roleAdvisor, validAdvisor, checkCodexVersion } from './workspace-settings.js';
 import { assertOrdinaryLaunchAllowed,launchLockPath,launchDirectory } from './launch-admission.js';
 
 export interface LaunchOptions {
@@ -72,6 +72,9 @@ export function planLaunch(store:Store, selected:string[], options:LaunchOptions
     check(!options.watched||provider==='codex',`--watched applies to Codex roles only; ${role} is a ${provider} role`);
     if(config.model) args.push('--model',text(config.model,'model',200));
     if(provider==='claude') {
+      // The advisor model set for this role (workspace settings, T1224); unset passes nothing.
+      const advisor=roleAdvisor(workspaceSettings(store),role);
+      if(advisor) {check(validAdvisor(advisor),`The stored advisor for ${role} is not a model name; set it again with role set --advisor`);args.push('--advisor',advisor);}
       if(config.reasoning_effort) args.push('--effort',config.reasoning_effort);
       if(config.permission_mode) args.push('--permission-mode',config.permission_mode);
       // The auto-compact window set for this role (workspace settings, T980); unset leaves Claude Code's default.

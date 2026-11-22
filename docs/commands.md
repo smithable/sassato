@@ -772,6 +772,19 @@ as `autocompact` (null when unset). It is kept in the workspace settings, so it 
 by default: nothing changes until it is set. In the session, `/autocompact` shows the window in force. Claude
 Code raises a conversation's window by itself when what loads with every request fills more than half of it.
 
+## Advisor model per Claude role (T1224)
+
+```sh
+sas role set builder --advisor opus --as alice   # launch passes: claude --model … --advisor opus
+sas role set builder --advisor off --as alice    # no advisor again
+```
+
+A human sets it. It applies to Claude roles only (setting one for a Codex role is refused, before anything is saved; `off` works for any role) and takes a model name such as
+`opus` or `claude-opus-5-5`, never one starting with a dash. `sas roles` shows it as `advisor` (null when
+unset). Like the auto-compact window, it is kept in the workspace settings, so it needs no schema change, and
+an entry for a role that stops being a Claude role is dropped. It is a flag per role rather than `/advisor` in
+a chat, which saves `advisorModel` in the user settings and so applies to every session on the machine.
+
 ### Consume a launcher wake
 
 An enrolled Codex thread runs `sas wake --pending --as ROLE --workspace WORKSPACE`

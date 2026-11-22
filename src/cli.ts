@@ -17,7 +17,7 @@ import { retitleImportedTasks } from './retitle.js';
 import { setup } from './setup.js';
 import { promptSetup } from './setup-prompt.js';
 import { loadConfig, configPath } from './config.js';
-import { workspaceSettings, setWorkspaceSettings, setRoleAutocompact, roleAutocompact, acceptCodexVersion, type WorkspaceSettings } from './workspace-settings.js';
+import { workspaceSettings, setWorkspaceSettings, setRoleAutocompact, roleAutocompact, setRoleAdvisor, roleAdvisor, validAdvisor, acceptCodexVersion, type WorkspaceSettings } from './workspace-settings.js';
 import * as control from './control.js';
 import { stop } from './stop.js';
 import { getCheckpoint } from './checkpoints.js';
@@ -47,6 +47,7 @@ Setup:      init (interactive in a terminal) | init --workspace NAME
             roles | role set NAME [--provider claude|codex] [--model MODEL] [--dir PATH]
             [--kind human|agent] [--effort LEVEL] [--permission-mode MODE] [--sandbox MODE] [--approval POLICY]
             [--autocompact TOKENS|auto] (Claude roles; a human sets it; launch passes --autocompact)
+            [--advisor MODEL|off] (Claude roles; a human sets it; launch passes --advisor)
 Tasks:      add TITLE [--body TEXT] [--for ROLE] [--owner ROLE] [--human-only] [--spare]
             tasks [--status open,doing,blocked,review|all] [--available] [--spare] [--limit N] [--after T1]
               (spare tasks are listed apart and offered only to an idle role; update T1 --spare|--no-spare)
@@ -115,12 +116,12 @@ select workspace when not explicit. Writes require --as; human actions require a
 Lists default to bounded results; --limit N. Context never consumes inbox receipts.
 Exit codes: 0 success/no matches; 1 storage/runtime; 2 input; 3 identity/access; 4 conflict; 5 mail-wait timeout.
 `;
-export const strings = ['reviewer','feedback-closers','author','fact','dropped','spare-work','spare-providers','new','asked','remote','epoch','role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes','digest-skip','ack','autocompact','wake-mode','speed','wake-roles','urgency','reason','scored-receipt','idle-receipt'];
+export const strings = ['reviewer','feedback-closers','author','fact','dropped','spare-work','spare-providers','new','asked','remote','epoch','role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes','digest-skip','ack','autocompact','advisor','wake-mode','speed','wake-roles','urgency','reason','scored-receipt','idle-receipt'];
 export const booleans = ['watched','spare','no-spare','pending','untouched','unread','attended','now','json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','wait','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
 export const globalFlags = ['db','workspace','as','json','help'];
 export const allowed: Record<string,string[]> = {
   'index build':['repo','cache'],'index update':['repo','cache','diff'],'index find':['repo','cache','limit'],'index show':['repo','cache','limit'],
-  init:['config','humans','interactive','no-interactive','launch','dry-run','fresh','resume','no-prompt','terminal','distro','window','stop-file','new-window'], 'workspace attach':[], 'workspace settings':[], 'workspace wake-audit':['limit'], 'workspace set':['default-human','import-timezone','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','open-work-roles','digest-skip','wake-mode','speed','wake-roles','spare-work','spare-providers','feedback-closers'],roles:[], 'role set':['provider','model','effort','permission-mode','sandbox','approval','dir','kind','autocompact'],
+  init:['config','humans','interactive','no-interactive','launch','dry-run','fresh','resume','no-prompt','terminal','distro','window','stop-file','new-window'], 'workspace attach':[], 'workspace settings':[], 'workspace wake-audit':['limit'], 'workspace set':['default-human','import-timezone','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','open-work-roles','digest-skip','wake-mode','speed','wake-roles','spare-work','spare-providers','feedback-closers'],roles:[], 'role set':['provider','model','effort','permission-mode','sandbox','approval','dir','kind','autocompact','advisor'],
   add:['title','body','for','owner','priority','human-only','review-required','spare'],tasks:['status','owner','for','available','limit','after','spare'],show:['limit','before-event'],
   take:['hours'],renew:['hours'],note:[],update:['expect','title','body','priority','for','human-only','agent-allowed','review-required','no-review','spare','no-spare'],handoff:['brief-file','expect'],release:[],submit:['reviewer'],review:['approve','reject','note','expect'],done:['ref'],drop:[],reopen:[],after:[],unafter:[],block:['kind','waits-on','on'],blockers:['task','chain','limit','all'],resolve:[],
   'ask-human':['for','options','recommend','command','new'],answer:['close','relayed-by','asked','on','new'],withdraw:[],humans:['for','limit','untouched'],send:['re','urgent','needs-reply','now','urgency','reason'],wait:['urgent','timeout','stop-file','since','idle-minutes','settle','settle-max'],inbox:['peek','state','limit','unread'],wake:['pending','since','ack','timeout','stop-file','idle-minutes','settle','settle-max'],outbox:['limit'],sent:['limit'],retitle:['owner','apply'],ack:[],
@@ -354,14 +355,19 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           if(str('wake-roles')!==undefined)try{patch.wake_roles=JSON.parse(str('wake-roles')!);}catch{check(false,'--wake-roles must be valid JSON');}
           result=setWorkspaceSettings(s,patch);break;
         }
-        case 'roles': {empty();const settings=workspaceSettings(s);result=c.roles(s).map(row=>row.provider==='claude'?{...row,autocompact:roleAutocompact(settings,String(row.name))}:row);break;}
+        case 'roles': {empty();const settings=workspaceSettings(s);result=c.roles(s).map(row=>row.provider==='claude'?{...row,autocompact:roleAutocompact(settings,String(row.name)),advisor:roleAdvisor(settings,String(row.name))}:row);break;}
         case 'role set': {const role=arg('role');empty();
           // A bad --autocompact is refused before anything is saved; the window is set after the role, so a
           // provider change in the same command is seen (T980).
           const compactValue=str('autocompact');
           if(compactValue!==undefined)check(compactValue==='auto'||(/^[0-9]+$/.test(compactValue)&&Number(compactValue)>=100_000&&Number(compactValue)<=10_000_000),'--autocompact takes a whole number of tokens from 100000 to 10000000, or auto');
+          const advisorValue=str('advisor');
+          if(advisorValue!==undefined)check(advisorValue==='off'||validAdvisor(advisorValue),'--advisor takes a model name such as opus or claude-opus-5-5, or off');
+          // Refused before the role is saved, so --provider codex --advisor opus changes nothing (T1224).
+          if(advisorValue!==undefined&&advisorValue!=='off')check((str('provider')??s.get('SELECT provider FROM roles WHERE workspace_id=? AND name=?',s.ws,role)?.provider)==='claude',`advisor is for Claude roles; ${role} would not be one`);
           result=c.setRole(s,role,{provider:str('provider'),model:str('model'),reasoning_effort:str('effort'),permission_mode:str('permission-mode'),sandbox_mode:str('sandbox'),approval_policy:str('approval'),working_dir:str('dir'),kind:str('kind') as 'agent'|'human'|undefined});
           if(compactValue!==undefined)result={...(result as Row),autocompact:setRoleAutocompact(s,role,compactValue)};
+          if(advisorValue!==undefined)result={...(result as Row),advisor:setRoleAdvisor(s,role,advisorValue)};
           break;}
         case 'add': {const title=str('title')??rest('title');empty();result=t.addTask(s,{title,body:str('body'),owner:str('owner'),forRole:str('for'),priority:num('priority'),humanOnly:bool('human-only'),reviewRequired:bool('review-required'),spare:bool('spare')||undefined});break;}
         case 'tasks': empty();result=t.listTaskPage(s,{status:str('status'),owner:str('owner'),forRole:str('for'),available:bool('available'),limit:num('limit'),after:str('after'),spare:bool('spare')||undefined});break;
