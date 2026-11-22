@@ -53,6 +53,9 @@ function guarded(dir:string,uid:number|undefined):boolean {
   return safe && (dir==='/' || guarded(dirname(dir),uid));
 }
 
+/** The settings the watched window starts with (#69); the watcher accepts them in front of the attach form. */
+export const WINDOW_SETTINGS: readonly string[] = Object.freeze(['-c', 'check_for_update_on_startup=false']);
+
 function session(s: Store, thread: string, remote: string) {
   const role=s.requireActor();
   assertOrdinaryLaunchAllowed(s,role);
@@ -61,9 +64,11 @@ function session(s: Store, thread: string, remote: string) {
   const row=s.get('SELECT * FROM sessions WHERE workspace_id=? AND role=? ORDER BY id DESC LIMIT 1',s.ws,role);
   check(row?.provider==='codex' && !row.ended_at && row.external_id===thread && sessionState(row)==='running',
     'Watch requires the live registered Codex remote TUI',4);
-  const args=readFileSync(`/proc/${row.pid}/cmdline`,'utf8').split('\0').filter(Boolean);
+  // Only /proc's closing NUL is dropped: an empty argument is an argument and keeps the forms exact.
+  const args=readFileSync(`/proc/${row.pid}/cmdline`,'utf8').replace(/\0$/,'').split('\0');
   // Accept the documented explicit attach forms only. Do not infer a selected thread from a picker.
-  const tail=args.slice(/^(?:node|nodejs)$/.test(args[0].split('/').at(-1)??'')?2:1);
+  let tail=args.slice(/^(?:node|nodejs)$/.test(args[0].split('/').at(-1)??'')?2:1);
+  if(JSON.stringify(tail.slice(0,WINDOW_SETTINGS.length))===JSON.stringify(WINDOW_SETTINGS))tail=tail.slice(WINDOW_SETTINGS.length);
   check(JSON.stringify(tail)===JSON.stringify(['--remote',remote,'resume',thread]) ||
     JSON.stringify(tail)===JSON.stringify(['resume',thread,'--remote',remote]),
     'Expected a Codex TUI attached with --remote ENDPOINT resume UUID',4);
