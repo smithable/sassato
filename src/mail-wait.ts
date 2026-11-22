@@ -4,12 +4,13 @@ import { resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { Store, type Row, type Param } from './storage.js';
 import { AppError, check, integer } from './errors.js';
+import { send } from './coordination.js';
 import { roleWakePolicy, workspaceSettings, type WorkspaceSettings } from './workspace-settings.js';
 import { getNotificationProgress, IDLE_TASK_LIMIT, lastIdleDelivery, scoredDeliveryState, type IdleDelivery, type ScoredDelivery } from './notification-progress.js';
 import { effectiveWakePolicy, scoredWake, WORKFLOW_WAKE_POINTS, type ScoredItem, type WakeScore } from './wake-policy.js';
 
 export interface WaitResult {
-  reason:'digest'|'urgent'|'reply-needed'|'own-work'|'open-work'|'spare-work'|'stop'|'timeout'|'answer'|'blocker-resolved'|'blocker-assigned'|'dependency-dropped'|'task-assigned'|'task-ready'|'review-submitted'|'review-approved'|'review-rejected'|'supervisor-ping';
+  reason:'digest'|'urgent'|'reply-needed'|'own-work'|'open-work'|'spare-work'|'stop'|'timeout'|'answer'|'blocker-resolved'|'blocker-assigned'|'dependency-dropped'|'task-assigned'|'task-ready'|'review-submitted'|'review-approved'|'review-rejected'|'supervisor-ping'|'nudge';
   role:string; cursor:number; message?:Row; stop?:Row;
   question?:string; blocker?:string; task?:string; tasks?:string[];
   /** Task version recorded by the workflow event, not a substitute for reading current work. */
@@ -20,12 +21,16 @@ export interface WaitResult {
   mode?:'scored';
   scored?:ScoredDelivery;
   idle?:IdleDelivery;
+  /** T1253: a role that wrote nothing for the workspace's nudge_minutes is asked why. */
+  nudge?:{minutes:number;count:number;text:string};
 }
 export interface WaitClock { now():number; monotonic():number; sleep(ms:number):Promise<void> }
 const systemClock:WaitClock={now:Date.now,monotonic:()=>performance.now(),sleep:ms=>new Promise(resolve=>setTimeout(resolve,ms))};
 export interface WaitOptions {
   timeout?:number; stopFile?:string; since?:number; idleMinutes?:number; settle?:number; settleMax?:number;
   defaultIdleMinutes?:number; clock?:WaitClock;
+  /** Ask a quiet agent role why (T1253); wake sets it, since the nudge writes its own events. */
+  nudge?:boolean;
 }
 const maximum=(s:Store):number=>Number(s.get('SELECT coalesce(max(id),0) n FROM events WHERE workspace_id=?',s.ws)!.n);
 export function idleOpenWork(s:Store,actor:string,spare=false):string[] {
@@ -208,8 +213,8 @@ function priorityWorkflow(s:Store,actor:string,cursor:number):{wake:WaitResult;e
 function entryFor(s:Store,wake:WaitResult,event?:Row):DigestEntry {
   const source=wake.message?messageSent(s,wake.message.id):event;
   const kind=wake.message?.reply?'reply-needed':wake.reason;
-  const id=wake.message?.id??wake.question??wake.blocker??wake.task??String(event?.entity_id??'work');
-  let summary=wake.message?.summary,task=wake.task;
+  const id=wake.nudge?'nudge':wake.message?.id??wake.question??wake.blocker??wake.task??String(event?.entity_id??'work');
+  let summary=wake.message?.summary??wake.nudge?.text,task=wake.task;
   if(!summary&&wake.reason==='supervisor-ping')summary=`generation ${wake.generation}; nonce ${wake.nonce}; deadline ${wake.ping_deadline}${wake.checkpoint_requested?' · save a current checkpoint after reconciling work':''}`;
   if(!summary&&wake.question) {const row=s.get('SELECT question,answer,task_id FROM questions WHERE workspace_id=? AND id=?',s.ws,Number(wake.question.slice(1)));summary=row?`${row.question}: ${row.answer??''}`:wake.question;task??=row?`T${row.task_id}`:undefined;}
   if(!summary&&wake.task)summary=s.get('SELECT title FROM tasks WHERE workspace_id=? AND id=?',s.ws,Number(wake.task.slice(1)))?.title;
@@ -291,6 +296,9 @@ export async function waitForWork(s:Store, options:WaitOptions={}, observer?:Wai
   // that it can take now is woken with those, to take one (T763). Work writes restart the idle period.
   const idle=integer(options.idleMinutes??options.defaultIdleMinutes??0,'idle minutes',0,10_080)*60_000;
   const idleState={next:clock.monotonic()+idle,from:latest};
+  const nudgeMinutes=options.nudge&&s.role(actor).kind!=='human'?workspaceSettings(s).nudge_minutes:0;
+  const nudgeState:NudgeState={next:nudgeMinutes?clock.now():Infinity,start:{id:latest,at:clock.now()},checked:0,answer:0};
+  let nudged=false;
   for(;;) {
     priority=undefined;
     if(stopFile&&existsSync(stopFile))return digest('immediate',{reason:'stop',role:actor,cursor,stop:{file:stopFile}});
@@ -344,13 +352,39 @@ export async function waitForWork(s:Store, options:WaitOptions={}, observer?:Wai
         idleReceipt=receipt;
       }
     }
+    if(nudgeMinutes&&!nudged&&clock.now()>=nudgeState.next) {
+      // The check and its write share one write transaction, so two waiters or a late answer cannot double it.
+      const due=s.tx(()=>{
+        const found=scanNudge(s,actor,nudgeMinutes,Math.floor(clock.now()),nudgeState);
+        if(found?.escalate) {
+          const to=workspaceSettings(s).nudge_escalate;
+          // The mail is the role's own write, so the escalation event comes after it and still marks the end.
+          if(to&&to!==actor)send(s,[to],`${actor} has written nothing for ${nudgeMinutes*3} minutes and answered neither of two nudges (an idle reason or a take). No more nudges until it writes.`);
+          s.event('nudge',actor,'escalated',{minutes:nudgeMinutes,to});
+        } else if(found) {
+          // The text is built before the event, so a nudge is recorded only when it can be delivered.
+          const text=nudgeText(s,actor,nudgeMinutes,found.count,found.tasks);
+          s.event('nudge',actor,'sent',{minutes:nudgeMinutes,count:found.count,tasks:found.tasks});
+          return {...found,text};
+        }
+        return found;
+      });
+      if(due&&!due.escalate) {
+        const text=due.text!;
+        const wake:WaitResult={reason:'nudge',role:actor,cursor,...(due.tasks.length?{tasks:due.tasks}:{}),nudge:{minutes:nudgeMinutes,count:due.count,text}};
+        if(!settle)return wake;
+        if(!add(entryFor(s,wake)))return digest('capacity');
+        nudged=true;
+      }
+    }
     const at=clock.monotonic(),flush=window.reason(at);
     if(entries.size&&flush)return digest(flush);
     const remaining=deadline-at;
     if(remaining<=0)return entries.size?digest('deadline'):{reason:'timeout',role:actor,cursor};
     // A bounded snapshot permits writers and checkpoints between batches and sleeps.
     const idleDelay=idle&&!idleReceipt?idleState.next-at:Infinity;
-    await clock.sleep(nextPause(more,remaining,Math.min(window.deadline()-at,idleDelay)));
+    const nudgeDelay=nudgeMinutes&&!nudged?Math.max(0,nudgeState.next-clock.now()):Infinity;
+    await clock.sleep(nextPause(more,remaining,Math.min(window.deadline()-at,idleDelay,nudgeDelay)));
   }
 }
 function idleWork(s:Store,actor:string) {
@@ -363,9 +397,84 @@ function idleWork(s:Store,actor:string) {
 }
 
 const DAY=24*60*60_000;
+// A role's own writes; its bookkeeping (checkpoints, progress, its waiter and the nudges it gets) is not work.
 const idleActivity=(s:Store,actor:string,since:number)=>s.get(`SELECT id,created_at FROM events WHERE workspace_id=? AND id>? AND actor=?
-  AND entity NOT IN ('wip','checkpoint','session','notification-progress','wake-enrollment','wake-delivery','watch-dispatch','supervisor-ping')
+  AND entity NOT IN ('wip','checkpoint','session','notification-progress','wake-enrollment','wake-delivery','watch-dispatch','supervisor-ping','waiter','nudge')
   ORDER BY id DESC LIMIT 1`,s.ws,since,actor);
+
+// The nudge (T1253). A role that has written nothing for nudge_minutes is asked why, whether or not work is
+// ready; it answers with idle-reason or by taking a task. After an answer it is not nudged again until
+// something changes for it (mail to it, or an event that would wake it: a task assigned or made ready, a block
+// resolved). Unanswered, it is nudged once more after the same interval, then the escalation role gets one
+// ordinary mail, and the nudges stop until the role writes again.
+interface NudgeState {next:number;start:{id:number;at:number};checked:number;answer:number;change?:{id:number;at:number}}
+const NUDGE_RECHECK=60_000;
+function changeFor(s:Store,actor:string,after:number):Row|undefined {
+  for(;;) {
+    const events=s.all("SELECT id,entity,entity_id,actor,action,detail,created_at FROM events WHERE workspace_id=? AND id>? AND actor!=? AND entity IN ('message','task','question') ORDER BY id LIMIT 500",s.ws,after,actor);
+    for(const event of events) {
+      if(event.entity==='message'&&event.action==='sent'&&/^M\d+$/.test(event.entity_id)&&
+        s.get('SELECT 1 FROM receipts WHERE workspace_id=? AND message_id=? AND recipient=?',s.ws,Number(event.entity_id.slice(1)),actor))return event;
+      if(workflow(s,actor,event))return event;
+    }
+    if(events.length<500)return undefined;
+    after=events[events.length-1].id;
+  }
+}
+function scanNudge(s:Store,actor:string,minutes:number,wall:number,state:NudgeState):{count:number;tasks:string[];escalate?:true;text?:string}|undefined {
+  // A write of the role's own, not a read, an acknowledgement or a lease renewal; with none, its first waiter.
+  const last=s.get(`SELECT id,created_at FROM events WHERE workspace_id=? AND actor=?
+    AND entity NOT IN ('wip','checkpoint','session','notification-progress','wake-enrollment','wake-delivery','watch-dispatch','supervisor-ping','waiter','nudge')
+    AND NOT (entity='message' AND action IN ('read','done')) AND NOT (entity='task' AND action='renewed')
+    ORDER BY id DESC LIMIT 1`,s.ws,actor)??s.get("SELECT id,created_at FROM events WHERE workspace_id=? AND entity='waiter' AND entity_id=? ORDER BY id LIMIT 1",s.ws,actor);
+  let base=last?{id:Number(last.id),at:Date.parse(last.created_at)}:state.start;
+  // A session that starts or resumes gets the full interval from its start, not from its last write.
+  const start=sessionStart(s,actor,minutes);
+  if(start&&start.id>base.id)base=start;
+  const reason=s.get("SELECT id FROM events WHERE workspace_id=? AND entity='idle' AND entity_id=? AND action='reason' ORDER BY id DESC LIMIT 1",s.ws,actor);
+  const lastNudge=s.get("SELECT id FROM events WHERE workspace_id=? AND entity='nudge' AND entity_id=? AND action='sent' ORDER BY id DESC LIMIT 1",s.ws,actor);
+  const take=lastNudge?s.get("SELECT id FROM events WHERE workspace_id=? AND entity='task' AND action='claimed' AND actor=? AND id>? ORDER BY id LIMIT 1",s.ws,actor,lastNudge.id):undefined;
+  const answer=Math.max(Number(reason?.id??0),Number(take?.id??0));
+  if(answer) {
+    if(answer!==state.answer){state.answer=answer;state.checked=answer;state.change=undefined;}
+    if(!state.change) {
+      const change=changeFor(s,actor,state.checked);
+      if(!change){state.checked=maximum(s);state.next=wall+NUDGE_RECHECK;return undefined;}
+      state.change={id:Number(change.id),at:Date.parse(change.created_at)};
+    }
+    if(state.change.id>base.id)base=state.change;
+  }
+  const nudges=s.all("SELECT action,created_at FROM events WHERE workspace_id=? AND entity='nudge' AND entity_id=? AND id>? ORDER BY id",s.ws,actor,base.id);
+  if(nudges.some(n=>n.action==='escalated')){state.next=wall+NUDGE_RECHECK;return undefined;}
+  const sent=nudges.filter(n=>n.action==='sent');
+  const due=(sent.length?Date.parse(sent[sent.length-1].created_at):base.at)+minutes*60_000;
+  state.next=Math.min(Math.max(due,wall+1000),wall+NUDGE_RECHECK);
+  if(wall<due)return undefined;
+  state.next=wall+NUDGE_RECHECK;
+  if(sent.length>=2)return {count:sent.length,tasks:[],escalate:true};
+  return {count:sent.length+1,tasks:idleWork(s,actor)?.tasks??[]};
+}
+// The latest start of the role's session: its registration, or a waiter armed when the one before it never
+// ended (the session died) or ended longer than the nudge interval ago. A re-arm right after a wake is no start.
+function sessionStart(s:Store,actor:string,minutes:number):{id:number;at:number}|undefined {
+  const at=(row:Row)=>({id:Number(row.id),at:Date.parse(row.created_at)});
+  const registered=s.get("SELECT id,created_at FROM events WHERE workspace_id=? AND entity='session' AND action='registered' AND actor=? ORDER BY id DESC LIMIT 1",s.ws,actor);
+  const waiters=s.all("SELECT id,action,created_at FROM events WHERE workspace_id=? AND entity='waiter' AND entity_id=? ORDER BY id DESC LIMIT 200",s.ws,actor);
+  let armed:Row|undefined;
+  for(let i=0;i<waiters.length&&!armed;i++) {
+    if(waiters[i].action!=='armed')continue;
+    const before=waiters[i+1];
+    if(before?before.action==='armed'||Date.parse(waiters[i].created_at)-Date.parse(before.created_at)>minutes*60_000:waiters.length<200)armed=waiters[i];
+  }
+  const found=[registered,armed].filter((row):row is Row=>!!row).map(at).sort((x,y)=>y.id-x.id);
+  return found[0];
+}
+function nudgeText(s:Store,actor:string,minutes:number,count:number,tasks:string[]):string {
+  const answer=`Answer with sassato idle-reason "why" --as ${actor} --workspace ${s.workspace}, or take a task`;
+  const escalate=workspaceSettings(s).nudge_escalate;
+  const ready=tasks.length?`Ready for you: ${tasks.join(', ')}.`:`Nothing is ready for you: ask ${escalate&&escalate!==actor?escalate:'whoever assigns work'} for work in one line.`;
+  return `No write from you for ${minutes} minutes (nudge ${count} of 2). ${answer}; no new nudge then until something changes for you. ${ready}`;
+}
 
 function scanIdle(s:Store,actor:string,clock:WaitClock,interval:number,state:{next:number;from:number},skip:Set<string>):IdleDelivery|undefined {
   const now=clock.monotonic(), wall=Math.floor(clock.now());

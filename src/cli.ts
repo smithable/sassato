@@ -1,5 +1,5 @@
 import { launchWatch, reconcileWatch, watchStatus } from './launch-watch.js';
-import { wake as wakeCommand } from './wake.js';
+import { idleReason, wake as wakeCommand } from './wake.js';
 import { formatDigest } from './wait-digest.js';
 import { parseArgs } from 'node:util';
 import { readFileSync, openSync, fstatSync, readSync, closeSync, constants } from 'node:fs';
@@ -45,6 +45,7 @@ Setup:      init (interactive in a terminal) | init --workspace NAME
             workspace settings | workspace set --default-human NAME | --wake-mode legacy|scored | --speed slow|normal|fast
             workspace wake-audit [--limit N] --as HUMAN
             workspace set --feedback-closers ROLE,ROLE|none --as HUMAN (roles besides humans that close feedback)
+            workspace set --nudge-minutes N (0 off) | --nudge-escalate ROLE|none --as HUMAN (ask a quiet role why)
             codex versions | codex accept VERSION [--replace] --as HUMAN (the Codex CLI versions launch accepts)
             roles | role set NAME [--provider claude|codex] [--model MODEL] [--dir PATH]
             [--kind human|agent] [--effort LEVEL] [--permission-mode MODE] [--sandbox MODE] [--approval POLICY]
@@ -72,6 +73,8 @@ Mail:       send ROLE[,ROLE]|all TEXT [--re T1] [--urgency 0..10] [--reason TEXT
             inbox [--peek] [--unread | --state unread|read|done] (newest first) | sent (or outbox) | ack M1
             wake [--pending | --since CURSOR] [--ack M1,M2] [--idle-minutes N] [--timeout S]: wait, then print everything to act on
               (STOP, each entry's full text, mail to acknowledge), save the cursor, and end with the re-arm command
+              [--waiting-for TEXT] [--expect-minutes N]: what the wait is for and how long it should take (else the open blocks)
+            idle-reason TEXT: answer a nudge (why nothing is being written); no new nudge until something changes for you
 Knowledge:  fact set KEY TEXT --source LOCATION [--expect VERSION]
             fact get KEY | fact history KEY | facts
 Stats:      stats [--since DATE] [--role ROLE] (read-only: mail unread times, urgent mail not acknowledged, mail a cursor passed unread, idle with work, review and question waits)
@@ -119,15 +122,15 @@ select workspace when not explicit. Writes require --as; human actions require a
 Lists default to bounded results; --limit N. Context never consumes inbox receipts.
 Exit codes: 0 success/no matches; 1 storage/runtime; 2 input; 3 identity/access; 4 conflict; 5 mail-wait timeout.
 `;
-export const strings = ['reviewer','feedback-closers','author','fact','dropped','spare-work','spare-providers','new','asked','remote','epoch','role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes','digest-skip','ack','autocompact','advisor','wake-mode','speed','wake-roles','urgency','reason','scored-receipt','idle-receipt'];
+export const strings = ['reviewer','feedback-closers','nudge-minutes','nudge-escalate','waiting-for','expect-minutes','author','fact','dropped','spare-work','spare-providers','new','asked','remote','epoch','role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes','digest-skip','ack','autocompact','advisor','wake-mode','speed','wake-roles','urgency','reason','scored-receipt','idle-receipt'];
 export const booleans = ['watched','close-stale','spare','no-spare','pending','untouched','unread','attended','now','json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','wait','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
 export const globalFlags = ['db','workspace','as','json','help'];
 export const allowed: Record<string,string[]> = {
   'index build':['repo','cache'],'index update':['repo','cache','diff'],'index find':['repo','cache','limit'],'index show':['repo','cache','limit'],
-  init:['config','humans','interactive','no-interactive','launch','dry-run','fresh','resume','no-prompt','terminal','distro','window','stop-file','new-window'], 'workspace attach':[], 'workspace settings':[], 'workspace wake-audit':['limit'], 'workspace set':['default-human','import-timezone','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','open-work-roles','digest-skip','wake-mode','speed','wake-roles','spare-work','spare-providers','feedback-closers'],roles:[], 'role set':['provider','model','effort','permission-mode','sandbox','approval','dir','kind','autocompact','advisor'],
+  init:['config','humans','interactive','no-interactive','launch','dry-run','fresh','resume','no-prompt','terminal','distro','window','stop-file','new-window'], 'workspace attach':[], 'workspace settings':[], 'workspace wake-audit':['limit'], 'workspace set':['default-human','import-timezone','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','open-work-roles','digest-skip','wake-mode','speed','wake-roles','spare-work','spare-providers','feedback-closers','nudge-minutes','nudge-escalate'],roles:[], 'role set':['provider','model','effort','permission-mode','sandbox','approval','dir','kind','autocompact','advisor'],
   add:['title','body','for','owner','priority','human-only','review-required','spare'],tasks:['status','owner','for','available','limit','after','spare'],show:['limit','before-event'],
   take:['hours'],renew:['hours'],note:[],update:['expect','title','body','priority','for','human-only','agent-allowed','review-required','no-review','spare','no-spare'],handoff:['brief-file','expect'],release:[],submit:['reviewer'],review:['approve','reject','note','expect'],done:['ref'],drop:[],reopen:[],after:[],unafter:[],block:['kind','waits-on','on'],blockers:['task','chain','limit','all'],resolve:[],
-  'ask-human':['for','options','recommend','command','new'],answer:['close','relayed-by','asked','on','new'],withdraw:[],humans:['for','limit','untouched'],send:['re','urgent','needs-reply','now','urgency','reason'],wait:['urgent','timeout','stop-file','since','idle-minutes','settle','settle-max'],inbox:['peek','state','limit','unread'],wake:['pending','since','ack','timeout','stop-file','idle-minutes','settle','settle-max'],outbox:['limit'],sent:['limit'],retitle:['owner','apply'],ack:[],
+  'ask-human':['for','options','recommend','command','new'],answer:['close','relayed-by','asked','on','new'],withdraw:[],humans:['for','limit','untouched'],send:['re','urgent','needs-reply','now','urgency','reason'],wait:['urgent','timeout','stop-file','since','idle-minutes','settle','settle-max'],inbox:['peek','state','limit','unread'],wake:['pending','since','ack','timeout','stop-file','idle-minutes','settle','settle-max','waiting-for','expect-minutes'],'idle-reason':[],outbox:['limit'],sent:['limit'],retitle:['owner','apply'],ack:[],
   'fact set':['source','checked-at','expect','answers'],'feedback add':['re'],'feedback list':['kind','author','all','limit','after'],'feedback close':['task','fact','dropped'],'fact get':[],'fact history':[],'codex accept':['replace'],'codex versions':[],facts:['limit'],
   'wip show':[],'wip set':['current','next','notes','expect'],sessions:[], 'session register':['provider','session-id','pid','replace'],'session heartbeat':['session-id'],'session end':['session-id'],usage:['until'],
   stop:['all','timeout','no-wait','force'],'stop-status':['quiet','stop-file'],stopped:[],'resume-work':['all'],
@@ -354,6 +357,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           if(str('spare-work')!==undefined){check(['on','off'].includes(str('spare-work')!),'--spare-work takes on or off');patch.spare_work=str('spare-work')==='on';}
           if(str('spare-providers')!==undefined){const list=str('spare-providers')==='any'?[]:str('spare-providers')!.split(',').map(p=>p.trim());check(list.every(Boolean),'--spare-providers takes provider names separated by commas, or any');patch.spare_providers=list;}
           if(str('feedback-closers')!==undefined)patch.feedback_closers=str('feedback-closers')==='none'?[]:str('feedback-closers')!.split(',').map(r=>r.trim());
+          if(str('nudge-minutes')!==undefined){check(/^[0-9]+$/.test(str('nudge-minutes')!),'--nudge-minutes takes a whole number of minutes (0 turns it off)');patch.nudge_minutes=Number(str('nudge-minutes'));}
+          if(str('nudge-escalate')!==undefined)patch.nudge_escalate=str('nudge-escalate')==='none'?null:str('nudge-escalate')!;
           if(str('wake-mode')!==undefined)patch.wake_mode=str('wake-mode') as WorkspaceSettings['wake_mode'];
           if(str('speed')!==undefined)patch.speed=str('speed') as WorkspaceSettings['speed'];
           if(str('wake-roles')!==undefined)try{patch.wake_roles=JSON.parse(str('wake-roles')!);}catch{check(false,'--wake-roles must be valid JSON');}
@@ -403,6 +408,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           const out=await wakeCommand(s,{
             pending,timeout:num('timeout'),stopFile:str('stop-file'),since:num('since'),idleMinutes:num('idle-minutes'),
             settle:num('settle'),settleMax:num('settle-max'),ack:str('ack')?.split(',').map(x=>x.trim()).filter(Boolean),
+            waitingFor:str('waiting-for'),expectMinutes:num('expect-minutes'),armNotice:line=>process.stderr.write(line+'\n'),
           });
           if(pending){
             const payload=bool('json') ? JSON.stringify({result:out.result,text:out.text}) : out.text;
@@ -462,6 +468,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           if(bool('quiet')) {process.exitCode=control.activeStop(s,p.splice(0),str('stop-file'))?4:0;return;}
           result=control.stopStatus(s,p.splice(0));break;
         }
+        case 'idle-reason': result=idleReason(s,rest('reason'));break;
         case 'stopped': {const request=arg('stop request');empty();result=control.acknowledgeStop(s,request);break;}
         case 'resume-work': result=control.resumeWork(s,p.splice(0),{all:bool('all')});break;
         case 'usage': result=c.setUsage(s,rest('usage note'),str('until'));break;

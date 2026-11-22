@@ -10,13 +10,19 @@ import type { Row, Store } from './storage.js';
 import { waitWithManagedObservation } from './managed-wait.js';
 import { getNotificationProgress, saveNotificationProgress } from './notification-progress.js';
 import { acknowledgeMany } from './coordination.js';
-import { unchangedIdleText, type WaitOptions, type WaitResult } from './mail-wait.js';
+import { idleOpenWork, unchangedIdleText, type WaitOptions, type WaitResult } from './mail-wait.js';
 import { DIGEST_GROUPS, scoreExplanation, type DigestEntry } from './wait-digest.js';
-import { AppError, check } from './errors.js';
+import { AppError, check, integer, text } from './errors.js';
 import { workspaceSettings } from './workspace-settings.js';
 
 export const WAKE_TEXT_LIMIT = 1500;
-export interface WakeOptions extends WaitOptions { pending?: boolean; ack?: string[] }
+export interface WakeOptions extends WaitOptions {
+  pending?: boolean; ack?: string[];
+  /** What the wait is for and how long it should take (T1253); without it, the role's open blocks. */
+  waitingFor?: string; expectMinutes?: number;
+  /** Told at once, before the wait, when a long wait leaves ready work (waiting is not idle). */
+  armNotice?: (line: string) => void;
+}
 export interface WakeOutcome { text: string; result: WaitResult; acknowledged: string[]; delivered?: string[]; commit?: () => { saved: boolean; line: string } }
 
 /** Text as written, with control characters other than newlines removed and a marked cut. */
@@ -69,7 +75,7 @@ function waiting(s: Store, actor: string, shown: Set<string>): { rows: Row[]; mo
 export async function wake(s: Store, options: WakeOptions = {}): Promise<WakeOutcome> {
   const actor = s.requireActor();
   if (options.pending) {
-    check(Object.entries(options).every(([key,value]) => key==='pending' || value===undefined),
+    check(Object.entries(options).every(([key,value]) => key==='pending' || key==='armNotice' || value===undefined),
       '--pending cannot be combined with acknowledgement or wait options');
     return s.tx(() => {
       const stop = workerStop(s,process.env.CODEX_THREAD_ID);
@@ -84,9 +90,40 @@ export async function wake(s: Store, options: WakeOptions = {}): Promise<WakeOut
   const since = options.since ?? before.cursor;
   // A --since past the saved cursor would skip the events between them; an earlier one replays them.
   check(since <= before.cursor, `--since ${since} is past the saved cursor ${before.cursor}; that would skip events. Use --since ${before.cursor} or leave it out.`, 4);
+  const waitingFor = options.waitingFor !== undefined ? text(options.waitingFor, 'what the wait is for', 300) : openBlocks(s, actor);
+  const expect = options.expectMinutes === undefined ? null : integer(options.expectMinutes, 'expected minutes', 0, 10_080);
   const acknowledged = options.ack?.length ? acknowledgeMany(s, options.ack).map((row) => String(row.message_id)) : [];
-  const result = await waitWithManagedObservation(s, { ...options, since });
+  // The waiter's own events (T1253) give the time table its waiting spans; they are bookkeeping, never activity.
+  s.tx(() => s.event('waiter', actor, 'armed', { since, idle_minutes: options.idleMinutes ?? null, waiting_for: waitingFor || null, expect_minutes: expect }));
+  let result;
+  try {
+    if (expect !== null && expect >= 10 && options.armNotice) {
+      const ready = idleOpenWork(s, actor).slice(0, 3);
+      if (ready.length) options.armNotice(`Waiting is not idle: ${ready.join(', ')} ${ready.length > 1 ? 'are' : 'is'} ready for you while this wait (about ${expect} minutes) runs.`);
+    }
+    const { waitingFor: _w, expectMinutes: _e, armNotice: _a, ...wait } = options;
+    result = await waitWithManagedObservation(s, { ...wait, since, nudge: true });
+  } catch (error) {
+    // A waiter that failed is not left looking armed.
+    try { s.tx(() => s.event('waiter', actor, 'ended', { reason: 'error', cursor: null })); } catch { /* keep the original error */ }
+    throw error;
+  }
+  s.tx(() => s.event('waiter', actor, 'ended', { reason: result.reason, cursor: result.cursor }));
   return formatWake(s,options,since,result,acknowledged,before.version);
+}
+
+/** The role's open blocks, as what its wait is for when it does not say. */
+function openBlocks(s: Store, actor: string): string {
+  return s.all(`SELECT b.task_id,b.kind,b.waiting_on FROM blockers b JOIN tasks t ON t.workspace_id=b.workspace_id AND t.id=b.task_id
+    WHERE b.workspace_id=? AND b.status='open' AND t.owner=? AND t.status NOT IN ('done','dropped') ORDER BY b.id DESC LIMIT 5`, s.ws, actor)
+    .map((b) => `T${b.task_id} on ${b.waiting_on ?? b.kind}`).join(', ');
+}
+
+/** The answer to a nudge (T1253): why the role is not writing. Until something changes for it, no new nudge. */
+export function idleReason(s: Store, reason: string): Row {
+  const actor = s.requireActor(), why = text(reason, 'idle reason', 500);
+  return s.tx(() => ({ event: `E${s.event('idle', actor, 'reason', { reason: why })}`, role: actor, reason: why,
+    next: 'No new nudge until something changes for you: mail, a task assigned or made ready, a block resolved.' }));
 }
 
 function formatWake(s: Store, options: WakeOptions, since: number, result: WaitResult,
@@ -116,7 +153,7 @@ function formatWake(s: Store, options: WakeOptions, since: number, result: WaitR
   const idleOnly=unchanged&&!left.length&&!result.digest?.has_more&&entries.every(entry=>entry.unchanged)&&
     (result.reason===idle?.kind||result.reason==='digest');
   const body: string[] = [];
-  if (!result.digest && result.reason !== 'timeout') body.push(unchanged??`${result.reason}${result.task ? ` ${result.task}` : ''}${result.message ? ` ${result.message.id} from ${result.message.sender}:\n${indent(wakeText(result.message.summary, result.message.id))}` : ''}`);
+  if (!result.digest && result.reason !== 'timeout') body.push(unchanged??(result.nudge?`nudge: ${result.nudge.text}`:undefined)??`${result.reason}${result.task ? ` ${result.task}` : ''}${result.message ? ` ${result.message.id} from ${result.message.sender}:\n${indent(wakeText(result.message.summary, result.message.id))}` : ''}`);
   if(options.pending && !result.digest && result.tasks && !unchanged) {
     for(const task of result.tasks) body.push(indent(detail(s,{id:task,task,from:actor,kind:result.reason,group:'other',summary:task},since,result.cursor)));
   }
