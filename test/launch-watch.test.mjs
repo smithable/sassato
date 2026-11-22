@@ -121,6 +121,15 @@ test('a wake waiting for its receipt ends the watch when the app server is gone,
   assert.equal(f.calls().length,1);
   assert.equal(getNotificationProgress(f.worker).cursor,0);
 });
+test('a linked socket whose target is removed while a wake waits ends the watch as the app server gone',async t=>{
+  const f=await fixture(t,'success',true);
+  send(f.operator,['b'],'Work',{now:true});
+  const run=launchWatch(f.operator,'b',f.remote,thread);run.catch(()=>{});
+  await until(()=>f.calls().length===1);
+  f.server.close();
+  await assert.rejects(run,/app server/);
+  assert.equal(status(f.worker).watcher.reason,'the Codex app server is gone');
+});
 test('a wake waiting for its receipt ends the watch when the window is gone, saying so',async t=>{
   const f=await fixture(t);
   send(f.operator,['b'],'Work',{now:true});
