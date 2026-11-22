@@ -2,6 +2,7 @@ import { type Store, type Row, type Param } from './storage.js';
 import { check, text, safe, integer, id, now } from './errors.js';
 import { assertWorkAllowed } from './control.js';
 import { humanRole } from './humans.js';
+import { decideRuleProposal, withdrawnRuleProposal } from './rules.js';
 
 export const STATUSES = ['open', 'doing', 'blocked', 'review', 'done', 'dropped'] as const;
 export type TaskStatus = typeof STATUSES[number];
@@ -415,14 +416,18 @@ export function answerQuestion(s: Store, questionOrTask: string, answer: string,
     s.index('question', `H${question.id}`, question.question, JSON.stringify({ options: choices, recommendation: question.recommendation, command: question.command, answer: recorded }), { role: blocker.waiting_on, status: 'answered', updated_at: at });
     s.event('task', taskId(row), 'human-answered', { question: `H${question.id}`, answer: recorded, answered_by: actor, ...attribution });
     s.event('question', `H${question.id}`, 'answered', { task: taskId(row), answer: recorded, answered_by: actor, ...attribution });
+    // A rule proposal's question puts the rule in force or not (T1276); a refused relay rolls back the answer.
+    const rule = decideRuleProposal(s, question.id, recorded, actor, options.relayedBy);
     // Explicit human closure shares this transaction: any remaining blocker or review
     // requirement rolls back the answer, blocker resolution, events and notification.
-    if (options.close) completeTask(s, row, { ref: `H${question.id}` }, true);
+    // A rule proposal's task is done once its question is answered.
+    if (options.close || rule) completeTask(s, row, { ref: `H${question.id}` }, true);
+    const outcome = rule === undefined ? '' : rule.status === 'approved' ? ` Rule ${rule.key}: ${rule.rule_status} at version ${rule.version} (set version ${rule.set_version}).` : ` Rule proposal ${rule.proposal} ${rule.status}${rule.status === 'refused' ? `: ${rule.decision}` : ''}.`;
     // The role that relayed the answer already knows it (T1103); the waiter delivers the answer as its H entry,
     // so this notice is marked for the inbox only (T1099).
-    notify(s, [row.owner, question.asked_by].filter((r): r is string => Boolean(r) && r !== options.relayedBy), `H${question.id} on ${taskId(row)} answered by ${actor}: ${recorded}${options.close ? ' Task closed.' : ''}`, row, { answer: `H${question.id}` });
-    const result = questionView({ ...question, status: 'answered', answer: recorded, answered_by: actor, answered_at: at, ...attribution });
-    return options.close ? { ...result, task_status: 'done' } : result;
+    notify(s, [row.owner, question.asked_by].filter((r): r is string => Boolean(r) && r !== options.relayedBy), `H${question.id} on ${taskId(row)} answered by ${actor}: ${recorded}${options.close || rule ? ' Task closed.' : ''}${outcome}`, row, { answer: `H${question.id}` });
+    const result = { ...questionView({ ...question, status: 'answered', answer: recorded, answered_by: actor, answered_at: at, ...attribution }), ...(rule ? { rule } : {}) };
+    return options.close || rule ? { ...result, task_status: 'done' } : result;
   });
 }
 // A question a human answered in a chat before anyone recorded it (T1085): the human records
@@ -450,6 +455,7 @@ export function withdrawQuestion(s: Store, questionId: string, reason: string): 
     check(human(s) || question.asked_by === actor || row.creator === actor, 'Only the question\'s asker, the task\'s creator or a human may withdraw it', 3);
     const at = now(), name = `H${question.id}`;
     s.run("UPDATE questions SET status='cancelled',cancelled_at=?,cancelled_by=?,cancel_reason=? WHERE workspace_id=? AND id=?", at, actor, reason, s.ws, question.id);
+    withdrawnRuleProposal(s, question.id, reason, actor);
     const blocker = s.get('SELECT * FROM blockers WHERE workspace_id=? AND id=?', s.ws, question.blocker_id)!;
     if (blocker.status === 'open') resolve(s, blocker, `${name} withdrawn: ${reason}`);
     s.index('question', name, question.question, JSON.stringify({ options: JSON.parse(question.options), recommendation: question.recommendation, command: question.command, cancel_reason: reason }), { role: blocker.waiting_on, status: 'cancelled', updated_at: at });

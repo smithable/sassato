@@ -122,7 +122,7 @@ export function decideRuleProposal(s: Store, questionId: number, answer: string,
   s.event('rule-proposal', `P${p.id}`, status, { key: p.key, decision, ...(relayedBy ? { relayed_by: relayedBy } : {}) });
   if (!version) return { proposal: `P${p.id}`, key: p.key, status, decision };
   s.event('rule', p.key, version.status, { version: version.version, set_version: version.set_version, proposal: `P${p.id}` });
-  return { proposal: `P${p.id}`, key: p.key, status, version: version.version, set_version: version.set_version, export: exportRules(s) };
+  return { proposal: `P${p.id}`, key: p.key, status, rule_status: version.status, version: version.version, set_version: version.set_version, export: exportRules(s) };
 }
 // Called by withdrawQuestion inside its transaction.
 export function withdrawnRuleProposal(s: Store, questionId: number, reason: string, actor: string): void {

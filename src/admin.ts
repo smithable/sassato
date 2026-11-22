@@ -13,6 +13,7 @@ import { AppError, check, id, integer, name, now, safe, text } from './errors.js
 import { normalizeOption, ROLE_OPTION_KEYS, validateRoleOptions } from './role-options.js';
 import { loadConfig, workingDirectory } from './config.js';
 import { validateSettings } from './workspace-settings.js';
+import { exportedSetVersion } from './rules.js';
 
 export function initWorkspace(s: Store, workspace: string, configPath?: string | Row, humans?: string[]): Row {
   name(workspace);
@@ -145,10 +146,27 @@ export async function backupDatabase(s: Store, output: string): Promise<Row> {
   try {await backup(s.db,destination);return {path:destination,scope:'all workspaces',schema:SCHEMA_VERSION};}
   catch (error) {unlinkSync(destination);throw error;}
 }
-export async function restoreDatabase(source: string, target: string): Promise<Row> {
+// A restore whose rules are older than the export beside it (T1276) is refused; a human may accept
+// the older set with force, and that decision is recorded in each workspace it touches.
+function olderRules(restored: Store, path: string, options: { force?: boolean; actor?: string }): Row[] {
+  const older = restored.all('SELECT w.name, coalesce(max(v.set_version),0) AS set_version FROM workspaces w LEFT JOIN rule_versions v ON v.workspace_id=w.id GROUP BY w.id ORDER BY w.name')
+    .map(w => ({ workspace: w.name, set_version: Number(w.set_version), export_set_version: exportedSetVersion(path, w.name) }))
+    .filter(w => w.export_set_version !== undefined && w.export_set_version > w.set_version);
+  if (!older.length) return [];
+  const list = older.map(w => `${w.workspace} (set version ${w.set_version}, exported ${w.export_set_version})`).join(', ');
+  check(options.force, `The restored rules are older than their export: ${list}. A human decides: restore again with --force --as HUMAN to accept the older set`, 4);
+  check(options.actor, 'Accepting older rules needs --as HUMAN', 3);
+  for (const w of older) {
+    const s = new Store(path, options.actor);
+    try { s.use(w.workspace); s.tx(() => { s.requireHuman(); s.event('rule-set', w.workspace, 'restored-older', { set_version: w.set_version, export_set_version: w.export_set_version }); }); } finally { s.close(); }
+  }
+  return older;
+}
+export async function restoreDatabase(source: string, target: string, options: { force?: boolean; actor?: string } = {}): Promise<Row> {
   const src=databasePath(source), dest=databasePath(target);
   check(existsSync(src),'Backup file does not exist');check(!existsSync(dest),'Restore destination already exists',4);
   const db=new DatabaseSync(src,{readOnly:true});
+  let older: Row[] = [];
   try {
     const sourceVersion = Number(db.prepare('PRAGMA user_version').get()!.user_version);
     check(sourceVersion >= 1 && sourceVersion <= SCHEMA_VERSION,'Unsupported backup schema');
@@ -159,8 +177,10 @@ export async function restoreDatabase(source: string, target: string): Promise<R
       await backup(db,dest);
       const restored = new Store(dest);
       restored.close();
+      const reader = new Store(dest,undefined,{readonly:true});
+      try { older = olderRules(reader, dest, options); } finally { reader.close(); }
     } catch(error) {unlinkSync(dest);throw error;}
-    return {path:dest,scope:'all workspaces',schema:SCHEMA_VERSION,source_schema:sourceVersion};
+    return {path:dest,scope:'all workspaces',schema:SCHEMA_VERSION,source_schema:sourceVersion,...(older.length?{older_rules_accepted:older}:{})};
   } finally {db.close();}
 }
 export function machine(): Row { return {load:loadavg(),cpus:cpus().length,free_memory:freemem(),total_memory:totalmem(),uptime_seconds:uptime(),note:'System totals only. Per-job ownership is not tracked.'}; }
