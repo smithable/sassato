@@ -463,7 +463,7 @@ more sources. Use the same options with `--confirm DIGEST` to apply as a human. 
 never overwrite live records. `export NEW_DIRECTORY` writes readable snapshots with
 per-task histories. See [migration details](integrations.md).
 
-`launch ROLE... [--all] [--resume|--fresh] [--dry-run] [--no-prompt]
+`launch ROLE... [--all] [--resume|--fresh] [--dry-run] [--no-prompt] [--watched]
 [--terminal native|windows-terminal] [--new-window] [--distro NAME] [--window NAME] [--stop-file PATH]`.
 Actual launch needs an explicit human role, such as --as alice. --new-window selects Windows Terminal and opens one new
 window per role; it conflicts with --window and native terminal mode. Native interactive output cannot use --json; dry-run JSON
@@ -476,6 +476,12 @@ Resume: a role resumes its registered provider session. A Codex session register
 resumes the newest saved Codex session (CODEX_HOME or ~/.codex, sessions/) that has the role's working directory and
 whose launch prompt names the role, searching the newest 200; so a plain `launch` of a Codex role now resumes where it
 used to start fresh. --fresh starts a new session; --resume fails when none is found.
+
+The start prompt says who does the waiting. A Codex role launched with `--watched` is told its launcher does the
+waiting and to arm no waiter; without it, a Codex role is told that no launcher waits for it and to arm none (it reads
+its inbox and context between tasks). `--watched` changes only the prompt: it does not start `launch-watch`, which is
+a separate step, and until that runs nothing wakes the role. With `--no-prompt` neither sentence is sent. `--watched`
+applies to Codex roles only. A resumed session keeps its first prompt, so each wake `launch-watch` queues says it too.
 
 ## Output contract
 
@@ -769,7 +775,8 @@ Code raises a conversation's window by itself when what loads with every request
 ### Consume a launcher wake
 
 An enrolled Codex thread runs `sas wake --pending --as ROLE --workspace WORKSPACE`
-to read the launcher's outstanding digest immediately. This preserves the original
+to read the launcher's outstanding digest immediately; the queued turn also says that the launcher does the waiting
+and the thread arms no waiter. This preserves the original
 batch boundary and idle-work trigger. Only the matching registered thread may
 consume it. Handle and acknowledge any mail in the ordinary way. The launcher
 owns the wait loop.

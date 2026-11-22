@@ -62,7 +62,7 @@ test('attached thread gets one fixed prompt per pending result, STOP preempts re
   assert.match(read.stdout,/Private first message/);
   send(f.operator,['b'],'Private second message',{now:true});
   await until(()=>f.calls().length===2);
-  assert.ok(f.calls().every(a=>a[a.indexOf('--message')+1]==='Run sas wake --pending --as b --workspace team.'));
+  assert.ok(f.calls().every(a=>a[a.indexOf('--message')+1]==='Run sas wake --pending --as b --workspace team. Your launcher does the waiting: arm no waiter.'));
   assert.doesNotMatch(JSON.stringify(f.calls()),/Private/);
   assert.ok(f.calls().every(a=>a[a.indexOf('--thread')+1]===thread && a[a.indexOf('--remote')+1]===f.remote));
   requestStop(f.operator,['b']);

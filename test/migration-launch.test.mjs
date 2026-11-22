@@ -395,7 +395,13 @@ test('Codex bootstrap remains pull-based and no-prompt omits all startup instruc
   assert.match(codex,/sassato context --as c --workspace test --brief/);
   assert(!codex.includes('sassato wait'));assert.match(codex,/sassato inbox --as c --workspace test and sassato context --as c --workspace test between tasks/);
   assert.match(codex,/sassato review TASK_ID --expect VERSION --as c --workspace test/);
-  assert.match(codex,/No background wake-up is assumed/);
+  assert.match(codex,/No launcher waits for you: do not arm a background waiter\./);
+  assert.doesNotMatch(codex,/Your launcher/);
+  const watched=planLaunch(f.s,['c'],{fresh:true,watched:true})[0].args.at(-1);
+  assert.match(watched,/Your launcher \(sassato launch-watch, started separately\) does the waiting: arm no waiter, and handle each wake it queues\./);
+  assert.doesNotMatch(watched,/No launcher waits/);
+  assert.match(watched,/^You are the test worker role c\. /);
+  assert.throws(()=>planLaunch(f.s,['a'],{fresh:true,watched:true}),/--watched applies to Codex roles only/);
   assert.deepEqual(planLaunch(f.s,['a'],{fresh:true,noPrompt:true})[0].args,[]);
   assert.deepEqual(planLaunch(f.s,['c'],{fresh:true,noPrompt:true})[0].args,[]);
   f.s.run('UPDATE roles SET model=? WHERE workspace_id=? AND name=?','opus',f.s.ws,'a');
