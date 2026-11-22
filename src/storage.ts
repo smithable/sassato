@@ -8,7 +8,7 @@ import { assertManagedIdentity,assertManagedWrite,type ManagedCredentials,type M
 // SQLite rows deliberately stay flexible at this small adapter boundary.
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 export function databasePath(value?: string): string {
   const path = resolve(value ?? process.env.SASSATO_DB ?? `${process.env.XDG_DATA_HOME ?? `${homedir()}/.local/share`}/sassato/sassato.db`);
   let ancestor = path;
@@ -142,7 +142,8 @@ export class Store {
       if (current === 9) { this.db.exec(MIGRATION_10); current = 10; }
       if (current === 10) { this.db.exec(MIGRATION_11); current = 11; }
       if (current === 11) { this.db.exec(MIGRATION_12); current = 12; }
-      if (current === 12) this.db.exec(MIGRATION_13);
+      if (current === 12) { this.db.exec(MIGRATION_13); current = 13; }
+      if (current === 13) this.db.exec(MIGRATION_14);
     });
   }
   private cancelClosedQuestions(): void {
@@ -347,4 +348,31 @@ CREATE TABLE feedback(id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id INTEGER
 CREATE INDEX feedback_open ON feedback(workspace_id,closed_at,id);
 INSERT INTO schema_migrations VALUES(13,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 PRAGMA user_version=13;
+`;
+
+// Rules in sassato (T1276): a proposal is fixed once made and its human question decides it;
+// each approval adds a row to rule_versions, numbered per workspace as the set's version. Nothing
+// in either table is deleted, and neither a proposal's content nor a version row can change.
+const MIGRATION_14 = `
+CREATE TABLE rule_proposals(id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id INTEGER NOT NULL REFERENCES workspaces(id),
+  key TEXT NOT NULL, action TEXT NOT NULL CHECK(action IN ('set','retire')), text TEXT, reason TEXT,
+  scope TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('always','step')), base_version INTEGER NOT NULL, digest TEXT NOT NULL,
+  proposed_by TEXT NOT NULL, task_id INTEGER NOT NULL, question_id INTEGER NOT NULL, created_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected','refused','withdrawn')),
+  decided_at TEXT, decided_by TEXT, relayed_by TEXT, decision TEXT,
+  CHECK((action='set')=(text IS NOT NULL)), CHECK((status='pending')=(decided_at IS NULL)),
+  UNIQUE(workspace_id,question_id), FOREIGN KEY(workspace_id,proposed_by) REFERENCES roles(workspace_id,name));
+CREATE INDEX rule_proposals_key ON rule_proposals(workspace_id,key,status);
+CREATE TRIGGER rule_proposals_fixed BEFORE UPDATE OF workspace_id,key,action,text,reason,scope,kind,base_version,digest,proposed_by,task_id,question_id,created_at ON rule_proposals
+  BEGIN SELECT RAISE(ABORT,'A rule proposal cannot be changed; propose again'); END;
+CREATE TRIGGER rule_proposals_kept BEFORE DELETE ON rule_proposals BEGIN SELECT RAISE(ABORT,'Rule proposals are kept'); END;
+CREATE TABLE rule_versions(id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id INTEGER NOT NULL REFERENCES workspaces(id),
+  set_version INTEGER NOT NULL, key TEXT NOT NULL, version INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('in-force','retired')),
+  text TEXT, scope TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('always','step')), proposal_id INTEGER NOT NULL REFERENCES rule_proposals(id),
+  approved_by TEXT NOT NULL, relayed_by TEXT, created_at TEXT NOT NULL, CHECK((status='in-force')=(text IS NOT NULL)),
+  UNIQUE(workspace_id,set_version), UNIQUE(workspace_id,key,version));
+CREATE TRIGGER rule_versions_fixed BEFORE UPDATE ON rule_versions BEGIN SELECT RAISE(ABORT,'Rule versions cannot be changed'); END;
+CREATE TRIGGER rule_versions_kept BEFORE DELETE ON rule_versions BEGIN SELECT RAISE(ABORT,'Rule versions are kept'); END;
+INSERT INTO schema_migrations VALUES(14,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+PRAGMA user_version=14;
 `;
