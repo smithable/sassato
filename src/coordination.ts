@@ -197,6 +197,11 @@ export function send(s: Store, recipients: string[] | 'all', body: string, optio
     const targets = [...new Set(recipients === 'all' ? roles(s).map(r => r.name as string).filter(r => r !== actor) : recipients.map(name))];
     check(targets.length > 0 && targets.length <= 100,'Choose 1–100 message recipients');
     targets.forEach(role => s.role(role));
+    // T1270: 'send fable hassist TEXT' sent 'hassist TEXT' to fable. A text that starts with another role's bare name
+    // is refused; a role may start with its own name, as a signature.
+    const first = content.trim().split(/\s+/)[0];
+    check(first === actor || !s.get('SELECT 1 FROM roles WHERE workspace_id=? AND name=?', s.ws, first),
+      `The text starts with '${first}', a role's name: give several recipients comma-separated (send ${[...targets, first].join(',')} TEXT), or start the text another way`);
     const task = options.task ? s.task(options.task).id : null, at = now();
     const n = s.run('INSERT INTO messages(workspace_id,sender,body,task_id,created_at,urgent,reply,urgency,urgency_reason,immediate) VALUES(?,?,?,?,?,?,?,?,?,?)',s.ws,actor,content,task,at,options.urgent||options.now?1:0,options.needsReply?1:0,urgency,reason,options.now?1:0).lastInsertRowid;
     for (const recipient of targets) s.run('INSERT INTO receipts(workspace_id,message_id,recipient) VALUES(?,?,?)',s.ws,n,recipient);
