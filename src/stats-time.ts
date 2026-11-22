@@ -26,7 +26,7 @@ export function timeTable(s: Store, options: TimeOptions): Row {
   return s.snapshot(() => {
     const roles = role ? [role] : s.all("SELECT name FROM roles WHERE workspace_id=? AND kind='agent' ORDER BY name", s.ws).map(r => String(r.name));
     const rows = roles.map(r => {
-      const writes = s.all(`SELECT entity,entity_id,action,created_at FROM events WHERE workspace_id=? AND actor=? AND ${OWN_WRITE}
+      const writes = s.all(`SELECT entity,entity_id,action,detail,created_at FROM events WHERE workspace_id=? AND actor=? AND ${OWN_WRITE}
         AND entity!='idle' AND created_at>=? AND created_at<? ORDER BY id`, s.ws, r, iso(start - WORKING_MINUTES * MINUTE), iso(end));
       // The task held at each moment: from the role's own claim to its completion, drop, hand-over, release, submission or another's claim.
       const held = heldTasks(s, r, iso(end));
@@ -36,7 +36,7 @@ export function timeTable(s: Store, options: TimeOptions): Row {
       for (let t = start; t + MINUTE <= end; t += MINUTE) {
         while (w < writes.length && Date.parse(writes[w].created_at) <= t) {
           const at = Date.parse(writes[w].created_at);
-          lastWrite = { at, task: writes[w].entity === 'task' && ['note', 'claimed', 'completed', 'blocked', 'submitted'].includes(writes[w].action) ? writes[w].entity_id : heldAt(held, at) ?? 'no task' };
+          lastWrite = { at, task: writtenTask(writes[w]) ?? heldAt(held, at) ?? 'no task' };
           w++;
         }
         while (sp < waiters.length && waiters[sp].to <= t) sp++;
@@ -71,6 +71,12 @@ function heldTasks(s: Store, role: string, until: string): { task: string; from:
   }
   for (const [task, from] of open) out.push({ task, from, to: Infinity });
   return out;
+}
+/** The task a write is about: a task event's own, or the task a sent mail names (--re T, or a mirrored question's task). */
+function writtenTask(e: Row): string | undefined {
+  if (e.entity === 'task' && ['note', 'claimed', 'completed', 'blocked', 'submitted'].includes(e.action)) return e.entity_id;
+  if (e.entity !== 'message' || e.action !== 'sent') return undefined;
+  try { const d = JSON.parse(e.detail ?? '{}'); const t = d.task ?? d.task_id; return typeof t === 'string' && /^T\d+$/.test(t) ? t : undefined; } catch { return undefined; }
 }
 const heldAt = (held: { task: string; from: number; to: number }[], at: number) => held.filter(h => h.from <= at && at < h.to).sort((a, b) => b.from - a.from)[0]?.task;
 

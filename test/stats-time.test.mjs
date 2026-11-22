@@ -93,3 +93,12 @@ test('the CLI takes --day, refuses a bad day and --day with --since, and lists e
   assert.match(cli('--day', '2099-01-01').stderr, /has not begun/);
   assert.match(cli('--day', '2026-11-21', '--since', '2026-11-20').stderr, /--day or --since/);
 });
+
+test('a mail sent about a task counts under that task even when the role holds none (Fable M4156)', (t) => {
+  const f = fixture(t);
+  f.at('10:00'); f.event('b', 'message', 'M1', 'sent', { recipients: ['a'], task: 'T42' });
+  f.at('10:30'); f.event('b', 'message', 'M2', 'sent', { recipients: ['a'], task: null });
+  f.at('11:00'); f.event('b', 'message', 'M3', 'sent', { recipients: ['johan'], task_id: 'T43' });
+  const b = timeTable(f.s, { day: '2026-11-22', role: 'b', now: new Date('2026-11-22T12:00:00Z') }).roles[0];
+  assert.deepEqual(b.working, [{ what: 'T42', minutes: 15 }, { what: 'no task', minutes: 15 }, { what: 'T43', minutes: 15 }]);
+});
