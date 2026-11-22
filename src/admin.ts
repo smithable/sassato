@@ -3,8 +3,8 @@ import { processIdentity } from './coordination.js';
 import { getNotificationProgress } from './notification-progress.js';
 import { contextLine } from './context-brief.js';
 import { backup, DatabaseSync } from 'node:sqlite';
-import { closeSync, existsSync, mkdirSync, openSync, realpathSync, statSync, unlinkSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, realpathSync, statSync, unlinkSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { cpus, freemem, loadavg, totalmem, uptime } from 'node:os';
 import { Store, databasePath, SCHEMA_VERSION, type Row, type Param } from './storage.js';
 import { WATCH_REASONS } from './launch-watch.js';
@@ -13,7 +13,7 @@ import { AppError, check, id, integer, name, now, safe, text } from './errors.js
 import { normalizeOption, ROLE_OPTION_KEYS, validateRoleOptions } from './role-options.js';
 import { loadConfig, workingDirectory } from './config.js';
 import { validateSettings } from './workspace-settings.js';
-import { exportedSetVersion } from './rules.js';
+import { EMPTY_SET_DIGEST, exportRules, readExport, ruleSet } from './rules.js';
 
 export function initWorkspace(s: Store, workspace: string, configPath?: string | Row, humans?: string[]): Row {
   name(workspace);
@@ -146,18 +146,33 @@ export async function backupDatabase(s: Store, output: string): Promise<Row> {
   try {await backup(s.db,destination);return {path:destination,scope:'all workspaces',schema:SCHEMA_VERSION};}
   catch (error) {unlinkSync(destination);throw error;}
 }
-// A restore whose rules are older than the export beside it (T1276) is refused; a human may accept
-// the older set with force, and that decision is recorded in each workspace it touches.
-function olderRules(restored: Store, path: string, options: { force?: boolean; actor?: string }): Row[] {
-  const older = restored.all('SELECT w.name, coalesce(max(v.set_version),0) AS set_version FROM workspaces w LEFT JOIN rule_versions v ON v.workspace_id=w.id GROUP BY w.id ORDER BY w.name')
-    .map(w => ({ workspace: w.name, set_version: Number(w.set_version), export_set_version: exportedSetVersion(path, w.name) }))
-    .filter(w => w.export_set_version !== undefined && w.export_set_version > w.set_version);
+// A restore whose rules differ from the export beside its destination (T1276) is refused: every export
+// file counts, a workspace the backup lacks has the empty set, and an export that cannot be read or holds
+// another set at the same version counts as newer. A human may accept the restored set with force; the
+// decision is recorded in each workspace the backup holds, and the export is rewritten after the restore.
+// The check is against accidents (a restore of the wrong file), not an authority: whoever runs restore
+// can already copy the files.
+function olderRules(databasePath: string, beside: string, options: { force?: boolean; actor?: string }): Row[] {
+  const folder = join(dirname(beside), 'rules'), older: Row[] = [];
+  const names = existsSync(folder) ? readdirSync(folder).filter(n => n.endsWith('.json')).map(n => n.slice(0, -5)).sort() : [];
+  const reader = new Store(databasePath, undefined, { readonly: true });
+  try {
+    for (const workspace of names) {
+      const exported = readExport(beside, workspace);
+      if (exported === undefined) continue;
+      const held = Boolean(reader.get('SELECT id FROM workspaces WHERE name=?', workspace));
+      if (held) reader.use(workspace);
+      const set = held ? ruleSet(reader) : { set_version: 0, digest: EMPTY_SET_DIGEST };
+      if (exported !== 'unreadable' && (exported.set_version < set.set_version || exported.set_version === set.set_version && exported.digest === set.digest)) continue;
+      older.push({ workspace, held, set_version: set.set_version, export_set_version: exported === 'unreadable' ? 'unreadable' : exported.set_version });
+    }
+  } finally { reader.close(); }
   if (!older.length) return [];
-  const list = older.map(w => `${w.workspace} (set version ${w.set_version}, exported ${w.export_set_version})`).join(', ');
-  check(options.force, `The restored rules are older than their export: ${list}. A human decides: restore again with --force --as HUMAN to accept the older set`, 4);
+  const list = older.map(w => `${w.workspace} (set version ${w.set_version}, export ${w.export_set_version})`).join(', ');
+  check(options.force, `The restored rules differ from their export and are not newer: ${list}. A human decides: restore again with --force --as HUMAN to accept them`, 4);
   check(options.actor, 'Accepting older rules needs --as HUMAN', 3);
-  for (const w of older) {
-    const s = new Store(path, options.actor);
+  for (const w of older.filter(w => w.held)) {
+    const s = new Store(databasePath, options.actor);
     try { s.use(w.workspace); s.tx(() => { s.requireHuman(); s.event('rule-set', w.workspace, 'restored-older', { set_version: w.set_version, export_set_version: w.export_set_version }); }); } finally { s.close(); }
   }
   return older;
@@ -172,14 +187,20 @@ export async function restoreDatabase(source: string, target: string, options: {
     check(sourceVersion >= 1 && sourceVersion <= SCHEMA_VERSION,'Unsupported backup schema');
     check(Object.values(db.prepare('PRAGMA integrity_check').get()!)[0]==='ok','Backup integrity check failed');
     check(db.prepare('PRAGMA foreign_key_check').all().length===0,'Backup foreign key check failed');
-    mkdirSync(dirname(dest),{recursive:true,mode:0o700});closeSync(openSync(dest,'wx',0o600));
+    // Built and checked under a temporary name; the destination appears only once it passed.
+    mkdirSync(dirname(dest),{recursive:true,mode:0o700});
+    const building=`${dest}.${process.pid}.restoring`;closeSync(openSync(building,'wx',0o600));
     try {
-      await backup(db,dest);
-      const restored = new Store(dest);
+      await backup(db,building);
+      const restored = new Store(building);
       restored.close();
-      const reader = new Store(dest,undefined,{readonly:true});
-      try { older = olderRules(reader, dest, options); } finally { reader.close(); }
-    } catch(error) {unlinkSync(dest);throw error;}
+      older = olderRules(building, dest, options);
+      linkSync(building,dest);
+    } finally {unlinkSync(building);}
+    for (const w of older.filter(w => w.held)) {
+      const s = new Store(dest, options.actor);
+      try { s.use(w.workspace); s.tx(() => exportRules(s, { allowOlder: true })); } finally { s.close(); }
+    }
     return {path:dest,scope:'all workspaces',schema:SCHEMA_VERSION,source_schema:sourceVersion,...(older.length?{older_rules_accepted:older}:{})};
   } finally {db.close();}
 }

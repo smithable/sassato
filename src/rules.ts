@@ -30,6 +30,8 @@ function kindOf(value: string): RuleKind {
 }
 function scopeOf(s: Store, value = 'all'): string { if (value !== 'all') s.role(value); return value; }
 const digest = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+/** The digest of an empty set, for a workspace a backup does not hold. */
+export const EMPTY_SET_DIGEST = digest([]);
 const firstLine = (value: string): string => value.split('\n').find(line => line.trim())?.trim().slice(0, 200) ?? '';
 
 function latest(s: Store, key: string): Row | undefined {
@@ -98,11 +100,14 @@ export function withdrawRule(s: Store, proposal: string, reason: string): Row {
   });
 }
 
-// Called by answerQuestion inside its transaction, for any answered question; undefined when the
-// question is not a rule proposal's. A throw refuses the answer as a whole.
+// Called by answerQuestion inside its transaction, after the question is marked answered, for any
+// answered question; undefined when it is not a rule proposal's. A throw refuses the answer as a whole.
+// answerQuestion writes the export last, once nothing else in the transaction can refuse it.
 export function decideRuleProposal(s: Store, questionId: number, answer: string, actor: string, relayedBy?: string): Row | undefined {
   const p = s.get('SELECT * FROM rule_proposals WHERE workspace_id=? AND question_id=?', s.ws, questionId);
   if (!p) return undefined;
+  check(s.requireHuman() === actor, 'Only the human who answers decides a rule proposal', 3);
+  check(s.get('SELECT status FROM questions WHERE workspace_id=? AND id=?', s.ws, questionId)?.status === 'answered', 'A rule proposal is decided by answering its question', 4);
   const relays = workspaceSettings(s).rule_relays ?? [];
   check(relayedBy === undefined || relays.includes(relayedBy), `${relayedBy} may not relay an answer to a rule proposal; the relays are ${relays.length ? relays.join(', ') : 'none'} (workspace set --rule-relays)`, 3);
   check(p.status === 'pending', `Rule proposal P${p.id} is ${p.status}`, 4);
@@ -122,7 +127,7 @@ export function decideRuleProposal(s: Store, questionId: number, answer: string,
   s.event('rule-proposal', `P${p.id}`, status, { key: p.key, decision, ...(relayedBy ? { relayed_by: relayedBy } : {}) });
   if (!version) return { proposal: `P${p.id}`, key: p.key, status, decision };
   s.event('rule', p.key, version.status, { version: version.version, set_version: version.set_version, proposal: `P${p.id}` });
-  return { proposal: `P${p.id}`, key: p.key, status, rule_status: version.status, version: version.version, set_version: version.set_version, export: exportRules(s) };
+  return { proposal: `P${p.id}`, key: p.key, status, rule_status: version.status, version: version.version, set_version: version.set_version };
 }
 // Called by withdrawQuestion inside its transaction.
 export function withdrawnRuleProposal(s: Store, questionId: number, reason: string, actor: string): void {
@@ -170,19 +175,29 @@ export function diffRules(s: Store, since: string | number): Row {
 }
 
 export function rulesExportPath(databasePath: string, workspace: string): string { return join(dirname(databasePath), 'rules', `${workspace}.json`); }
-/** Writes the whole set in force to its file, replacing it at once; a database in memory has none. */
-export function exportRules(s: Store): Row | null {
+/** Writes the whole set in force to its file, replacing it at once; a database in memory has none.
+ * Run inside a write transaction, so it is serialized with approvals. It never replaces a newer set, or
+ * another set at the same version (an older backup in the same folder), except for a human's forced restore. */
+export function exportRules(s: Store, options: { allowOlder?: boolean } = {}): Row | null {
   if (s.path === ':memory:') return null;
   const set = ruleSet(s), path = rulesExportPath(s.path, s.workspace), body = JSON.stringify({ ...set, exported_at: now() }, null, 2) + '\n';
+  const existing = readExport(s.path, s.workspace);
+  if (!options.allowOlder && existing && existing !== 'unreadable')
+    check(existing.set_version < set.set_version || existing.set_version === set.set_version && existing.digest === set.digest, `The rule export holds set version ${existing.set_version}, not older than this database's ${set.set_version}; is this an older copy of the database?`, 4);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.tmp`, fd = openSync(temporary, 'w', 0o600);
   try { writeSync(fd, body); fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(temporary, path);
+  const folder = openSync(dirname(path), 'r');
+  try { fsyncSync(folder); } finally { closeSync(folder); }
   return { path, set_version: set.set_version, digest: set.digest };
 }
-/** The export's set version for a workspace, or undefined with no export or one that cannot be read. */
-export function exportedSetVersion(databasePath: string, workspace: string): number | undefined {
+/** The export's set version and digest for a workspace: undefined with no export, 'unreadable' when it cannot be read. */
+export function readExport(databasePath: string, workspace: string): { set_version: number; digest: string } | 'unreadable' | undefined {
   const path = rulesExportPath(databasePath, workspace);
   if (!existsSync(path)) return undefined;
-  try { const n = JSON.parse(readFileSync(path, 'utf8')).set_version; return Number.isSafeInteger(n) ? n : undefined; } catch { return undefined; }
+  try {
+    const e = JSON.parse(readFileSync(path, 'utf8'));
+    return Number.isSafeInteger(e.set_version) && typeof e.digest === 'string' ? { set_version: e.set_version, digest: e.digest } : 'unreadable';
+  } catch { return 'unreadable'; }
 }

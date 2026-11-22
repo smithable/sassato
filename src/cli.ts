@@ -340,7 +340,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     else if(command==='restore') {const source=arg('backup');empty();check(str('db'),'Restore requires explicit --db NEW_FILE');result=await a.restoreDatabase(source,db,{force:bool('force'),actor});}
     else if(command==='machine') {empty();result=a.machine();}
     else {
-      const reads=['watch-status','supervise assignment','supervise status','checkout list','checkout show','checkout resolve','brief show','job list','job stats','stats','tasks','show','blockers','humans','outbox','sent','fact get','fact history','rule get','rule list','rule diff','rule export','feedback list','codex versions','facts','wip show','sessions','roles','workspace settings','workspace wake-audit','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
+      const reads=['watch-status','supervise assignment','supervise status','checkout list','checkout show','checkout resolve','brief show','job list','job stats','stats','tasks','show','blockers','humans','outbox','sent','fact get','fact history','rule get','rule list','rule diff','feedback list','codex versions','facts','wip show','sessions','roles','workspace settings','workspace wake-audit','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
       const readonly=reads.includes(command)||command==='retitle'&&!bool('apply')||command==='inbox'&&bool('peek')||['launch','import'].includes(command)&&bool('dry-run');
       store=new Store(db,actor,{readonly,managedWriteMode:command==='supervise reconcile'?'reconcile':command==='supervise ack'?'normal':command==='stopped'?'stop-ack':'normal'});
       const s=store;
@@ -464,7 +464,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'rule get': {const ref=arg('key or proposal');empty();result=rules.getRule(s,ref);break;}
         case 'rule list': empty();result=rules.listRules(s,{forRole:str('for'),pending:bool('pending')});break;
         case 'rule diff': {const since=arg('set version');empty();result=rules.diffRules(s,since);break;}
-        case 'rule export': empty();result=rules.exportRules(s);check(result,'A database in memory has no export');break;
+        case 'rule export': empty();result=s.tx(()=>rules.exportRules(s));check(result,'A database in memory has no export');break;
         case 'facts': empty();result=c.facts(s,{limit:num('limit')});break;
         case 'wip show': {const role=p.shift();empty();result=c.getWip(s,role);break;}
         case 'wip set': empty();{const warnings=humanWaits(s,{current:str('current'),next:str('next'),notes:str('notes')});result=withWarnings(c.setWip(s,{current:str('current'),next:str('next'),notes:str('notes'),expected_version:num('expect')}),warnings);}break;

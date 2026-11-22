@@ -9,7 +9,7 @@ import { Store } from '../dist/storage.js';
 import { initWorkspace, backupDatabase, restoreDatabase } from '../dist/admin.js';
 import { answerQuestion } from '../dist/tasks.js';
 import { setWorkspaceSettings } from '../dist/workspace-settings.js';
-import { proposeRule, retireRule, withdrawRule, getRule, listRules, diffRules, ruleSet, rulesExportPath, RULE_MAX } from '../dist/rules.js';
+import { proposeRule, retireRule, withdrawRule, getRule, listRules, diffRules, ruleSet, rulesExportPath, exportRules, decideRuleProposal, RULE_MAX } from '../dist/rules.js';
 
 const bin = resolve('bin/sassato.js');
 function fixture(t) {
@@ -46,6 +46,26 @@ test('a relay not named in rule_relays is refused and nothing changes; an agent 
   as(s, 'human', () => answerQuestion(s, p.question_id, 'approve'));
   assert.throws(() => as(s, 'human', () => answerQuestion(s, p.question_id, 'approve')), 'a second answer is refused');
   assert.equal(ruleSet(s).set_version, 1);
+});
+
+test('the decision cannot be called around the question: an agent, or an unanswered question, is refused', t => {
+  const { s } = fixture(t);
+  const p = as(s, 'c', () => proposeRule(s, 'decisions.example', 'Text'));
+  const q = Number(p.question_id.slice(1));
+  assert.throws(() => as(s, 'c', () => s.tx(() => decideRuleProposal(s, q, 'approve', 'c'))), code(3));
+  assert.throws(() => as(s, 'human', () => s.tx(() => decideRuleProposal(s, q, 'approve', 'human'))), code(4));
+  assert.equal(ruleSet(s).rules.length, 0);
+});
+
+test('an export never replaces a newer set, nor another set at the same version', async t => {
+  const { s, dir, path } = fixture(t);
+  const copy = join(dir, 'copy.db'); await backupDatabase(s, copy);
+  const p = as(s, 'c', () => proposeRule(s, 'decisions.example', 'Text'));
+  as(s, 'human', () => answerQuestion(s, p.question_id, 'approve'));
+  const old = new Store(copy, 'c'); old.use('team');
+  try { assert.throws(() => old.tx(() => exportRules(old)), code(4)); } finally { old.close(); }
+  assert.equal(JSON.parse(readFileSync(rulesExportPath(path, 'team'), 'utf8')).set_version, 1);
+  const cliCopy = cli(copy, 'rule', 'export', '--as', 'c'); assert.equal(cliCopy.status, 4, cliCopy.stderr);
 });
 
 test('an answer other than approve or reject is refused; reject records it and changes no rule', t => {
@@ -146,6 +166,27 @@ test('a restore whose rules are older than the export is refused unless a human 
   const target = join(dir, 'restored.db');
   await assert.rejects(restoreDatabase(backup, target), code(4));
   assert.equal(existsSync(target), false);
+  assert.equal(existsSync(target), false);
   const done = await restoreDatabase(backup, target, { force: true, actor: 'human' });
   assert.equal(done.older_rules_accepted[0].export_set_version, 1);
+  assert.equal(JSON.parse(readFileSync(rulesExportPath(path, 'team'), 'utf8')).set_version, 0, 'the forced restore rewrites the export');
+});
+
+test('a restore counts every export: a workspace the backup lacks, an unreadable export, another set at the same version', async t => {
+  const { s, dir, path } = fixture(t);
+  const backup = join(dir, 'before.db'); await backupDatabase(s, backup);
+  const p = as(s, 'c', () => proposeRule(s, 'decisions.example', 'One'));
+  as(s, 'human', () => answerQuestion(s, p.question_id, 'approve')); s.close();
+  const exportPath = rulesExportPath(path, 'team'), kept = readFileSync(exportPath, 'utf8');
+  writeFileSync(rulesExportPath(path, 'other'), JSON.stringify({ set_version: 1, digest: 'x' }));
+  rmSync(exportPath);
+  await assert.rejects(restoreDatabase(backup, join(dir, 'a.db')), /other/);
+  writeFileSync(rulesExportPath(path, 'other'), 'not json');
+  await assert.rejects(restoreDatabase(backup, join(dir, 'b.db')), /unreadable/);
+  rmSync(rulesExportPath(path, 'other'));
+  writeFileSync(exportPath, JSON.stringify({ ...JSON.parse(kept), set_version: 0 }));
+  await assert.rejects(restoreDatabase(backup, join(dir, 'c.db')), code(4));
+  writeFileSync(exportPath, kept);
+  assert.equal((await restoreDatabase(path, join(dir, 'd.db'))).older_rules_accepted, undefined, 'a current copy restores');
+  for (const name of ['a.db', 'b.db', 'c.db']) assert.equal(existsSync(join(dir, name)), false);
 });

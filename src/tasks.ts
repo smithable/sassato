@@ -2,7 +2,7 @@ import { type Store, type Row, type Param } from './storage.js';
 import { check, text, safe, integer, id, now } from './errors.js';
 import { assertWorkAllowed } from './control.js';
 import { humanRole } from './humans.js';
-import { decideRuleProposal, withdrawnRuleProposal } from './rules.js';
+import { decideRuleProposal, exportRules, withdrawnRuleProposal } from './rules.js';
 
 export const STATUSES = ['open', 'doing', 'blocked', 'review', 'done', 'dropped'] as const;
 export type TaskStatus = typeof STATUSES[number];
@@ -426,6 +426,8 @@ export function answerQuestion(s: Store, questionOrTask: string, answer: string,
     // The role that relayed the answer already knows it (T1103); the waiter delivers the answer as its H entry,
     // so this notice is marked for the inbox only (T1099).
     notify(s, [row.owner, question.asked_by].filter((r): r is string => Boolean(r) && r !== options.relayedBy), `H${question.id} on ${taskId(row)} answered by ${actor}: ${recorded}${options.close || rule ? ' Task closed.' : ''}${outcome}`, row, { answer: `H${question.id}` });
+    // The export is written last, so nothing after it in this transaction can refuse the approval.
+    if (rule?.status === 'approved') rule.export = exportRules(s);
     const result = { ...questionView({ ...question, status: 'answered', answer: recorded, answered_by: actor, answered_at: at, ...attribution }), ...(rule ? { rule } : {}) };
     return options.close || rule ? { ...result, task_status: 'done' } : result;
   });
