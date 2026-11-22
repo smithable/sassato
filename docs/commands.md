@@ -477,10 +477,11 @@ resumes the newest saved Codex session (CODEX_HOME or ~/.codex, sessions/) that 
 whose launch prompt names the role, searching the newest 200; so a plain `launch` of a Codex role now resumes where it
 used to start fresh. --fresh starts a new session; --resume fails when none is found.
 
-The start prompt says who does the waiting. A Codex role launched with `--watched` (one that `launch-watch` will
-serve) is told its launcher does the waiting and to arm no waiter; without it, a Codex role is told that no launcher
-waits for it and to read its inbox and context between tasks. `--watched` applies to Codex roles only. A resumed
-session keeps its first prompt, so each turn `launch-watch` queues says it too.
+The start prompt says who does the waiting. A Codex role launched with `--watched` is told its launcher does the
+waiting and to arm no waiter; without it, a Codex role is told that no launcher waits for it and to arm none (it reads
+its inbox and context between tasks). `--watched` changes only the prompt: it does not start `launch-watch`, which is
+a separate step, and until that runs nothing wakes the role. With `--no-prompt` neither sentence is sent. `--watched`
+applies to Codex roles only. A resumed session keeps its first prompt, so each wake `launch-watch` queues says it too.
 
 ## Output contract
 
