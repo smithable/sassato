@@ -281,6 +281,7 @@ the full text; the answer to that question decides it.
 | `rule get KEY\|P1` | A rule's text, version, scope, kind, who approved and who relayed, its earlier versions and pending proposals; or one proposal in full |
 | `rule list [--for ROLE] [--pending]` | The rules in force (for one role: those for all and for it), one line each, with the set's version and digest; `--pending` adds the waiting proposals |
 | `rule diff SET_VERSION` | Each change to the set after that version, in order, with the text it replaced |
+| `rule loaded SET_VERSION DIGEST` | Records that this session read that set, as `context --brief` printed it. Once any rule exists, a registered session takes no task before its record; a wake's `context --brief --since` says when the set moved past it |
 | `rule export [--force --as HUMAN]` | Writes the set in force to `rules/WORKSPACE.json` beside the database (also done on every approval). Refused when the export is newer, unreadable or another set at the same version; a human rewrites it from this database with `--force` (recorded) |
 
 - The answer is `1`/`approve` or `2`/`reject`, words after it kept (`answer H1 "approve: his words"`).

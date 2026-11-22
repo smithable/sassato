@@ -49,6 +49,37 @@ function alwaysLength(s: Store, besides: string): number {
 const versionView = (r: Row): Row => ({ key: r.key, version: r.version, status: r.status, scope: r.scope, kind: r.kind, text: r.text, set_version: r.set_version, proposal: `P${r.proposal_id}`, approved_by: r.approved_by, relayed_by: r.relayed_by, created_at: r.created_at });
 const proposalView = (r: Row): Row => ({ ...r, id: `P${r.id}`, task_id: `T${r.task_id}`, question_id: `H${r.question_id}` });
 
+const activeSession = (s: Store, role: string): Row | undefined => s.get('SELECT id FROM sessions WHERE workspace_id=? AND role=? AND ended_at IS NULL', s.ws, role);
+/** The brief's rules for a role: every always rule in full, one line per step rule, and the set its session recorded reading. */
+export function ruleBrief(s: Store, role: string): Row {
+  const set = ruleSet(s, role), session = activeSession(s, role);
+  const loaded = session ? s.get('SELECT max(set_version) AS n FROM rule_loads WHERE workspace_id=? AND session_id=?', s.ws, session.id)?.n ?? null : null;
+  return { set_version: set.set_version, digest: set.digest, session: session ? `S${session.id}` : null, loaded,
+    always: set.rules.filter((r: Row) => r.kind === 'always').map(({ key, version, text }: Row) => ({ key, version, text })),
+    steps: set.rules.filter((r: Row) => r.kind === 'step').map((r: Row) => ({ key: r.key, version: r.version, line: firstLine(r.text) })) };
+}
+/** The session records that it read this set (the digest, or its first 12 characters, as the brief printed it). */
+export function recordRulesLoaded(s: Store, version: number, sum: string): Row {
+  const actor = s.requireActor();
+  return s.tx(() => {
+    const session = activeSession(s, actor), set = ruleSet(s, actor);
+    check(session, 'No active session is registered for this role; the record of rules read is per session', 3);
+    check(set.set_version === integer(version, 'set version') && typeof sum === 'string' && sum.length >= 12 && set.digest.startsWith(sum),
+      `The rules in force for ${actor} are set ${set.set_version} (digest ${set.digest.slice(0, 12)}); read them with sas context --brief and record that`, 4);
+    const at = now();
+    s.run('INSERT OR IGNORE INTO rule_loads VALUES(?,?,?,?,?)', s.ws, session.id, set.set_version, set.digest, at);
+    return { session: `S${session.id}`, role: actor, set_version: set.set_version, digest: set.digest };
+  });
+}
+/** Refuses work to a registered session that has not recorded reading the rules, once any rule exists. */
+export function requireRulesLoaded(s: Store, actor: string): void {
+  if (setVersion(s) === 0) return;
+  const session = activeSession(s, actor);
+  if (!session) return;
+  check(s.get('SELECT 1 FROM rule_loads WHERE workspace_id=? AND session_id=?', s.ws, session.id),
+    `Read the rules before taking work: sas context --brief --as ${actor}, then the sas rule loaded line it prints`, 3);
+}
+
 /** The rules in force (for one role: those for all and those for it), with the set's version and digest. */
 export function ruleSet(s: Store, forRole?: string): Row {
   return s.snapshot(() => {
