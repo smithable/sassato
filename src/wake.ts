@@ -23,7 +23,7 @@ export interface WakeOptions extends WaitOptions {
   /** Told at once, before the wait, when a long wait leaves ready work (waiting is not idle). */
   armNotice?: (line: string) => void;
 }
-export interface WakeOutcome { text: string; result: WaitResult; acknowledged: string[]; commit?: () => { saved: boolean; line: string } }
+export interface WakeOutcome { text: string; result: WaitResult; acknowledged: string[]; delivered?: string[]; commit?: () => { saved: boolean; line: string } }
 
 /** Text as written, with control characters other than newlines removed and a marked cut. */
 export function wakeText(value: unknown, id: string, limit = WAKE_TEXT_LIMIT): string {
@@ -82,7 +82,7 @@ export async function wake(s: Store, options: WakeOptions = {}): Promise<WakeOut
       if (stop) return formatWake(s,options,0,stop,[]);
       const pending = readPendingWake(s,process.env.CODEX_THREAD_ID);
       const output = formatWake(s,options,pending.progress.cursor,pending.result,[]);
-      return {...output,commit:pending.commit};
+      return {...output,commit:()=>pending.commit(output.delivered??[])};
     });
   }
   const before = getNotificationProgress(s);
@@ -146,6 +146,7 @@ function formatWake(s: Store, options: WakeOptions, since: number, result: WaitR
   const entries = result.digest?.entries ?? [];
   const shown = new Set([...entries.map((entry) => entry.id), ...(result.message ? [String(result.message.id)] : [])]);
   const { rows: left, more: leftMore } = waiting(s, actor, shown);
+  const delivered = [...[...shown].map((id) => (/^\d+$/.test(id) ? `M${id}` : id)), ...left.map((m) => `M${m.id}`)].filter((id) => /^M\d+$/.test(id));
   const quiet = !entries.length && !left.length && result.reason === 'timeout';
   const idle=result.idle??result.scored?.idle;
   const unchanged=unchangedIdleText(idle);
@@ -189,7 +190,7 @@ function formatWake(s: Store, options: WakeOptions, since: number, result: WaitR
     try {
       const saved=s.tx(()=>{
         if(activeStop(s,[actor],options.stopFile))return false;
-        saveNotificationProgress(s,{cursor:result.cursor,expected_version:version,scored:result.scored,idle:result.idle});
+        saveNotificationProgress(s,{cursor:result.cursor,expected_version:version,scored:result.scored,idle:result.idle,delivered});
         return true;
       });
       return saved?{saved,line:`Cursor ${result.cursor} saved.`}:
@@ -202,19 +203,19 @@ function formatWake(s: Store, options: WakeOptions, since: number, result: WaitR
   };
   if (quiet) {
     lines.push(`Nothing new for ${actor} · cursor ${result.cursor} · re-arm: ${rearm([])}`);
-    return { text: lines.join('\n'), result, acknowledged, commit };
+    return { text: lines.join('\n'), result, acknowledged, delivered, commit };
   }
   if(idleOnly){
     lines.push(`nothing new: re-arm only · ${unchanged} · ${options.pending?'The launcher owns the waiter.':rearm([])}`);
-    return {text:lines.join('\n'),result,acknowledged,commit};
+    return {text:lines.join('\n'),result,acknowledged,delivered,commit};
   }
   lines.push(`Wake for ${actor}: ${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}${result.digest ? ` (${result.digest.flush})` : ''} · cursor ${result.cursor}`, ...body);
   if (options.pending) {
     lines.push('Handle this digest and checkpoint. The launcher owns the waiter.');
     if (toAck.length) lines.push(`Acknowledge handled mail with sassato ack ${toAck.join(' ')} --as ${actor} --workspace ${s.workspace}.`);
-    return {text:lines.join('\n'),result,acknowledged};
+    return {text:lines.join('\n'),result,acknowledged,delivered};
   }
   lines.push(`Then: handle these, put your writes and one checkpoint in one command, and re-arm in the same response: ${rearm(toAck)}`);
   if (toAck.length) lines.push(`(--ack ${toAck.join(',')} acknowledges that mail when the waiter starts; leave out any you have not handled.)`);
-  return { text: lines.join('\n'), result, acknowledged, commit };
+  return { text: lines.join('\n'), result, acknowledged, delivered, commit };
 }

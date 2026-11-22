@@ -41,6 +41,9 @@ test('a wake prints each entry in full, saves the cursor and ends with the re-ar
   assert.match(out.text, /Please merge PR 42\.\n {4}Second line with detail\./);
   assert.match(out.text, new RegExp(`sassato wake --since ${out.result.cursor} --as b --workspace team --stop-file \\S+ --ack ${m.id}`));
   assert.equal(getNotificationProgress(f.b).cursor, out.result.cursor);
+  // The save names the mail the printed wake listed (T1241), so stats can tell it from mail never listed.
+  const saved = f.b.get("SELECT detail FROM events WHERE workspace_id=? AND entity='notification-progress' ORDER BY id DESC LIMIT 1", f.b.ws);
+  assert.deepEqual(JSON.parse(saved.detail).delivered, [m.id]);
 });
 
 test('--ack acknowledges before waiting, and a quiet wake is one line', async t => {
@@ -181,6 +184,18 @@ test('pending CLI prints original digest, advances once and leaves mail unacknow
   assert.equal(pendingCli(f).status,4);
   assert.equal(getNotificationProgress(f.b).cursor,f.result.cursor);
   assert.equal(inbox(f.b,{peek:true}).length,1);
+  // The consumed wake's save names the mail it printed (T1241).
+  const saved=f.b.get("SELECT detail FROM events WHERE workspace_id=? AND entity='notification-progress' ORDER BY id DESC LIMIT 1",f.b.ws);
+  assert.deepEqual(JSON.parse(saved.detail).delivered,[f.mail.id]);
+});
+test('a consumed pending wake saves every mail it printed, the still-to-acknowledge list too (T1241)',async t=>{
+  const f=await staged(t);
+  const extra=as(f.s,'a',()=>send(f.s,['b'],'Answer when you can',{needsReply:true}));
+  const read=pendingCli(f);
+  assert.equal(read.status,0,read.stderr);
+  assert.match(read.stdout,new RegExp(`still to acknowledge:\\n  ${extra.id}`));
+  const saved=f.b.get("SELECT detail FROM events WHERE workspace_id=? AND entity='notification-progress' ORDER BY id DESC LIMIT 1",f.b.ws);
+  assert.deepEqual(JSON.parse(saved.detail).delivered.sort(),[f.mail.id,extra.id].sort());
 });
 test('STOP supersedes pending work and resume requires a fresh enrollment',async t=>{
   const f=await staged(t);

@@ -15,7 +15,9 @@ export interface IdleDelivery {
   observed:number; since:number; delivered:number; repeats:number;
 }
 export interface ScoredDelivery { event_ids:number[]; through?:number; score:WakeScore; idle?:IdleDelivery }
-export interface NotificationProgressInput { cursor: number; expected_version: number; scored?:ScoredDelivery; idle?:IdleDelivery }
+/** delivered: the mail (M ids) the printed wake listed, kept so stats can tell listed-but-unread mail from mail never listed. */
+export interface NotificationProgressInput { cursor: number; expected_version: number; scored?:ScoredDelivery; idle?:IdleDelivery; delivered?:string[] }
+export const DELIVERED_LIMIT=200;
 export const IDLE_TASK_LIMIT=20;
 
 function validIdle(value: unknown): value is IdleDelivery {
@@ -104,7 +106,7 @@ export function saveNotificationProgress(s: Store, input: NotificationProgressIn
   return s.tx(()=>{
     const role=s.requireActor(), old=getNotificationProgress(s);
     const delivery=input.idle??input.scored?.idle;
-    if (!input.scored && !delivery && old && cursor===old.cursor && (expected===old.version || expected===old.version-1)) return old;
+    if (!input.scored && !delivery && !input.delivered?.length && old && cursor===old.cursor && (expected===old.version || expected===old.version-1)) return old;
     check(expected===(old?.version??0),'Notification progress changed; read it and retry with --expect',4);
     check(!old || cursor>=old.cursor,'Notification cursor cannot move backwards; use wait --since for an explicit replay',4);
     const latest=Number(s.get('SELECT coalesce(max(id),0) AS n FROM events WHERE workspace_id=?',s.ws)!.n);
@@ -121,8 +123,12 @@ export function saveNotificationProgress(s: Store, input: NotificationProgressIn
       s.run('INSERT OR IGNORE INTO scored_wake_delivery(workspace_id,role,event_id) VALUES(?,?,?)',s.ws,role,eventId);
     }
     s.run('DELETE FROM scored_wake_delivery WHERE workspace_id=? AND role=? AND event_id<=?',s.ws,role,cursor);
+    // A list longer than the limit is stored cut and marked, so stats reads a missing id as unknown, not as never listed.
+    const all=[...new Set(input.delivered??[])];
+    check(all.every(id=>typeof id==='string'&&/^M[1-9][0-9]*$/.test(id)),'Invalid delivered mail list');
+    const delivered=all.slice(0,DELIVERED_LIMIT);
     const version=(old?.version??0)+1;
-    const event=s.event('notification-progress',role,'saved',{format:1,cursor,version,...(through===undefined?{}:{scored_through:through}),
+    const event=s.event('notification-progress',role,'saved',{format:1,cursor,version,...(input.delivered?{delivered,...(all.length>delivered.length?{delivered_cut:true}:{})}:{}),...(through===undefined?{}:{scored_through:through}),
       ...(scored?{scored_score:scored.score}:{}),...(idle?{idle_delivery:idle}:{})});
     const saved=s.get('SELECT created_at FROM events WHERE workspace_id=? AND id=?',s.ws,event)!;
     return {id:`E${event}`,role,cursor,version,saved_at:saved.created_at};
