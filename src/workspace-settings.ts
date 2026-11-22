@@ -76,7 +76,7 @@ export function validateSettings(s: Store, input: Row): WorkspaceSettings {
     check(validAdvisor(model),`advisor.${role} must be a model name such as opus or claude-opus-5-5`);
     advisor[role]=model as string;
   }
-  // codex_versions (T1098): the Codex CLI versions a human has accepted; launch and launch-watch refuse others.
+  // codex_versions (T1098): the Codex CLI versions a human has marked tested; a record only since T1193.
   const codex=input.codex_versions??DEFAULT_CODEX_VERSIONS;
   check(Array.isArray(codex)&&codex.length>=1&&codex.length<=16&&codex.every(v=>typeof v==='string'&&CODEX_VERSION.test(v)),'codex_versions must list 1 to 16 exact versions such as 0.167.0');
   // Spare tasks (T1102): offered to an idle role when spare_work is on, only to providers in spare_providers (empty: any).
@@ -144,8 +144,8 @@ export function acceptCodexVersion(s:Store,version:string,replace=false):string[
     return setWorkspaceSettings(s,{codex_versions:replace?[version]:before.includes(version)?before:[...before,version]}).codex_versions;
   });
 }
-/** The oldest Codex CLI launch and launch-watch start on (T664, Johan's answer to H161): a newer version than the
- * tested ones starts with a warning, an older one is refused. */
+/** The oldest Codex CLI launch and launch-watch start on (T664); any newer one starts silently, without a list to
+ * pass (T1193, decisions.codex-version-policy). */
 export const MIN_CODEX_VERSION='0.167.0';
 const versionParts=(version:string)=>version.split('.').map(Number);
 const atLeast=(version:string,floor:string)=>{
@@ -153,15 +153,14 @@ const atLeast=(version:string,floor:string)=>{
   for(let i=0;i<3;i++)if(a[i]!==b[i])return a[i]>b[i];
   return true;
 };
-/** Reads a Codex CLI's --version output. A tested version (codex_versions) starts silently; a newer untested one
- * starts with the returned warning, naming the tested versions; one older than MIN_CODEX_VERSION is refused. */
-export function checkCodexVersion(settings:WorkspaceSettings,output:string):{version:string;warning:string|null} {
-  const version=/^codex(?:-cli)? ([0-9]+\.[0-9]+\.[0-9]+)$/.exec(output.trim())?.[1];
+/** Reads a Codex CLI's --version output: one older than MIN_CODEX_VERSION is refused, any other starts. codex_versions
+ * stays a record of the versions a human marked tested; it no longer gates or warns (T1193). */
+export function checkCodexVersion(output:string):{version:string} {
+  // A prerelease or build suffix (0.172.0-alpha.1, 0.171.0+abc) is kept in the name; the floor reads the three numbers.
+  const [,version,core]=/^codex(?:-cli)? (([0-9]+\.[0-9]+\.[0-9]+)(?:[-+][0-9A-Za-z.+-]{1,64})?)$/.exec(output.trim())??[];
   check(version!==undefined,`Cannot read the Codex CLI version from "${output.trim().slice(0,80)}"`,4);
-  // The floor comes first: an old version accepted before T664 is still refused.
-  check(atLeast(version!,MIN_CODEX_VERSION),`Codex CLI ${version} is older than ${MIN_CODEX_VERSION}, the oldest sassato starts (tested: ${settings.codex_versions.join(', ')})`,4);
-  if(settings.codex_versions.includes(version!))return {version:version!,warning:null};
-  return {version:version!,warning:`Warning: Codex CLI ${version} is not a tested version (tested: ${settings.codex_versions.join(', ')}); starting anyway. After a trial, a human marks it tested with: sassato codex accept ${version}`};
+  check(atLeast(core!,MIN_CODEX_VERSION),`Codex CLI ${version} is older than ${MIN_CODEX_VERSION}, the oldest sassato starts`,4);
+  return {version:version!};
 }
 /** The nudge's default interval (T1253): the rules' fifteen minutes. */
 export const DEFAULT_NUDGE_MINUTES=15;
