@@ -857,23 +857,23 @@ in place. A duplicate command after consumption exits with a conflict unless a
 new digest is pending. The pending mode takes no wait or acknowledgement options.
 The consumer alone does not start or enable a launcher.
 
-### Accepted Codex versions (T1098)
+### Codex versions (T1098, T1193)
 
-`sassato launch` for a Codex role and `sassato launch-watch` run `codex --version` first. The
-workspace setting `codex_versions` (default `0.167.0`) is the list of tested versions (T664):
+`sassato launch` for a Codex role and `sassato launch-watch` run `codex --version` first. They run
+whatever Codex is installed (T1193):
 
-- a tested version starts silently;
-- a newer version than 0.167.0 that is not on the list starts with a warning on stderr naming the
-  tested versions;
+- 0.167.0 or newer starts silently, whether or not it is on the tested list;
 - a version older than 0.167.0 is refused with exit 4.
 
 ```text
-Warning: Codex CLI 0.168.0 is not a tested version (tested: 0.167.0); starting anyway. After a trial, a human marks it tested with: sassato codex accept 0.168.0
-Codex CLI 0.166.0 is older than 0.167.0, the oldest sassato starts (tested: 0.167.0)
+Codex CLI 0.166.0 is older than 0.167.0, the oldest sassato starts
 ```
 
 `launch-watch` accepts a notice on stderr (an update hint) beside `--version` and `queue --help`
 when their exit and answer are right; the queue call itself stays strict.
+
+The workspace setting `codex_versions` (default `0.167.0`) is a record of the versions a human marked
+tested. It does not gate a start or print a warning.
 
 - `sassato codex versions`: the tested list (read-only, any role).
 - `sassato codex accept VERSION --as HUMAN`: marks an exact version tested (`MAJOR.MINOR.PATCH`);
@@ -881,7 +881,7 @@ when their exit and answer are right; the queue call itself stays strict.
   The change is a settings event, so the workspace history shows who accepted which version and when.
   At most 16 versions are kept. Claude roles are not checked.
 
-### Launcher-owned Codex waiter (Linux, accepted Codex versions)
+### Launcher-owned Codex waiter (Linux, Codex 0.167.0 or newer)
 
 A human can enroll one **existing remote session** in a foreground launcher.
 Use the same workspace and registry as the worker. First verify the human terminal

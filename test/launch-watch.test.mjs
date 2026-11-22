@@ -262,16 +262,14 @@ test('a socket in a folder others can write is refused',async t=>{
   chmodSync(f.dir,0o777);
   await assert.rejects(launchWatch(f.operator,'b',f.remote,thread),/folder only that user/);
 });
-test('a newer untested Codex version starts with a warning, an older one is refused; a human marks one tested (T1098, T664)',async t=>{
+test('any Codex version from the floor up starts silently, an older one is refused; a human may still mark one tested (T1098, T664, T1193)',async t=>{
   const f=await fixture(t,'success',false,'0.168.0');
   assert.deepEqual(workspaceSettings(f.operator).codex_versions,['0.167.0']);
-  const settings=workspaceSettings(f.operator);
-  assert.deepEqual(checkCodexVersion(settings,'codex-cli 0.167.0'),{version:'0.167.0',warning:null});
-  assert.match(checkCodexVersion(settings,'codex-cli 0.168.0').warning,/Codex CLI 0\.168\.0 is not a tested version \(tested: 0\.167\.0\); starting anyway.*sassato codex accept 0\.168\.0/);
-  assert.match(checkCodexVersion(settings,'codex-cli 1.0.0').warning,/not a tested version/);
-  assert.throws(()=>checkCodexVersion(settings,'codex-cli 0.166.9'),/Codex CLI 0\.166\.9 is older than 0\.167\.0/);
-  assert.throws(()=>checkCodexVersion(settings,'codex-cli 0.99.0'),/older than/);
-  assert.throws(()=>checkCodexVersion({...settings,codex_versions:['0.166.0','0.167.0']},'codex-cli 0.166.0'),/older than/);
+  assert.deepEqual(checkCodexVersion('codex-cli 0.167.0'),{version:'0.167.0'});
+  assert.deepEqual(checkCodexVersion('codex-cli 0.171.0'),{version:'0.171.0'},'not on the list, starts without a warning');
+  assert.deepEqual(checkCodexVersion('codex-cli 1.0.0'),{version:'1.0.0'});
+  assert.throws(()=>checkCodexVersion('codex-cli 0.166.9'),/Codex CLI 0\.166\.9 is older than 0\.167\.0/);
+  assert.throws(()=>checkCodexVersion('codex-cli 0.99.0'),/older than/);
   assert.throws(()=>acceptCodexVersion(f.worker,'0.168.0'),/Only a human accepts a Codex version/);
   const refused=f.cli('codex','accept','0.168.0');assert.notEqual(refused.status,0);assert.match(refused.stderr,/Only a human/);
   assert.deepEqual(acceptCodexVersion(f.operator,'0.168.0'),['0.167.0','0.168.0']);

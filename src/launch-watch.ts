@@ -175,8 +175,7 @@ async function observe(s:Store,human:string,remote:string,thread:string,clock:()
     // the queue call itself stays strict (T664).
     const version=await queueClient(client,['--version'],options);
     check(version.code===0 && !version.timedOut,'Cannot read the Codex CLI version',4);
-    const {warning}=checkCodexVersion(workspaceSettings(s),version.stdout);
-    if(warning)console.error(warning);
+    checkCodexVersion(version.stdout);
     const help=await queueClient(client,['queue','--help'],options);
     check(help.code===0 && !help.timedOut && ['thread','message','resume','remote'].every(flag=>new RegExp(`--${flag}\\b`).test(help.stdout)),'Required Codex queue interface unavailable',4);
     identity();
