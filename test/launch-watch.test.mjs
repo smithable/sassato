@@ -322,7 +322,8 @@ test('a notice on stderr beside a good version line is accepted (T664)',async t=
 });
 test('a queue call that times out is tried once more after a pause (T663)',async t=>{
   const f=await fixture(t,'slow');
-  const run=launchWatch(f.operator,'b',f.remote,thread,undefined,{queueTimeoutMs:300,retryPauseMs:50});run.catch(()=>{});
+  // The first call hangs for good; the limit leaves room for the retry's own process start on a loaded machine (T1295).
+  const run=launchWatch(f.operator,'b',f.remote,thread,undefined,{queueTimeoutMs:2_000,retryPauseMs:50});run.catch(()=>{});
   send(f.operator,['b'],'Work',{now:true});
   await until(()=>f.calls().length===2);
   assert.ok(f.worker.get("SELECT id FROM events WHERE entity='watch-dispatch' AND action='retry'"));
