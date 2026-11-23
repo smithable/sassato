@@ -1012,7 +1012,11 @@ launcher has exited, a human can close exactly that epoch (use its numeric ID):
     sas watch-close ROLE --epoch N --workspace TEAM --as HUMAN
 
 This preserves worker progress. Start a fresh enrollment explicitly after
-reconciling. A stale same-boot launch lock follows ordinary `launch-unlock`
+reconciling. `launch --watched` checks each role's enrollment before it closes or
+starts a window: an open epoch refuses the role and names this command, and with
+`--close-stale` the launch closes it itself, under the role's lock and only when no
+wake is pending. `watch-roles` writes each role it stops or does not start watching
+to its log at once (`Not watching ROLE: reason`). A stale same-boot launch lock follows ordinary `launch-unlock`
 recovery. Do not end a live session or replay an uncertain queue command to
 clear a lock. A process killed outright cannot send an alert; its open epoch
 and pending intent remain visible in `watch-status`.

@@ -12,7 +12,7 @@ import { check, name } from './errors.js';
 import { processIdentity, providerProcess, registerSession } from './coordination.js';
 import { acquireLaunchLock, planLaunch, resolveExecutable } from './launch.js';
 import { launchDirectory, launchLockPath } from './launch-admission.js';
-import { launchWatch, WINDOW_SETTINGS } from './launch-watch.js';
+import { closeEnrollment, launchWatch, watchStatus, WINDOW_SETTINGS } from './launch-watch.js';
 import { Store, type Row } from './storage.js';
 
 export interface WatchedOptions {
@@ -194,6 +194,8 @@ export async function launchWatched(operator: Store, roles: string[], options: W
     const planned = () => planLaunch(operator, [role], { watched: true, noPrompt: true, resume: true, codexHome: options.codexHome })[0];
     const first = planned();
     check(first.provider === 'codex', `${role} is not a Codex role`, 3);
+    // Checked before any window is closed or started: a watcher refuses a role whose earlier enrollment is open (T1299).
+    const enrollment = openEnrollment(operator, role, options.closeStale === true);
     const thread = first.sessionId!, endpoint = `unix://${join(stateDir(operator), `${role}.sock`)}`;
     const { args, want } = settings(operator, role);
     // Closing an earlier window changes its registered session from running to stale, so plan again after it.
@@ -201,7 +203,7 @@ export async function launchWatched(operator: Store, roles: string[], options: W
     const running = `${role} has a registered running session not started by this command; close it first`;
     if (options.dryRun) {
       check(closed || first.status !== 'already-running', running, 4);
-      results.push({ role, thread, cwd: first.cwd, server: [codex, 'app-server', ...args, '--listen', endpoint], window: [codex, ...windowArgs(endpoint, thread)], ...(closed ? { would_close: closed } : {}), status: 'ready' });
+      results.push({ role, thread, cwd: first.cwd, server: [codex, 'app-server', ...args, '--listen', endpoint], window: [codex, ...windowArgs(endpoint, thread)], ...(closed ? { would_close: closed } : {}), ...(enrollment ? { would_close_enrollment: enrollment } : {}), status: 'ready' });
       continue;
     }
     // The role's launch lock, held from here until its record is written, keeps two launches apart; the watcher
@@ -215,7 +217,11 @@ export async function launchWatched(operator: Store, roles: string[], options: W
       const plan = planned();
       check(plan.sessionId === thread, `${role}'s saved session changed while launching; run the command again`, 4);
       check(plan.status !== 'already-running', running, 4);
-      results.push(await startRole(operator, role, plan.cwd, thread, endpoint, codex, args, want, openWindow, waitMs));
+      // Under the lock no earlier watcher holds the enrollment, so --close-stale may close it.
+      const epoch = openEnrollment(operator, role, options.closeStale === true);
+      if (epoch) closeEnrollment(operator, role, epoch);
+      const row = await startRole(operator, role, plan.cwd, thread, endpoint, codex, args, want, openWindow, waitMs);
+      results.push(epoch ? { ...row, closed_enrollment: epoch } : row);
       started.push(role);
     } finally { release(); }
   }
@@ -232,6 +238,16 @@ export async function launchWatched(operator: Store, roles: string[], options: W
     }
   }
   return results;
+}
+
+/** The role's open enrollment, refused unless --close-stale may close it: never one with a wake still to deliver. */
+function openEnrollment(operator: Store, role: string, closeStale: boolean): number | undefined {
+  const { epoch, pending } = watchStatus(operator, role);
+  if (!epoch) return undefined;
+  const close = `sassato watch-close ${role} --epoch ${epoch} --workspace ${operator.workspace} --as ${operator.actor}`;
+  check(pending === null, `${role} has an open waiter enrollment E${epoch} with a wake not yet delivered (event ${pending}); reconcile the role's inbox and progress, then ${close}`, 4);
+  check(closeStale, `${role} has an open waiter enrollment E${epoch} from an earlier watcher; close it with ${close}, or launch with --close-stale`, 4);
+  return Number(epoch);
 }
 
 async function enrolled(operator: Store, roles: string[], watcher: number | undefined, waitMs: number): Promise<string[]> {
@@ -287,10 +303,19 @@ async function startRole(operator: Store, role: string, cwd: string, thread: str
 export async function watchRoles(operator: Store, roles: string[]): Promise<Row[]> {
   operator.requireHuman();
   check(roles.length > 0, 'Name the roles to watch');
-  const runs = roles.map(role => {
-    const state = readState(operator, name(role));
-    check(state, `No started window recorded for ${role}; start it with sas launch --watched`, 4);
-    return launchWatch(operator, role, state!.endpoint, state!.thread).then(result => ({ role, result }), error => ({ role, error: String(error instanceof Error ? error.message : error) }));
+  // Each role's end is written when it happens: the result rows print only when every role's watch has ended (T1299).
+  const runs = roles.map(async role => {
+    try {
+      const state = readState(operator, name(role));
+      check(state, `No started window recorded for ${role}; start it with sas launch --watched`, 4);
+      const result = await launchWatch(operator, role, state!.endpoint, state!.thread);
+      console.error(`Stopped watching ${role}.`);
+      return { role, result };
+    } catch (error) {
+      const message = String(error instanceof Error ? error.message : error);
+      console.error(`Not watching ${role}: ${message}`);
+      return { role, error: message };
+    }
   });
   return Promise.all(runs);
 }
