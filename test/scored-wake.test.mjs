@@ -330,6 +330,41 @@ for(const mode of ['legacy','scored'])test(`${mode} idle wakes repeat with durab
   assert.equal(active.commit().saved,true);
 });
 
+for(const mode of ['legacy','scored'])test(`${mode} own-work reminders keep their back-off through the holder's own notes, not through another role's change (T1348)`,async t=>{
+  const f=fixture(t);
+  if(mode==='scored')f.opt({speed:'fast'});
+  const task=addTask(f.b,{title:'Routine held by b'});
+  takeTask(f.b,task.id);
+  saveNotificationProgress(f.b,{cursor:f.latest(),expected_version:1});
+  const minute=60_000;
+  let wall=f.base;
+  const next=async()=>{
+    const clock=controlled(wall,{jump:minute});
+    const outcome=await wake(f.b,{idleMinutes:1,clock,...(mode==='legacy'?{settle:0}:{})});
+    wall=clock.now();
+    assert.equal(outcome.commit().saved,true);
+    return outcome;
+  };
+  const first=await next();
+  assert.equal(first.result.reason,'own-work');
+  assert.match(first.text,/reminder: own-work T1|Reminder: held by b/i);
+  noteTask(f.b,task.id,'Still mine, waiting for Monday');
+  const own=await next();
+  assert.match(own.text,/nothing new: re-arm only · unchanged since/,'the holder\'s own note is not news');
+  assert.doesNotMatch(own.text,/Note \(b\)/);
+  assert.equal(lastIdleDelivery(f.b,getNotificationProgress(f.b)).repeats,1);
+  noteTask(f.operator,task.id,'From the human: the plan changed');
+  noteTask(f.b,task.id,'Read it');
+  const mixed=await next();
+  assert.doesNotMatch(mixed.text,/unchanged since/,'another role\'s change resets, even with the holder\'s note after it');
+  assert.equal(lastIdleDelivery(f.b,getNotificationProgress(f.b)).repeats,0);
+  if(mode==='scored'){assert.match(mixed.text,/Note \(human\): From the human: the plan changed/);assert.doesNotMatch(mixed.text,/Note \(b\)/);}
+  assert.match((await next()).text,/unchanged since/);
+  send(f.b,['a'],'Work elsewhere resets the back-off');
+  const elsewhere=await next();
+  assert.doesNotMatch(elsewhere.text,/unchanged since/);
+});
+
 test('the idle interval doubles up to one day and launcher staging does not consume it',async t=>{
   const f=fixture(t);
   const thread='211a70d9-399a-4a54-8dd4-3a156d04a1bb';
