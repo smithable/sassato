@@ -7,9 +7,10 @@
 // the database before the change commits, so the copy outside is never behind the database.
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { acquireSupervisorLock, type SupervisorLease } from './supervisor-locks.js';
 import { type Store, type Row } from './storage.js';
-import { check, id, integer, now, text } from './errors.js';
+import { AppError, check, id, integer, now, text } from './errors.js';
 import { workspaceSettings } from './workspace-settings.js';
 import { addTask, askHuman, withdrawQuestion } from './tasks.js';
 
@@ -48,6 +49,39 @@ function alwaysLength(s: Store, besides: string): number {
 }
 const versionView = (r: Row): Row => ({ key: r.key, version: r.version, status: r.status, scope: r.scope, kind: r.kind, text: r.text, set_version: r.set_version, proposal: `P${r.proposal_id}`, approved_by: r.approved_by, relayed_by: r.relayed_by, created_at: r.created_at });
 const proposalView = (r: Row): Row => ({ ...r, id: `P${r.id}`, task_id: `T${r.task_id}`, question_id: `H${r.question_id}` });
+
+const activeSession = (s: Store, role: string): Row | undefined => s.get('SELECT id FROM sessions WHERE workspace_id=? AND role=? AND ended_at IS NULL', s.ws, role);
+/** The brief's rules for a role: every always rule in full, one line per step rule, and the set its session recorded reading. */
+export function ruleBrief(s: Store, role: string): Row {
+  const set = ruleSet(s, role), session = activeSession(s, role);
+  const loaded = session ? s.get('SELECT max(set_version) AS n FROM rule_loads WHERE workspace_id=? AND session_id=?', s.ws, session.id)?.n ?? null : null;
+  return { set_version: set.set_version, digest: set.digest, session: session ? `S${session.id}` : null, loaded,
+    always: set.rules.filter((r: Row) => r.kind === 'always').map(({ key, version, text }: Row) => ({ key, version, text })),
+    steps: set.rules.filter((r: Row) => r.kind === 'step').map((r: Row) => ({ key: r.key, version: r.version, line: firstLine(r.text) })) };
+}
+/** The session the brief named records that it read this set (the digest, or its first 12 characters, as printed). */
+export function recordRulesLoaded(s: Store, version: number, sum: string, sessionRef: string): Row {
+  const actor = s.requireActor();
+  return s.tx(() => {
+    const session = activeSession(s, actor), set = ruleSet(s, actor);
+    check(session, 'No active session is registered for this role; the record of rules read is per session', 3);
+    check(sessionRef === `S${session.id}`, `The brief was read by ${sessionRef}, but ${actor}'s session now is S${session.id}; read the brief again`, 4);
+    check(set.set_version > 0, 'No rule is in force yet; there is nothing to record', 4);
+    check(set.set_version === integer(version, 'set version') && typeof sum === 'string' && sum.length >= 12 && set.digest.startsWith(sum),
+      `The rules in force for ${actor} are set ${set.set_version} (digest ${set.digest.slice(0, 12)}); read them with sas context --brief and record that`, 4);
+    const at = now();
+    s.run('INSERT OR IGNORE INTO rule_loads VALUES(?,?,?,?,?)', s.ws, session.id, set.set_version, set.digest, at);
+    return { session: `S${session.id}`, role: actor, set_version: set.set_version, digest: set.digest };
+  });
+}
+/** Refuses work to a registered session that has not recorded reading the rules, once any rule exists. */
+export function requireRulesLoaded(s: Store, actor: string): void {
+  if (setVersion(s) === 0) return;
+  const session = activeSession(s, actor);
+  if (!session) return;
+  check(s.get('SELECT 1 FROM rule_loads WHERE workspace_id=? AND session_id=? AND set_version>0', s.ws, session.id),
+    `Read the rules before taking work: sas context --brief --as ${actor}, then the sas rule loaded line it prints`, 3);
+}
 
 /** The rules in force (for one role: those for all and those for it), with the set's version and digest. */
 export function ruleSet(s: Store, forRole?: string): Row {
@@ -178,15 +212,30 @@ export function rulesExportPath(databasePath: string, workspace: string): string
 /** Writes the whole set in force to its file, replacing it at once; a database in memory has none.
  * Run inside a write transaction, so it is serialized with approvals. It never replaces a newer set, or
  * another set at the same version (an older backup in the same folder), except for a human's forced restore. */
-export function exportRules(s: Store, options: { allowOlder?: boolean } = {}): Row | null {
+/** Two databases in one folder share the export: its check and rename run under one kernel lock (T1288). */
+function exportLock(path: string, waitMs: number): SupervisorLease {
+  const until = Date.now() + waitMs;
+  for (;;) {
+    try { return acquireSupervisorLock(resolve(`${path}.lock`), 'exclusive'); } catch (error) {
+      if (!(error instanceof AppError) || !/busy/.test(error.message)) throw error;
+      check(Date.now() < until, `Another sassato is writing the rule export ${path}; try again`, 4);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+  }
+}
+export function exportRules(s: Store, options: { allowOlder?: boolean; lockWaitMs?: number } = {}): Row | null {
   if (s.path === ':memory:') return null;
   const set = ruleSet(s), path = rulesExportPath(s.path, s.workspace), body = JSON.stringify({ ...set, exported_at: now() }, null, 2) + '\n';
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const lock = exportLock(path, options.lockWaitMs ?? 5000);
+  try { return writeExport(s, set, path, body, options); } finally { lock.close(); }
+}
+function writeExport(s: Store, set: Row, path: string, body: string, options: { allowOlder?: boolean }): Row {
   const existing = readExport(s.path, s.workspace);
   const repair = 'if this database is the live one, a human rewrites the export from it: rule export --force --as HUMAN';
   if (!options.allowOlder && existing === 'unreadable') check(false, `The rule export cannot be read; ${repair}`, 4);
   if (!options.allowOlder && existing && existing !== 'unreadable')
     check(existing.set_version < set.set_version || existing.set_version === set.set_version && existing.digest === set.digest, `The rule export holds set version ${existing.set_version}, not older than this database's ${set.set_version}; is this an older copy of the database? Otherwise ${repair}`, 4);
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.tmp`, fd = openSync(temporary, 'w', 0o600);
   try { writeSync(fd, body); fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(temporary, path);

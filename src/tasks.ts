@@ -2,7 +2,7 @@ import { type Store, type Row, type Param } from './storage.js';
 import { check, text, safe, integer, id, now } from './errors.js';
 import { assertWorkAllowed } from './control.js';
 import { humanRole } from './humans.js';
-import { decideRuleProposal, exportRules, withdrawnRuleProposal } from './rules.js';
+import { decideRuleProposal, exportRules, requireRulesLoaded, withdrawnRuleProposal } from './rules.js';
 
 export const STATUSES = ['open', 'doing', 'blocked', 'review', 'done', 'dropped'] as const;
 export type TaskStatus = typeof STATUSES[number];
@@ -140,6 +140,7 @@ export function takeTask(s: Store, task: string, options: { hours?: number } = {
   return s.tx(() => {
     const row = s.task(task), actor = s.requireActor(); assertWorkAllowed(s, actor); executable(s, row);
     check(row.status === 'open', 'Task is not open for claiming', 4);
+    requireRulesLoaded(s, actor);
     check(!row.owner || row.owner === actor, 'Task is assigned to another role', 4);
     check(!row.for_role || row.for_role === actor, `Task is for ${row.for_role}. ${retarget(row, actor)}`, 3);
     unblocked(s, row);

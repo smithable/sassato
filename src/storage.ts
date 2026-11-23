@@ -8,7 +8,7 @@ import { assertManagedIdentity,assertManagedWrite,type ManagedCredentials,type M
 // SQLite rows deliberately stay flexible at this small adapter boundary.
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 export function databasePath(value?: string): string {
   const path = resolve(value ?? process.env.SASSATO_DB ?? `${process.env.XDG_DATA_HOME ?? `${homedir()}/.local/share`}/sassato/sassato.db`);
   let ancestor = path;
@@ -143,7 +143,8 @@ export class Store {
       if (current === 10) { this.db.exec(MIGRATION_11); current = 11; }
       if (current === 11) { this.db.exec(MIGRATION_12); current = 12; }
       if (current === 12) { this.db.exec(MIGRATION_13); current = 13; }
-      if (current === 13) this.db.exec(MIGRATION_14);
+      if (current === 13) { this.db.exec(MIGRATION_14); current = 14; }
+      if (current === 14) this.db.exec(MIGRATION_15);
     });
   }
   private cancelClosedQuestions(): void {
@@ -375,4 +376,11 @@ CREATE TRIGGER rule_versions_fixed BEFORE UPDATE ON rule_versions BEGIN SELECT R
 CREATE TRIGGER rule_versions_kept BEFORE DELETE ON rule_versions BEGIN SELECT RAISE(ABORT,'Rule versions are kept'); END;
 INSERT INTO schema_migrations VALUES(14,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 PRAGMA user_version=14;
+`;
+// Which set of rules each session read (T1276 part 2); a session takes no task before its record.
+const MIGRATION_15 = `
+CREATE TABLE rule_loads(workspace_id INTEGER NOT NULL REFERENCES workspaces(id), session_id INTEGER NOT NULL REFERENCES sessions(id),
+  set_version INTEGER NOT NULL, digest TEXT NOT NULL, loaded_at TEXT NOT NULL, PRIMARY KEY(workspace_id,session_id,set_version));
+INSERT INTO schema_migrations VALUES(15,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+PRAGMA user_version=15;
 `;

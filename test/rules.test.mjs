@@ -71,6 +71,11 @@ test('an export never replaces a newer set, nor another set at the same version'
   assert.notEqual(cli(path, 'rule', 'export', '--force', '--as', 'c').status, 0, 'only a human forces');
   assert.equal(cli(path, 'rule', 'export', '--force', '--as', 'human').status, 0);
   assert.equal(JSON.parse(readFileSync(rulesExportPath(path, 'team'), 'utf8')).set_version, 1);
+  const { acquireSupervisorLock } = await import('../dist/supervisor-locks.js');
+  const other = new Store(path, 'human'); other.use('team'); t.after(() => other.close());
+  const held = acquireSupervisorLock(resolve(`${rulesExportPath(path, 'team')}.lock`), 'exclusive');
+  try { assert.throws(() => other.tx(() => exportRules(other, { allowOlder: true, lockWaitMs: 200 })), code(4), 'a held export lock is waited for, then refused'); } finally { held.close(); }
+  assert.equal(other.tx(() => exportRules(other)).set_version, 1, 'free again once released');
 });
 
 test('an answer other than approve or reject is refused; reject records it and changes no rule', t => {
@@ -198,4 +203,39 @@ test('a restore counts every export: a workspace the backup lacks, an unreadable
   assert.equal(existsSync(rulesExportPath(path, 'other')), false, 'a forced restore drops the export of a workspace it lacks');
   assert.equal(JSON.parse(readFileSync(exportPath, 'utf8')).set_version, 0);
   for (const name of ['a.db', 'b.db', 'c.db']) assert.equal(existsSync(join(dir, name)), false);
+});
+
+test('the brief prints the rules in full; a session records reading them before it takes work', async t => {
+  const { s, path } = fixture(t);
+  const { registerSession, context, renderContext } = await import('../dist/coordination.js');
+  const { addTask, takeTask } = await import('../dist/tasks.js');
+  const { recordRulesLoaded } = await import('../dist/rules.js');
+  const [first, second] = as(s, 'human', () => [addTask(s, { title: 'one', forRole: 'c' }), addTask(s, { title: 'two', forRole: 'c' })]);
+  const session = as(s, 'c', () => registerSession(s, { provider: 'claude', external_id: 'one' })).id;
+  assert.throws(() => as(s, 'c', () => recordRulesLoaded(s, 0, ruleSet(s, 'c').digest, session)), code(4), 'the empty set is not recorded');
+  as(s, 'c', () => takeTask(s, first.id));
+  const approve = (key, body, kind, scope) => { const p = as(s, 'a', () => proposeRule(s, key, body, { kind, scope })); as(s, 'human', () => answerQuestion(s, p.question_id, 'approve')); };
+  approve('decisions.hello', 'Say hello first.\n\n  Then work.', 'always');
+  approve('steps.merge', 'Before a merge: read the gate skill.\nMore.', 'step');
+  approve('decisions.b-only', 'Only for b.', 'always', 'b');
+  const brief = () => as(s, 'c', () => renderContext(context(s, { brief: true })));
+  const text = brief(), sum = as(s, 'c', () => ruleSet(s, 'c')).digest;
+  assert.match(text, /Rules in force for c: set 3 .* 1 always, 1 for a step/);
+  assert.ok(text.includes('Say hello first.\n\n  Then work.'), 'an always rule keeps its lines');
+  assert.match(text, /step steps\.merge \(version 1\): Before a merge: read the gate skill\. · in full: sas rule get steps\.merge/);
+  assert.ok(!text.includes('Only for b.'), "another role's rule is not shown");
+  assert.ok(text.includes(`sas rule loaded 3 ${sum.slice(0, 12)} ${session} --workspace team --as c`));
+  assert.throws(() => as(s, 'c', () => takeTask(s, second.id)), code(3), 'no task before the record');
+  assert.throws(() => as(s, 'c', () => recordRulesLoaded(s, 2, sum, session)), code(4), 'an older set is not recorded');
+  assert.throws(() => as(s, 'c', () => recordRulesLoaded(s, 3, sum.slice(0, 8), session)), code(4), 'a short digest is not enough');
+  assert.equal(cli(path, 'rule', 'loaded', '3', 'f'.repeat(12), session, '--as', 'c').status, 4);
+  assert.throws(() => as(s, 'b', () => recordRulesLoaded(s, 3, sum, session)), code(3), 'only a registered session records');
+  assert.throws(() => as(s, 'c', () => recordRulesLoaded(s, 3, sum, 'S999')), code(4), 'a replaced session does not credit its successor');
+  assert.equal(as(s, 'c', () => recordRulesLoaded(s, 3, sum.slice(0, 12), session)).set_version, 3);
+  assert.match(brief(), /This session recorded reading set 3\./);
+  assert.equal(as(s, 'c', () => takeTask(s, second.id)).status, 'doing');
+  const cursor = as(s, 'c', () => context(s, { brief: true })).cursor;
+  assert.ok(!as(s, 'c', () => renderContext(context(s, { brief: true, since: cursor }))).includes('Rules:'), 'a wake says nothing while the set is the one read');
+  approve('decisions.later', 'Later.', 'always');
+  assert.match(as(s, 'c', () => renderContext(context(s, { brief: true, since: cursor }))), /Rules: set 4 is in force and this session read 3; read them all: sas context --brief/);
 });

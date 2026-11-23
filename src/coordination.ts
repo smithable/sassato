@@ -1,5 +1,6 @@
 import { messageIsNow } from './wait-digest.js';
 import { contextDelta,contextLine } from './context-brief.js';
+import { ruleBrief } from './rules.js';
 import { accessSync, constants, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { Store, type Row } from './storage.js';
@@ -310,11 +311,12 @@ export function getWip(s: Store, role?: string): Row {
 const clip = (value: unknown, max = 160): string => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g,' ').replace(/\s+/g,' ').slice(0,max);
 export interface ContextData {
   workspace: string; role: string; permissions: string; cursor: number; snapshot_cursor: number; since: number; truncated: boolean; counts_are_lower_bounds: boolean;
-  counts: Record<string,number>; sections: Record<string,Row[]>; brief?:boolean; delta?:boolean; line_length?:number;
+  counts: Record<string,number>; sections: Record<string,Row[]>; brief?:boolean; delta?:boolean; line_length?:number; rules?:Row;
 }
 /** A consistent, bounded read snapshot. The cursor stops before omitted fact/answer events; repeat delivery is possible, lost delivery is not. It is never an acknowledgement. */
 export function context(s: Store, options: { since?: number; limit?: number; brief?:boolean; lineLength?:number } = {}): ContextData {
-  if(options.brief&&options.since!==undefined)return contextDelta(s,{...options,since:options.since});
+  const since0=options.since;
+  if(options.brief&&since0!==undefined)return s.snapshot(()=>{const data=contextDelta(s,{...options,since:since0}),rules=ruleBrief(s,data.role);if(rules.set_version!==0&&rules.loaded!==rules.set_version)data.rules={set_version:rules.set_version,loaded:rules.loaded};return data;});
   const lineLength=integer(options.lineLength??200,'line length',80,500);
   const actor = s.requireActor(), since = integer(options.since ?? 0,'since cursor'), count = integer(options.limit ?? 3,'context limit',1,5);
   return s.snapshot(() => {
@@ -380,8 +382,22 @@ export function context(s: Store, options: { since?: number; limit?: number; bri
       if (omitted.event_id) data.cursor = Math.min(data.cursor,omitted.event_id-1);
       data.truncated = true;
     }
+    // The rules are never cut short: a set read in part is no answer (T1276).
+    if (options.brief) data.rules = ruleBrief(s,actor);
     return data;
   });
+}
+// Rule text keeps its lines; only control and direction characters go.
+const ruleText = (value: string): string => value.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g,' ');
+function renderRules(data: ContextData): string[] {
+  const r = data.rules!, who = `--workspace ${data.workspace} --as ${data.role}`;
+  if (data.delta) return [`Rules: set ${r.set_version} is in force and this session read ${r.loaded ?? 'none'}; read them all: sas context --brief ${who}`];
+  if (r.set_version === 0) return ['Rules: none in force.'];
+  const lines = [`Rules in force for ${data.role}: set ${r.set_version} (digest ${r.digest.slice(0,12)}), ${r.always.length} always, ${r.steps.length} for a step. Follow them; they win over memory.`];
+  for (const rule of r.always) lines.push(`── ${rule.key} (version ${rule.version})`, ruleText(rule.text));
+  for (const rule of r.steps) lines.push(`step ${rule.key} (version ${rule.version}): ${contextLine(rule.line,200)} · in full: sas rule get ${rule.key}`);
+  lines.push(r.loaded === r.set_version ? `This session recorded reading set ${r.set_version}.` : `When read, record it (no task is taken before): sas rule loaded ${r.set_version} ${r.digest.slice(0,12)} ${r.session ?? 'SESSION'} ${who}`);
+  return lines;
 }
 export function renderContext(data: ContextData): string {
   const lines = [`${data.workspace} / ${data.role} · ${data.delta?`changes since ${data.since} · `:''}cursor ${data.cursor}`];
@@ -395,7 +411,7 @@ export function renderContext(data: ContextData): string {
   }
   if (data.truncated) lines.push(data.delta?`More changes; continue: sas context --brief --since ${data.cursor} --workspace ${data.workspace} --as ${data.role}`:'More items exist; use tasks, inbox, blockers, humans or facts for details.');
   lines.push(data.brief?'Full records: sas show ID. Context does not mark mail read; ack finishes mail.':'Context does not mark mail read. Keep this cursor for --since; use inbox to read, ack to finish.');
-  if(data.brief)return lines.map(line=>contextLine(line,data.line_length??200)).join('\n');
+  if(data.brief)return [...lines.map(line=>contextLine(line,data.line_length??200)),...(data.rules?renderRules(data):[])].join('\n');
   let result = lines.slice(0,39).join('\n');
   if (lines.length > 39 || result.length > 5_900) result = `${result.slice(0,5_850)}\n[Truncated; use detailed commands.]`;
   return result;
