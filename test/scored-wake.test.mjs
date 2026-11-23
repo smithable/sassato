@@ -363,6 +363,8 @@ for(const mode of ['legacy','scored'])test(`${mode} own-work reminders keep thei
   send(f.b,['a'],'Work elsewhere resets the back-off');
   const elsewhere=await next();
   assert.doesNotMatch(elsewhere.text,/unchanged since/);
+  assert.equal(elsewhere.result.reason,'own-work');
+  assert.equal(lastIdleDelivery(f.b,getNotificationProgress(f.b)).repeats,0);
 });
 
 test('the idle interval doubles up to one day and launcher staging does not consume it',async t=>{

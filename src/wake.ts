@@ -59,7 +59,7 @@ function detail(s: Store, entry: DigestEntry, since: number, until: number): str
     if (entry.kind.startsWith('review-') && t.review_note) lines.push(`Review: ${wakeText(t.review_note, taskId, 800)}`);
     // An own-work wake is a reminder, not news: the holder's own notes are not shown back to it (T1348).
     const own = entry.kind === 'own-work';
-    if (own) lines.push(`Reminder: held by ${entry.from} with nothing written for a while; nobody else changed it unless a note below says so.`);
+    if (own) lines.push(`Reminder: held by ${entry.from} with nothing written for a while.`);
     for (const note of notesSince(s, taskId, since, until)) if (!own || note.actor !== entry.from) lines.push(`Note (${note.actor}): ${wakeText(note.note, taskId, 500)}`);
     return lines.join('\n');
   }
