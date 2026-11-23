@@ -303,18 +303,19 @@ async function startRole(operator: Store, role: string, cwd: string, thread: str
 export async function watchRoles(operator: Store, roles: string[]): Promise<Row[]> {
   operator.requireHuman();
   check(roles.length > 0, 'Name the roles to watch');
-  const runs = roles.map(role => {
-    const state = readState(operator, name(role));
-    check(state, `No started window recorded for ${role}; start it with sas launch --watched`, 4);
-    // Each role's end is written when it happens: the result rows print only when every role's watch has ended (T1299).
-    return launchWatch(operator, role, state!.endpoint, state!.thread).then(result => {
+  // Each role's end is written when it happens: the result rows print only when every role's watch has ended (T1299).
+  const runs = roles.map(async role => {
+    try {
+      const state = readState(operator, name(role));
+      check(state, `No started window recorded for ${role}; start it with sas launch --watched`, 4);
+      const result = await launchWatch(operator, role, state!.endpoint, state!.thread);
       console.error(`Stopped watching ${role}.`);
       return { role, result };
-    }, error => {
+    } catch (error) {
       const message = String(error instanceof Error ? error.message : error);
       console.error(`Not watching ${role}: ${message}`);
       return { role, error: message };
-    });
+    }
   });
   return Promise.all(runs);
 }

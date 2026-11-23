@@ -187,8 +187,10 @@ test('watch-roles writes a role it does not watch to stderr at once (T1299)',asy
   const lines=[],original=console.error;console.error=(...a)=>lines.push(a.join(' '));
   t.after(()=>{console.error=original;});
   // The fake codex prints no version, so the watch is refused before it enrolls.
-  const [row]=await watchRoles(f.operator,['b']);
+  // A role with no started window is refused too, without keeping b from its own try.
+  const [row,missing]=await watchRoles(f.operator,['b','human']);
   console.error=original;
-  assert.ok(row.error);
+  assert.ok(row.error);assert.match(missing.error,/No started window recorded for human/);
   assert.ok(lines.some(l=>l.startsWith('Not watching b: ')),lines.join('\n'));
+  assert.ok(lines.some(l=>l.startsWith('Not watching human: No started window')),lines.join('\n'));
 });
