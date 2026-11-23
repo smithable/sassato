@@ -200,6 +200,8 @@ function humanOutput(value: unknown, command?: string): string {
     const r=value as Row;
     return `Attended ${r.role}: generation ${r.generation} ${r.state}${r.reason?` (${r.reason})`:''}; unattended mode ${r.unattended_enabled?'ON':'OFF'}.`;
   }
+  // idle-reason's answer has role and reason too, and is no wait result (T1318).
+  if(command==='idle-reason'&&value&&typeof value==='object'){const r=value as Row;return `Idle reason kept for ${r.role} (${r.event}): ${r.reason}\n${r.next}`;}
   if(value && typeof value==='object' && 'reason' in value && 'role' in value) {
     const event=value as WaitResult;
     let summary:string;
