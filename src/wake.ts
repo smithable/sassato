@@ -57,7 +57,10 @@ function detail(s: Store, entry: DigestEntry, since: number, until: number): str
     const lines = [`${taskId} "${wakeText(t.title, taskId, 200)}" · ${t.status} · owner ${t.owner ?? '-'} · for ${t.for_role ?? '-'} · version ${t.version}`];
     if (['task-assigned', 'task-ready', 'open-work', 'spare-work'].includes(entry.kind) && t.body) lines.push(wakeText(t.body, taskId, 800));
     if (entry.kind.startsWith('review-') && t.review_note) lines.push(`Review: ${wakeText(t.review_note, taskId, 800)}`);
-    for (const note of notesSince(s, taskId, since, until)) lines.push(`Note (${note.actor}): ${wakeText(note.note, taskId, 500)}`);
+    // An own-work wake is a reminder, not news: the holder's own notes are not shown back to it (T1348).
+    const own = entry.kind === 'own-work';
+    if (own) lines.push(`Reminder: held by ${entry.from} with nothing written for a while.`);
+    for (const note of notesSince(s, taskId, since, until)) if (!own || note.actor !== entry.from) lines.push(`Note (${note.actor}): ${wakeText(note.note, taskId, 500)}`);
     return lines.join('\n');
   }
   return entry.summary;
@@ -153,7 +156,7 @@ function formatWake(s: Store, options: WakeOptions, since: number, result: WaitR
   const idleOnly=unchanged&&!left.length&&!result.digest?.has_more&&entries.every(entry=>entry.unchanged)&&
     (result.reason===idle?.kind||result.reason==='digest');
   const body: string[] = [];
-  if (!result.digest && result.reason !== 'timeout') body.push(unchanged??(result.nudge?`nudge: ${result.nudge.text}`:undefined)??`${result.reason}${result.task ? ` ${result.task}` : ''}${result.message ? ` ${result.message.id} from ${result.message.sender}:\n${indent(wakeText(result.message.summary, result.message.id))}` : ''}`);
+  if (!result.digest && result.reason !== 'timeout') body.push(unchanged??(result.nudge?`nudge: ${result.nudge.text}`:undefined)??`${result.reason==='own-work'?'reminder: ':''}${result.reason}${result.task ? ` ${result.task}` : ''}${result.message ? ` ${result.message.id} from ${result.message.sender}:\n${indent(wakeText(result.message.summary, result.message.id))}` : ''}`);
   if(options.pending && !result.digest && result.tasks && !unchanged) {
     for(const task of result.tasks) body.push(indent(detail(s,{id:task,task,from:actor,kind:result.reason,group:'other',summary:task},since,result.cursor)));
   }

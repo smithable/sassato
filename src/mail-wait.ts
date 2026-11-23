@@ -478,6 +478,18 @@ function nudgeText(s:Store,actor:string,minutes:number,count:number,tasks:string
   return `No write from you for ${minutes} minutes (nudge ${count} of 2). ${answer}; no new nudge then until something changes for you. ${ready}`;
 }
 
+// Whether anything since the last idle wake makes the next one news (T1348). For own work, the holder's
+// own writes on the listed tasks (a note answering the reminder) are not: the back-off goes on. Another
+// role's change to one of them, even one followed by the holder's note, and the holder's writes elsewhere are.
+function idleChange(s:Store,actor:string,observed:number,held:string[]):boolean {
+  if(!held.length)return Boolean(idleActivity(s,actor,observed));
+  const marks=held.map(()=>'?').join(',');
+  return Boolean(s.get(`SELECT 1 FROM events WHERE workspace_id=? AND id>? AND entity='task' AND entity_id IN (${marks}) AND actor!=? LIMIT 1`,s.ws,observed,...held,actor)||
+    s.get(`SELECT 1 FROM events WHERE workspace_id=? AND id>? AND actor=?
+      AND entity NOT IN ('wip','checkpoint','session','notification-progress','wake-enrollment','wake-delivery','watch-dispatch','supervisor-ping','waiter','nudge')
+      AND NOT (entity='task' AND entity_id IN (${marks})) LIMIT 1`,s.ws,observed,actor,...held));
+}
+
 function scanIdle(s:Store,actor:string,clock:WaitClock,interval:number,state:{next:number;from:number},skip:Set<string>):IdleDelivery|undefined {
   const now=clock.monotonic(), wall=Math.floor(clock.now());
   const activity=idleActivity(s,actor,state.from);
@@ -498,7 +510,8 @@ function scanIdle(s:Store,actor:string,clock:WaitClock,interval:number,state:{ne
     if(!(error instanceof AppError)||error.code!==4)throw error;
   }
   if(previous?.kind===work.reason && previous.delivered<=wall && tasks.length===previous.tasks.length &&
-    tasks.every(task=>previous.tasks.some(old=>old.id===task.id&&old.version===task.version)) && !idleActivity(s,actor,previous.observed)) {
+    tasks.every(task=>previous.tasks.some(old=>old.id===task.id&&(old.version===task.version||work.reason==='own-work'))) &&
+    !idleChange(s,actor,previous.observed,work.reason==='own-work'?work.tasks:[])) {
     const delay=Math.min(DAY,interval*2**Math.min(previous.repeats,16));
     if(wall<previous.delivered+delay) {
       state.next=Math.min(state.next,now+previous.delivered+delay-wall);
