@@ -43,12 +43,17 @@ function skipReason(s: Store, version: string): string | undefined {
   const failed = roundFailures(s, version);
   if (failed >= ROUND_TRIES) return `The round failed ${failed} times on this version; it is skipped until codex round --force`;
 }
-/** For launch --watched's output: the latest version whose round is held back by its failures, if the latest round
- * recorded is one of them. Read from the database only; the detached round itself checks the installed version. */
-export function roundHeldBack(s: Store): { version: string; failures: number } | null {
-  const last = s.get("SELECT entity_id AS version, action FROM events WHERE workspace_id=? AND entity='codex-round' ORDER BY id DESC LIMIT 1", s.ws);
-  if (!last || last.action !== 'failed') return null;
-  const version = String(last.version), failures = roundFailures(s, version);
+/** The installed Codex version, or undefined when it cannot be read within the time given. */
+export function installedCodexVersion(timeoutMs = 30_000): string | undefined {
+  try {
+    const probe = spawnSync(resolveExecutable('codex', true), ['--version'], { encoding: 'utf8', timeout: timeoutMs });
+    return !probe.error && probe.status === 0 ? checkCodexVersion(String(probe.stdout)).version : undefined;
+  } catch { return undefined; }
+}
+/** For launch --watched's output: the installed version's failures, when they hold its round back. */
+export function roundHeldBack(s: Store, version: string | undefined): { version: string; failures: number } | null {
+  if (!version || roundPassed(s, version)) return null;
+  const failures = roundFailures(s, version);
   return failures >= ROUND_TRIES ? { version, failures } : null;
 }
 
@@ -91,7 +96,11 @@ export async function codexRound(real: Store, options: RoundOptions = {}): Promi
     real.event('codex-round', version, String(result.status), { model: result.model, step: result.step, reason: result.reason, dir: result.dir });
     if (result.status === 'passed') { if (!options.keep) rmSync(String(result.dir), { recursive: true, force: true }); return result; }
     const to = notifyRole(real), failed = roundFailures(real, version);
-    const next = failed >= ROUND_TRIES ? `It has failed ${failed} times on this version, so launch --watched skips it until codex round --force.` : 'The next launch --watched tries once more.';
+    // The same order as skipReason, so the mail says what the next launch does.
+    const next = version === 'unknown' ? 'The Codex version could not be read, so each launch --watched tries again.'
+      : roundPassed(real, version) ? 'A round passed on this version before, so launch --watched does not run it again.'
+      : failed >= ROUND_TRIES ? `It has failed ${failed} times on this version, so launch --watched skips it until codex round --force.`
+      : 'The next launch --watched tries once more.';
     if (to) send(real, [to], `Codex round failed on ${version} at step "${result.step}": ${result.reason}.${result.dir ? ` Logs: ${result.dir}.` : ''} The roles started as usual. ${next}`, { urgent: true });
     return result;
   } finally { release(); }
