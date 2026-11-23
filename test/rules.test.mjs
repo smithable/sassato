@@ -71,6 +71,11 @@ test('an export never replaces a newer set, nor another set at the same version'
   assert.notEqual(cli(path, 'rule', 'export', '--force', '--as', 'c').status, 0, 'only a human forces');
   assert.equal(cli(path, 'rule', 'export', '--force', '--as', 'human').status, 0);
   assert.equal(JSON.parse(readFileSync(rulesExportPath(path, 'team'), 'utf8')).set_version, 1);
+  const { acquireSupervisorLock } = await import('../dist/supervisor-locks.js');
+  const other = new Store(path, 'human'); other.use('team'); t.after(() => other.close());
+  const held = acquireSupervisorLock(resolve(`${rulesExportPath(path, 'team')}.lock`), 'exclusive');
+  try { assert.throws(() => other.tx(() => exportRules(other, { allowOlder: true, lockWaitMs: 200 })), code(4), 'a held export lock is waited for, then refused'); } finally { held.close(); }
+  assert.equal(other.tx(() => exportRules(other)).set_version, 1, 'free again once released');
 });
 
 test('an answer other than approve or reject is refused; reject records it and changes no rule', t => {

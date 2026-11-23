@@ -7,9 +7,10 @@
 // the database before the change commits, so the copy outside is never behind the database.
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { acquireSupervisorLock, type SupervisorLease } from './supervisor-locks.js';
 import { type Store, type Row } from './storage.js';
-import { check, id, integer, now, text } from './errors.js';
+import { AppError, check, id, integer, now, text } from './errors.js';
 import { workspaceSettings } from './workspace-settings.js';
 import { addTask, askHuman, withdrawQuestion } from './tasks.js';
 
@@ -211,15 +212,30 @@ export function rulesExportPath(databasePath: string, workspace: string): string
 /** Writes the whole set in force to its file, replacing it at once; a database in memory has none.
  * Run inside a write transaction, so it is serialized with approvals. It never replaces a newer set, or
  * another set at the same version (an older backup in the same folder), except for a human's forced restore. */
-export function exportRules(s: Store, options: { allowOlder?: boolean } = {}): Row | null {
+/** Two databases in one folder share the export: its check and rename run under one kernel lock (T1288). */
+function exportLock(path: string, waitMs: number): SupervisorLease {
+  const until = Date.now() + waitMs;
+  for (;;) {
+    try { return acquireSupervisorLock(resolve(`${path}.lock`), 'exclusive'); } catch (error) {
+      if (!(error instanceof AppError) || !/busy/.test(error.message)) throw error;
+      check(Date.now() < until, `Another sassato is writing the rule export ${path}; try again`, 4);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+  }
+}
+export function exportRules(s: Store, options: { allowOlder?: boolean; lockWaitMs?: number } = {}): Row | null {
   if (s.path === ':memory:') return null;
   const set = ruleSet(s), path = rulesExportPath(s.path, s.workspace), body = JSON.stringify({ ...set, exported_at: now() }, null, 2) + '\n';
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const lock = exportLock(path, options.lockWaitMs ?? 5000);
+  try { return writeExport(s, set, path, body, options); } finally { lock.close(); }
+}
+function writeExport(s: Store, set: Row, path: string, body: string, options: { allowOlder?: boolean }): Row {
   const existing = readExport(s.path, s.workspace);
   const repair = 'if this database is the live one, a human rewrites the export from it: rule export --force --as HUMAN';
   if (!options.allowOlder && existing === 'unreadable') check(false, `The rule export cannot be read; ${repair}`, 4);
   if (!options.allowOlder && existing && existing !== 'unreadable')
     check(existing.set_version < set.set_version || existing.set_version === set.set_version && existing.digest === set.digest, `The rule export holds set version ${existing.set_version}, not older than this database's ${set.set_version}; is this an older copy of the database? Otherwise ${repair}`, 4);
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.tmp`, fd = openSync(temporary, 'w', 0o600);
   try { writeSync(fd, body); fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(temporary, path);
