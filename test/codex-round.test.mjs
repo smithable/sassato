@@ -6,7 +6,7 @@ import { mkdtempSync,mkdirSync,rmSync,writeFileSync,readFileSync,existsSync } fr
 import { Store } from '../dist/storage.js';
 import { initWorkspace } from '../dist/admin.js';
 import { setWorkspaceSettings } from '../dist/workspace-settings.js';
-import { codexRound,roundPassed,roundProcesses } from '../dist/codex-round.js';
+import { codexRound,roundHeldBack,roundPassed,roundProcesses } from '../dist/codex-round.js';
 
 // A fake codex: --version prints a version; exec prints a thread when FAKE_EXEC is ok and fails otherwise;
 // app-server --listen exits at once (or, with FAKE_SERVER=stay, runs without opening its socket), so the probe never starts. The run records each call.
@@ -78,6 +78,24 @@ test('a version that passed is skipped unless forced; only a human runs a round;
   f.real.run("UPDATE roles SET model=NULL WHERE name='b'");
   const none=await codexRound(f.real,{timing,force:true});
   assert.equal(none.status,'failed');assert.equal(none.step,'setup');assert.match(String(none.reason),/No Codex role names a model; give --model/);
+});
+
+test('after two failures on a version the round is skipped, with no mail, until forced; a new version is tried',async t=>{
+  const f=fixture(t,'fail');setWorkspaceSettings(f.real,{nudge_escalate:'fable'});
+  f.real.event('codex-round','0.171.0','failed',{step:'seed'});
+  assert.equal(roundHeldBack(f.real),null,'one failure is tried once more');
+  const second=await codexRound(f.real,{timing});
+  assert.equal(second.status,'failed');
+  assert.match(f.fable().at(-1).body,/failed 2 times on this version, so launch --watched skips it until codex round --force/);
+  assert.deepEqual(roundHeldBack(f.real),{version:'0.171.0',failures:2});
+  const mails=f.fable().length,events=f.events().length,calls=readFileSync(f.log,'utf8');
+  const skipped=await codexRound(f.real,{timing});
+  assert.equal(skipped.status,'skipped');assert.match(skipped.reason,/failed 2 times on this version; it is skipped until codex round --force/);
+  assert.equal(f.fable().length,mails,'no mail');assert.equal(f.events().length,events,'no event');
+  assert.match(readFileSync(f.log,'utf8').slice(calls.length),/^--version [^\n]*\n$/,'only the version is read');
+  assert.equal((await codexRound(f.real,{timing,force:true})).status,'failed','--force runs it');
+  f.real.event('codex-round','0.172.0','failed',{});
+  assert.equal(roundHeldBack(f.real),null,'a new version has its own tries');
 });
 
 test('a round already running on the version is not started twice; the lock is let go when the round ends',async t=>{
