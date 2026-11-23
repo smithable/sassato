@@ -124,7 +124,7 @@ export function savedCodexSession(workspace:string,role:string,cwd:string,home=p
   }
   return null;
 }
-function bootstrapPrompt(store:Store,role:string,provider:'claude'|'codex',watched=false):string {
+export function bootstrapPrompt(store:Store,role:string,provider:'claude'|'codex',watched=false):string {
   const workspace=store.workspace;
   const identity=`--as ${role} --workspace ${workspace}`;
   const stopping='If STOP is requested, start no new work or watcher: finish or checkpoint the current step, wait for your tools and jobs, save WIP, run the shown stopped command, and remain idle until a human resumes your role.';
