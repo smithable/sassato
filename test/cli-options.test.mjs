@@ -28,3 +28,14 @@ test('submit --reviewer is accepted from the command line', (t) => {
   assert.equal(run(['show', task.id]).status, 'doing');
   assert.equal(run(['submit', task.id, 'Fixed', '--reviewer', 'codex', '--as', 'a']).status, 'review');
 });
+
+test('idle-reason says the reason was kept, not that a wait timed out (T1318)', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'sassato-options-')), db = join(dir, 'state.db');
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const cli = (args, json = true) => spawnSync(process.execPath, [resolve('bin/sassato.js'), '--db', db, '--workspace', 'team', ...(json ? ['--json'] : []), ...args], { encoding: 'utf8', env: { ...process.env, SASSATO_ROLE: '', SASSATO_WORKSPACE: '', SASSATO_DB: '' } });
+  assert.equal(cli(['init', '--config', fixtureConfig]).status, 0);
+  const r = cli(['idle-reason', 'waiting for a review on T1', '--as', 'a'], false);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^Idle reason kept for a \(E\d+\): waiting for a review on T1\nNo new nudge until/);
+  assert.doesNotMatch(r.stdout, /Timed out/);
+});
