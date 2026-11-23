@@ -17,6 +17,7 @@ import { timeTable, formatTimeTable } from './stats-time.js';
 import * as m from './migration.js';
 import * as l from './launch.js';
 import * as lw from './launch-watched.js';
+import { codexRound, startRound } from './codex-round.js';
 import { retitleImportedTasks } from './retitle.js';
 import { setup } from './setup.js';
 import { promptSetup } from './setup-prompt.js';
@@ -50,6 +51,7 @@ Setup:      init (interactive in a terminal) | init --workspace NAME
             workspace set --rule-relays ROLE,ROLE|none --as HUMAN (roles that relay a human's answer to a rule proposal)
             workspace set --nudge-minutes N (0 off) | --nudge-escalate ROLE|none --as HUMAN (ask a quiet role why)
             codex versions | codex accept VERSION [--replace] --as HUMAN (the Codex CLI versions launch accepts)
+            codex round [--force] [--model M] [--keep] --as HUMAN (a probe role tries the watched start once per Codex version)
             roles | role set NAME [--provider claude|codex] [--model MODEL] [--dir PATH]
             [--kind human|agent] [--effort LEVEL] [--permission-mode MODE] [--sandbox MODE] [--approval POLICY]
             [--autocompact TOKENS|auto] (Claude roles; a human sets it; launch passes --autocompact)
@@ -130,8 +132,8 @@ select workspace when not explicit. Writes require --as; human actions require a
 Lists default to bounded results; --limit N. Context never consumes inbox receipts.
 Exit codes: 0 success/no matches; 1 storage/runtime; 2 input; 3 identity/access; 4 conflict; 5 mail-wait timeout.
 `;
-export const strings = ['reviewer','feedback-closers','rule-relays','scope','nudge-minutes','nudge-escalate','waiting-for','expect-minutes','author','fact','dropped','spare-work','spare-providers','new','asked','remote','epoch','role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes','digest-skip','ack','autocompact','advisor','wake-mode','speed','wake-roles','urgency','reason','scored-receipt','idle-receipt','day'];
-export const booleans = ['watched','close-stale','spare','no-spare','pending','untouched','unread','attended','now','json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','wait','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
+export const strings = ['reviewer','feedback-closers','nudge-minutes','nudge-escalate','waiting-for','expect-minutes','author','fact','dropped','spare-work','spare-providers','new','asked','remote','epoch','role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes','digest-skip','ack','autocompact','advisor','wake-mode','speed','wake-roles','urgency','reason','scored-receipt','idle-receipt','day','rule-relays','scope'];
+export const booleans = ['watched','close-stale','spare','no-spare','pending','untouched','unread','attended','now','json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','wait','keep','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
 export const globalFlags = ['db','workspace','as','json','help'];
 export const allowed: Record<string,string[]> = {
   'index build':['repo','cache'],'index update':['repo','cache','diff'],'index find':['repo','cache','limit'],'index show':['repo','cache','limit'],
@@ -139,7 +141,7 @@ export const allowed: Record<string,string[]> = {
   add:['title','body','for','owner','priority','human-only','review-required','spare'],tasks:['status','owner','for','available','limit','after','spare'],show:['limit','before-event'],
   take:['hours'],renew:['hours'],note:[],update:['expect','title','body','priority','for','human-only','agent-allowed','review-required','no-review','spare','no-spare'],handoff:['brief-file','expect'],release:[],submit:['reviewer'],review:['approve','reject','note','expect'],done:['ref'],drop:[],reopen:[],after:[],unafter:[],block:['kind','waits-on','on'],blockers:['task','chain','limit','all'],resolve:[],
   'ask-human':['for','options','recommend','command','new'],answer:['close','relayed-by','asked','on','new'],withdraw:[],humans:['for','limit','untouched'],send:['re','urgent','needs-reply','now','urgency','reason'],wait:['urgent','timeout','stop-file','since','idle-minutes','settle','settle-max'],inbox:['peek','state','limit','unread'],wake:['pending','since','ack','timeout','stop-file','idle-minutes','settle','settle-max','waiting-for','expect-minutes'],'idle-reason':[],outbox:['limit'],sent:['limit'],retitle:['owner','apply'],ack:[],
-  'fact set':['source','checked-at','expect','answers'],'feedback add':['re'],'feedback list':['kind','author','all','limit','after'],'feedback close':['task','fact','dropped'],'fact get':[],'fact history':[],'rule propose':['file','scope','kind','for'],'rule retire':['for'],'rule withdraw':[],'rule get':[],'rule list':['for','pending'],'rule diff':[],'rule export':['force'],'codex accept':['replace'],'codex versions':[],facts:['limit'],
+  'fact set':['source','checked-at','expect','answers'],'feedback add':['re'],'feedback list':['kind','author','all','limit','after'],'feedback close':['task','fact','dropped'],'fact get':[],'fact history':[],'codex accept':['replace'],'codex versions':[],'codex round':['force','model','keep'],facts:['limit'],'rule propose':['file','scope','kind','for'],'rule retire':['for'],'rule withdraw':[],'rule get':[],'rule list':['for','pending'],'rule diff':[],'rule export':['force'],
   'wip show':[],'wip set':['current','next','notes','expect'],sessions:[], 'session register':['provider','session-id','pid','replace'],'session heartbeat':['session-id'],'session end':['session-id'],usage:['until'],
   stop:['all','timeout','no-wait','force'],'stop-status':['quiet','stop-file'],stopped:[],'resume-work':['all'],
   context:['brief','since','limit','line-length'],status:['line-length'],'job run':['kind','wait','no-wait','job-version','load','mem'],'job list':[],'job stats':[],stats:['since','role','day'],search:['type','owner','status','since','limit','phrase','prefix'],
@@ -351,6 +353,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'workspace settings': empty();result=workspaceSettings(s);break;
         case 'codex versions': empty();result={accepted:workspaceSettings(s).codex_versions};break;
         case 'codex accept': {const version=arg('version');empty();result={accepted:acceptCodexVersion(s,version,bool('replace'))};break;}
+        case 'codex round': {empty();const round=await codexRound(s,{force:bool('force'),model:str('model'),keep:bool('keep')});if(round.status==='failed')process.exitCode=4;result=round;break;}
         case 'workspace wake-audit': empty();result=c.wakeAudit(s,num('limit'));break;
         case 'workspace set': {
           empty();const patch:Partial<WorkspaceSettings>={};
@@ -542,7 +545,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'launch': {
           if(bool('watched')){
             check(!bool('fresh')&&!str('terminal')&&!bool('new-window')&&!str('window'),'--watched resumes each role in its own Windows Terminal tab; drop --fresh, --terminal, --window and --new-window');
-            result=await lw.launchWatched(s,p.splice(0),{all:bool('all'),closeStale:bool('close-stale'),dryRun:bool('dry-run'),distro:str('distro')});break;
+            const rows=await lw.launchWatched(s,p.splice(0),{all:bool('all'),closeStale:bool('close-stale'),dryRun:bool('dry-run'),distro:str('distro')});
+            // The Codex round (T1193) runs after the real roles started, in its own process, so the launch is never slower.
+            if(!bool('dry-run')&&rows.some(row=>row.status==='started'))startRound(s);
+            result=rows;break;
           }
           check(!bool('close-stale'),'--close-stale applies to --watched only');
           jsonLaunch();result=await l.launch(s,p.splice(0),launchOptions);break;
