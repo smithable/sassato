@@ -765,10 +765,10 @@ collected. `--settle 0` explicitly selects immediate notification behavior.
 ## The wake loop, with real output (T843)
 
 What a session runs on each wake, captured from `scripts/wake-loop-demo.sh` (a throwaway database with
-roles `builder` and `lead`; rerun it after a change to any command below). JSON records are cut to a
+roles `builder` and `lead`; rerun it after a change to any command below; it fails when a command's exit status changes). JSON records are cut to a
 few fields (`…`); `[exit N]` is the exit status.
 
-**Start of a session.** Read the context, then save the cursor it printed (only when no progress is
+**Start of a session.** Read the context, then save the cursor it printed and take a task (only when no progress is
 saved yet; afterwards the saved cursor is used, never reset to the latest):
 
 ```text
@@ -782,11 +782,16 @@ session: state=unregistered · provider=claude
 Full records: sas show ID. Context does not mark mail read; ack finishes mail.
 Rules: none in force.
 
+$ sas wake --idle-minutes 1 --as builder
+sassato: No saved notification progress for builder. Reconcile as the start text says (sassato context --as builder --workspace team), save it with sassato progress save --cursor N --expect 0, then wake.
+[exit 4]
+
 $ sas progress save --cursor 4 --expect 0 --as builder
 { "id": "E5", "role": "builder", "cursor": 4, "version": 1, … }
-```
 
-Without saved progress `wake` refuses (exit 4) and says to do the above.
+$ sas take T1 --as builder
+{ "id": "T1", "title": "Fix the parser", "owner": "builder", "status": "doing", "version": 2, … }
+```
 
 **The waiter.** Urgent mail wakes at once; ordinary mail is held for two minutes (the agents'
 settle, at most ten while more arrives) so that a burst comes as one wake:
@@ -804,7 +809,7 @@ Then: handle these, put your writes and one checkpoint in one command, and re-ar
 Cursor 8 saved.
 ```
 
-**Taking and finishing a task.** `take` prints the task; a task meant for another role is refused,
+**Taking and finishing a task.** `take` prints the task (above); a task meant for another role is refused,
 and the refusal is a stop (ask its creator or Fable for a hand-over). `done` has no `--note`: write
 the note first.
 
@@ -828,6 +833,9 @@ sassato: --note does not apply to done
 comma-separated recipients and has no `--task` (start the body with the task's number):
 
 ```text
+$ sas take T2 --as builder
+{ "id": "T2", "title": "Write the release notes", "owner": "builder", "status": "doing", "version": 2, … }
+
 $ sas block T2 "Waits on lead's choice of wording" --kind other --waits-on lead --as builder
 { "id": "B1", "task_id": "T2", "kind": "other", "waiting_on": "lead", "status": "open", … }
 
