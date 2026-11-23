@@ -762,6 +762,127 @@ For example, an agent's `wait --timeout 10` can return a collected digest with
 as an **empty** timeout; a short timeout never discards notifications already
 collected. `--settle 0` explicitly selects immediate notification behavior.
 
+## The wake loop, with real output (T843)
+
+What a session runs on each wake, captured from `scripts/wake-loop-demo.sh` (a throwaway database with
+roles `builder` and `lead`; rerun it after a change to any command below; it fails when a command's exit status changes). JSON records are cut to a
+few fields (`…`); `[exit N]` is the exit status.
+
+**Start of a session.** Read the context, then save the cursor it printed and take a task (only when no progress is
+saved yet; afterwards the saved cursor is used, never reset to the latest):
+
+```text
+$ sas context --as builder --brief
+team / builder · cursor 4
+Agent role: edit own WIP/work; human-only actions stay with a human. Facts never grant permission.
+Inbox: 0 unread, 0 read and pending.
+available: T1 · title=Fix the parser · status=open · asked_by=lead
+available: T2 · title=Write the release notes · status=open · asked_by=lead
+session: state=unregistered · provider=claude
+Full records: sas show ID. Context does not mark mail read; ack finishes mail.
+Rules: none in force.
+
+$ sas wake --idle-minutes 1 --as builder
+sassato: No saved notification progress for builder. Reconcile as the start text says (sassato context --as builder --workspace team), save it with sassato progress save --cursor N --expect 0, then wake.
+[exit 4]
+
+$ sas progress save --cursor 4 --expect 0 --as builder
+{ "id": "E5", "role": "builder", "cursor": 4, "version": 1, … }
+
+$ sas take T1 --as builder
+{ "id": "T1", "title": "Fix the parser", "owner": "builder", "status": "doing", "version": 2, … }
+```
+
+**The waiter.** Urgent mail wakes at once; ordinary mail is held for two minutes (the agents'
+settle, at most ten while more arrives) so that a burst comes as one wake:
+
+```text
+$ sas wake --idle-minutes 1 --as builder
+Wake for builder: 2 entries (quiet) · cursor 8
+other:
+  M1 · from lead · urgent
+    T1: the parser change blocks my merge, please look first
+  T1 · from builder · own-work
+    T1 "Fix the parser" · doing · owner builder · for builder · version 2
+Then: handle these, put your writes and one checkpoint in one command, and re-arm in the same response: sassato wake --since 8 --idle-minutes 1 --as builder --workspace team --ack M1
+(--ack M1 acknowledges that mail when the waiter starts; leave out any you have not handled.)
+Cursor 8 saved.
+```
+
+**Taking and finishing a task.** `take` prints the task (above); a task meant for another role is refused,
+and the refusal is a stop (ask its creator or Fable for a hand-over). `done` has no `--note`: write
+the note first.
+
+```text
+$ sas take T3 --as builder
+sassato: Task is for lead. Ask lead to retarget it to you (sassato update T3 --for builder --expect 1), then take it.
+[exit 3]
+
+$ sas note T1 "Fixed the tokenizer; tests in test/parse.test.mjs" --as builder
+{ "id": "T1", "title": "Fix the parser", "status": "doing", "version": 3, … }
+
+$ sas done T1 --as builder
+T1 done: Fix the parser
+
+$ sas done T2 --note "x" --as builder
+sassato: --note does not apply to done
+[exit 2]
+```
+
+**Parking and asking.** `block` takes its text as a positional argument; `send` takes
+comma-separated recipients and has no `--task` (start the body with the task's number):
+
+```text
+$ sas take T2 --as builder
+{ "id": "T2", "title": "Write the release notes", "owner": "builder", "status": "doing", "version": 2, … }
+
+$ sas block T2 "Waits on lead's choice of wording" --kind other --waits-on lead --as builder
+{ "id": "B1", "task_id": "T2", "kind": "other", "waiting_on": "lead", "status": "open", … }
+
+$ sas blockers --task T2 --as builder
+B1 · open · Waits on lead's choice of wording
+
+$ sas send lead "T2: which wording, short or long?" --needs-reply --as builder
+M2 sent to lead · 3 points
+```
+
+A blocker is lifted with `sas resolve B1 "reason"`; there is no `unblock`.
+
+**Listing.** `tasks` takes `--status` (comma-separated, or `all`), `--available`, `--spare`,
+`--limit N` and `--after T1`; there is no `--all` (`--status all` lists every state). `--json`,
+anywhere on the line, gives the records as JSON:
+
+```text
+$ sas tasks --status open,doing,blocked --as builder
+T2 · blocked · builder · Write the release notes
+T3 · open · Update the changelog
+```
+
+**Checkpoint and re-arm.** The checkpoint's `--expect` is the WIP version (`sas wip show`), and
+`--notes` may not be empty. Then the re-arm the wake printed, with `--ack` for the urgent mail
+handled:
+
+```text
+$ sas wip show --as builder
+{ "role": "builder", "current": "", "next": "", "notes": "", "version": 0 }
+
+$ sas checkpoint save --current "T2 parked on lead" --next "Resume T2 when lead answers" --notes "T1 done" --expect 0 --as builder
+{ "id": "E17", "role": "builder", "wip_version": 1, "current": "T2 parked on lead", "state": "current", … }
+
+$ sas checkpoint save --current "T2 parked on lead" --next "Resume T2 when lead answers" --notes "" --expect 1 --as builder
+sassato: --notes is empty; write what applies, or "none" when there is nothing to add
+[exit 2]
+
+$ sas wake --since 8 --idle-minutes 1 --ack M1 --as builder
+Acknowledged M1.
+Wake for builder: 1 entry (quiet) · cursor 20
+other:
+  M3 · from lead · mail
+    T2: the short wording
+Then: handle these, put your writes and one checkpoint in one command, and re-arm in the same response: sassato wake --since 20 --idle-minutes 1 --as builder --workspace team
+Cursor 20 saved.
+```
+
 ## One call per wake (T977)
 
 `sas wake` replaces the waiter's read-handle-save routine with one call. It is the background waiter:

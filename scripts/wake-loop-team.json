@@ -1,0 +1,4 @@
+{ "default_human": "human", "import_timezone": "Europe/Helsinki",
+  "roles": [ { "name": "builder", "provider": "claude", "model": "claude-opus-5-5" },
+             { "name": "lead", "provider": "claude", "model": "claude-opus-5-5" },
+             { "name": "human", "kind": "human" } ] }
