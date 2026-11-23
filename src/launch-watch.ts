@@ -113,16 +113,19 @@ export function watchStatus(s:Store,role:string) {
   return {role,epoch,pending,progress:getNotificationProgress(s,role)?.cursor??null};
 }
 
+/** Closes one open enrollment, keeping the worker's progress. The caller holds the role's launch lock, so no watcher uses it. */
+export function closeEnrollment(operator:Store,role:string,epoch:number) {
+  const worker=new Store(operator.path,role);
+  try {worker.use(operator.workspace);closePendingWake(worker,epoch);}
+  finally {worker.close();}
+  operator.event('watch',role,'reconciled',{epoch});
+}
+
 export function reconcileWatch(operator:Store,role:string,epoch:number) {
   operator.requireHuman();name(role);
   const release=acquireLaunchLock(operator,role);
-  try {
-    const worker=new Store(operator.path,role);
-    try {worker.use(operator.workspace);closePendingWake(worker,epoch);}
-    finally {worker.close();}
-    operator.event('watch',role,'reconciled',{epoch});
-    return {closed:epoch,progress:'preserved'};
-  } finally {release();}
+  try {closeEnrollment(operator,role,epoch);return {closed:epoch,progress:'preserved'};}
+  finally {release();}
 }
 
 export async function launchWatch(operator:Store,role:string,remote:string,thread:string,clock=()=>performance.now(),timing={queueTimeoutMs,retryPauseMs}) {

@@ -8,7 +8,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Store } from '../dist/storage.js';
 import { initWorkspace } from '../dist/admin.js';
 import { registerSession,endSession,sessionState,processIdentity } from '../dist/coordination.js';
-import { launchWatched,checkSettings } from '../dist/launch-watched.js';
+import { launchWatched,checkSettings,watchRoles } from '../dist/launch-watched.js';
+import { watchStatus } from '../dist/launch-watch.js';
 
 const thread='a3f1c2d4-5b6e-4f70-8a9b-0c1d2e3f4a5b';
 // A fake codex: `app-server` on stdio answers initialize and thread/start with the -c settings it was given
@@ -156,4 +157,38 @@ test('a state file that does not match what this command writes is not trusted: 
   writeFileSync(join(watched,'b.json'),JSON.stringify({role:'b',thread,endpoint:'unix:///x',server:id,window:id}));
   await assert.rejects(launchWatched(f.operator,['b'],{...f.options,closeStale:true}),/did not start it/);
   assert.equal(victim.exitCode,null);
+});
+
+test('an enrollment left open by a gone watcher refuses the launch before any window, and --close-stale closes it (T1299)',async t=>{
+  const f=fixture(t);
+  const epoch=f.worker.event('wake-enrollment','b','opened',{session:1,thread});
+  await assert.rejects(launchWatched(f.operator,['b'],f.options),new RegExp(`open waiter enrollment E${epoch}.*watch-close b --epoch ${epoch}.*--close-stale`));
+  assert.equal(f.children.length,0);
+  const [plan]=await launchWatched(f.operator,['b'],{...f.options,closeStale:true,dryRun:true});
+  assert.equal(plan.would_close_enrollment,epoch);assert.equal(watchStatus(f.operator,'b').epoch,epoch);
+  const [r]=await launchWatched(f.operator,['b'],{...f.options,closeStale:true});
+  t.after(()=>stopServer(r));
+  assert.equal(r.status,'started');assert.equal(r.closed_enrollment,epoch);
+  assert.equal(watchStatus(f.operator,'b').epoch,null);
+});
+
+test('an open enrollment with a wake not yet delivered is never closed by a launch (T1299)',async t=>{
+  const f=fixture(t);
+  const epoch=f.worker.event('wake-enrollment','b','opened',{session:1,thread});
+  f.worker.event('wake-delivery','b','pending',{epoch});
+  await assert.rejects(launchWatched(f.operator,['b'],{...f.options,closeStale:true}),new RegExp(`E${epoch} with a wake not yet delivered`));
+  assert.equal(f.children.length,0);assert.equal(watchStatus(f.operator,'b').epoch,epoch);
+});
+
+test('watch-roles writes a role it does not watch to stderr at once (T1299)',async t=>{
+  const f=fixture(t);
+  const [r]=await launchWatched(f.operator,['b'],f.options);
+  t.after(()=>stopServer(r));
+  const lines=[],original=console.error;console.error=(...a)=>lines.push(a.join(' '));
+  t.after(()=>{console.error=original;});
+  // The fake codex prints no version, so the watch is refused before it enrolls.
+  const [row]=await watchRoles(f.operator,['b']);
+  console.error=original;
+  assert.ok(row.error);
+  assert.ok(lines.some(l=>l.startsWith('Not watching b: ')),lines.join('\n'));
 });
