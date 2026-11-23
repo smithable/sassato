@@ -17,7 +17,7 @@ import { timeTable, formatTimeTable } from './stats-time.js';
 import * as m from './migration.js';
 import * as l from './launch.js';
 import * as lw from './launch-watched.js';
-import { codexRound, startRound } from './codex-round.js';
+import { codexRound, installedCodexVersion, roundHeldBack, startRound } from './codex-round.js';
 import { retitleImportedTasks } from './retitle.js';
 import { setup } from './setup.js';
 import { promptSetup } from './setup-prompt.js';
@@ -548,7 +548,11 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
             check(!bool('fresh')&&!str('terminal')&&!bool('new-window')&&!str('window'),'--watched resumes each role in its own Windows Terminal tab; drop --fresh, --terminal, --window and --new-window');
             const rows=await lw.launchWatched(s,p.splice(0),{all:bool('all'),closeStale:bool('close-stale'),dryRun:bool('dry-run'),distro:str('distro')});
             // The Codex round (T1193) runs after the real roles started, in its own process, so the launch is never slower.
-            if(!bool('dry-run')&&rows.some(row=>row.status==='started'))startRound(s);
+            if(!bool('dry-run')&&rows.some(row=>row.status==='started')){
+              const held=roundHeldBack(s,installedCodexVersion(5_000));
+              if(held)process.stderr.write(`Codex round: failed ${held.failures} times on ${held.version}, the installed version, so it is skipped until codex round --force.\n`);
+              startRound(s);
+            }
             result=rows;break;
           }
           check(!bool('close-stale'),'--close-stale applies to --watched only');

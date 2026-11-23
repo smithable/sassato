@@ -541,6 +541,8 @@ The model is the first Codex role's (by name) unless `--model` names one; three 
 is the event `codex-round passed VERSION` in the real database, and its folder is removed (`--keep` keeps it); later
 rounds on that version are skipped unless `--force`. A failure is the event `codex-round failed VERSION`, its folder
 is kept, and the role in `nudge_escalate` (else the default human) gets an urgent mail naming the step and the folder.
+After two failures on a version, its round is skipped (no turns, no mail) until `codex round --force`, and
+`launch --watched` says so on stderr; a new Codex version gets its own two tries.
 Afterwards every process of the round is stopped: those started with its database, their children and the sessions
 they were seen in (never the caller's own). Codex's shared daemon is never stopped; if the round started it, the round fails and
 says so. One round per version runs at a time (an exclusive lock on `codex-round/VERSION.lock`, which the system lets go when the round ends, held until the result is recorded); a failure before the probe
