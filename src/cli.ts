@@ -11,6 +11,7 @@ import * as a from './admin.js';
 import * as t from './tasks.js';
 import * as c from './coordination.js';
 import * as fb from './feedback.js';
+import * as rules from './rules.js';
 import * as st from './stats.js';
 import { timeTable, formatTimeTable } from './stats-time.js';
 import * as m from './migration.js';
@@ -47,6 +48,7 @@ Setup:      init (interactive in a terminal) | init --workspace NAME
             workspace settings | workspace set --default-human NAME | --wake-mode legacy|scored | --speed slow|normal|fast
             workspace wake-audit [--limit N] --as HUMAN
             workspace set --feedback-closers ROLE,ROLE|none --as HUMAN (roles besides humans that close feedback)
+            workspace set --rule-relays ROLE,ROLE|none --as HUMAN (roles that relay a human's answer to a rule proposal)
             workspace set --nudge-minutes N (0 off) | --nudge-escalate ROLE|none --as HUMAN (ask a quiet role why)
             codex versions | codex accept VERSION [--replace] --as HUMAN (the Codex CLI versions launch accepts)
             codex round [--force] [--model M] [--keep] --as HUMAN (a probe role tries the watched start once per Codex version)
@@ -82,6 +84,10 @@ Knowledge:  fact set KEY TEXT --source LOCATION [--expect VERSION]
             fact get KEY | fact history KEY | facts
 Stats:      stats [--since DATE] [--role ROLE] (read-only: mail unread times, urgent mail not acknowledged, mail a cursor passed unread, idle with work, review and question waits)
             stats --day DATE [--role ROLE] (read-only: each role's day as working per task, waiting per what for, not running; its nudges and idle reasons)
+Rules:      rule propose KEY (--file PATH | TEXT) [--scope all|ROLE] [--kind always|step] [--for HUMAN]
+            (asks the human; the answer 1 approve or 2 reject decides; relays: workspace set --rule-relays)
+            rule retire KEY REASON [--for HUMAN] | rule withdraw P1 REASON (its proposer or a human)
+            rule get KEY|P1 | rule list [--for ROLE] [--pending] | rule diff SET_VERSION | rule export [--force --as HUMAN]
 Feedback:   feedback add workflow|tokens|untested|sampleusers|sassato TEXT [--re T1] (one line; wakes nobody)
             feedback list [--kind K] [--author ROLE] [--all] [--limit N] [--after K1]
             feedback close K1 --task T1 | --fact KEY | --dropped REASON (a human, or a role in --feedback-closers)
@@ -126,23 +132,23 @@ select workspace when not explicit. Writes require --as; human actions require a
 Lists default to bounded results; --limit N. Context never consumes inbox receipts.
 Exit codes: 0 success/no matches; 1 storage/runtime; 2 input; 3 identity/access; 4 conflict; 5 mail-wait timeout.
 `;
-export const strings = ['reviewer','feedback-closers','nudge-minutes','nudge-escalate','waiting-for','expect-minutes','author','fact','dropped','spare-work','spare-providers','new','asked','remote','epoch','role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes','digest-skip','ack','autocompact','advisor','wake-mode','speed','wake-roles','urgency','reason','scored-receipt','idle-receipt','day'];
+export const strings = ['reviewer','feedback-closers','nudge-minutes','nudge-escalate','waiting-for','expect-minutes','author','fact','dropped','spare-work','spare-providers','new','asked','remote','epoch','role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes','digest-skip','ack','autocompact','advisor','wake-mode','speed','wake-roles','urgency','reason','scored-receipt','idle-receipt','day','rule-relays','scope'];
 export const booleans = ['watched','close-stale','spare','no-spare','pending','untouched','unread','attended','now','json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','wait','keep','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
 export const globalFlags = ['db','workspace','as','json','help'];
 export const allowed: Record<string,string[]> = {
   'index build':['repo','cache'],'index update':['repo','cache','diff'],'index find':['repo','cache','limit'],'index show':['repo','cache','limit'],
-  init:['config','humans','interactive','no-interactive','launch','dry-run','fresh','resume','no-prompt','terminal','distro','window','stop-file','new-window'], 'workspace attach':[], 'workspace settings':[], 'workspace wake-audit':['limit'], 'workspace set':['default-human','import-timezone','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','open-work-roles','digest-skip','wake-mode','speed','wake-roles','spare-work','spare-providers','feedback-closers','nudge-minutes','nudge-escalate'],roles:[], 'role set':['provider','model','effort','permission-mode','sandbox','approval','dir','kind','autocompact','advisor'],
+  init:['config','humans','interactive','no-interactive','launch','dry-run','fresh','resume','no-prompt','terminal','distro','window','stop-file','new-window'], 'workspace attach':[], 'workspace settings':[], 'workspace wake-audit':['limit'], 'workspace set':['default-human','import-timezone','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','open-work-roles','digest-skip','wake-mode','speed','wake-roles','spare-work','spare-providers','feedback-closers','rule-relays','nudge-minutes','nudge-escalate'],roles:[], 'role set':['provider','model','effort','permission-mode','sandbox','approval','dir','kind','autocompact','advisor'],
   add:['title','body','for','owner','priority','human-only','review-required','spare'],tasks:['status','owner','for','available','limit','after','spare'],show:['limit','before-event'],
   take:['hours'],renew:['hours'],note:[],update:['expect','title','body','priority','for','human-only','agent-allowed','review-required','no-review','spare','no-spare'],handoff:['brief-file','expect'],release:[],submit:['reviewer'],review:['approve','reject','note','expect'],done:['ref'],drop:[],reopen:[],after:[],unafter:[],block:['kind','waits-on','on'],blockers:['task','chain','limit','all'],resolve:[],
   'ask-human':['for','options','recommend','command','new'],answer:['close','relayed-by','asked','on','new'],withdraw:[],humans:['for','limit','untouched'],send:['re','urgent','needs-reply','now','urgency','reason'],wait:['urgent','timeout','stop-file','since','idle-minutes','settle','settle-max'],inbox:['peek','state','limit','unread'],wake:['pending','since','ack','timeout','stop-file','idle-minutes','settle','settle-max','waiting-for','expect-minutes'],'idle-reason':[],outbox:['limit'],sent:['limit'],retitle:['owner','apply'],ack:[],
-  'fact set':['source','checked-at','expect','answers'],'feedback add':['re'],'feedback list':['kind','author','all','limit','after'],'feedback close':['task','fact','dropped'],'fact get':[],'fact history':[],'codex accept':['replace'],'codex versions':[],'codex round':['force','model','keep'],facts:['limit'],
+  'fact set':['source','checked-at','expect','answers'],'feedback add':['re'],'feedback list':['kind','author','all','limit','after'],'feedback close':['task','fact','dropped'],'fact get':[],'fact history':[],'codex accept':['replace'],'codex versions':[],'codex round':['force','model','keep'],facts:['limit'],'rule propose':['file','scope','kind','for'],'rule retire':['for'],'rule withdraw':[],'rule get':[],'rule list':['for','pending'],'rule diff':[],'rule export':['force'],
   'wip show':[],'wip set':['current','next','notes','expect'],sessions:[], 'session register':['provider','session-id','pid','replace'],'session heartbeat':['session-id'],'session end':['session-id'],usage:['until'],
   stop:['all','timeout','no-wait','force'],'stop-status':['quiet','stop-file'],stopped:[],'resume-work':['all'],
   context:['brief','since','limit','line-length'],status:['line-length'],'job run':['kind','wait','no-wait','job-version','load','mem'],'job list':[],'job stats':[],stats:['since','role','day'],search:['type','owner','status','since','limit','phrase','prefix'],
   'supervise attended':['attended','role'],'supervise enroll':['role','file'],'supervise attach':['role'],'supervise assignment':[],'supervise reconcile':['session-id'],'supervise ready':['file','expect'],'supervise status':[],'supervise ping':[],'supervise ack':['generation'],
   'checkout register':['dir'],'checkout list':[],'checkout show':[],'checkout bind':['dir','task','provider','session-id','mode'],'checkout resolve':['task'],'checkout release':[],'brief save':['file','expect'],'brief show':[],
   'checkpoint show':[], 'checkpoint save':['current','next','notes','expect','evidence'], 'progress show':[], 'progress save':['cursor','expect','scored-receipt','idle-receipt','stop-file'],
-  import:['backlog','wip','actions','sessions','dry-run','confirm','repair'],export:[],launch:['fresh','resume','dry-run','no-prompt','terminal','distro','window','stop-file','all','new-window','watched','close-stale'],'launch-watch':['remote','session-id'],'watch-roles':[],'watch-status':[],'watch-close':['epoch'],'launch-unlock':[],migrate:[],doctor:[],backup:[],restore:[],machine:[]
+  import:['backlog','wip','actions','sessions','dry-run','confirm','repair'],export:[],launch:['fresh','resume','dry-run','no-prompt','terminal','distro','window','stop-file','all','new-window','watched','close-stale'],'launch-watch':['remote','session-id'],'watch-roles':[],'watch-status':[],'watch-close':['epoch'],'launch-unlock':[],migrate:[],doctor:[],backup:[],restore:['force'],machine:[]
 };
 function checkpointEvidence(path: string | undefined): unknown {
   if (path===undefined) return undefined;
@@ -295,7 +301,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (bool('version')) {const build=JSON.parse(readFileSync(new URL('./build-info.json',import.meta.url),'utf8'));console.log(bool('json')?JSON.stringify({...build,schema:SCHEMA_VERSION}):`${build.version} (build ${build.build})`);return;}
     const p=[...positionals];let command=p.shift()!;
     if (command==='task') command=p.shift()??'tasks';
-    if (['workspace','role','fact','feedback','session','job','checkout','brief','index','codex'].includes(command)) command+=' '+(p.shift()??'');
+    if (['workspace','role','fact','rule','feedback','session','job','checkout','brief','index','codex'].includes(command)) command+=' '+(p.shift()??'');
     if (command==='supervise') command+=' '+(p.shift()??(bool('attended')?'attended':'status'));
     if (command==='checkpoint' || command==='progress') command+=' '+(p.shift()??'show');
     // wip get is an alias of wip show, which prints the version that wip set --expect takes.
@@ -333,10 +339,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       if(launchRoles) jsonLaunch();
       result=await setup({database:db,workspace:selectedWorkspace,actor:actor??answers?.actor,config,humans:answers?.humans??str('humans')?.split(',').map(value=>value.trim()),launchRoles,launchOptions,dryRun:bool('dry-run')});
     }
-    else if(command==='restore') {const source=arg('backup');empty();check(str('db'),'Restore requires explicit --db NEW_FILE');result=await a.restoreDatabase(source,db);}
+    else if(command==='restore') {const source=arg('backup');empty();check(str('db'),'Restore requires explicit --db NEW_FILE');result=await a.restoreDatabase(source,db,{force:bool('force'),actor});}
     else if(command==='machine') {empty();result=a.machine();}
     else {
-      const reads=['watch-status','supervise assignment','supervise status','checkout list','checkout show','checkout resolve','brief show','job list','job stats','stats','tasks','show','blockers','humans','outbox','sent','fact get','fact history','feedback list','codex versions','facts','wip show','sessions','roles','workspace settings','workspace wake-audit','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
+      const reads=['watch-status','supervise assignment','supervise status','checkout list','checkout show','checkout resolve','brief show','job list','job stats','stats','tasks','show','blockers','humans','outbox','sent','fact get','fact history','rule get','rule list','rule diff','feedback list','codex versions','facts','wip show','sessions','roles','workspace settings','workspace wake-audit','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
       const readonly=reads.includes(command)||command==='retitle'&&!bool('apply')||command==='inbox'&&bool('peek')||['launch','import'].includes(command)&&bool('dry-run');
       store=new Store(db,actor,{readonly,managedWriteMode:command==='supervise reconcile'?'reconcile':command==='supervise ack'?'normal':command==='stopped'?'stop-ack':'normal'});
       const s=store;
@@ -361,6 +367,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           if(str('open-work-roles')!==undefined)patch.open_work_roles=str('open-work-roles')==='all'?null:str('open-work-roles')!.split(',').map(role=>role.trim()).filter(Boolean);
           if(str('spare-work')!==undefined){check(['on','off'].includes(str('spare-work')!),'--spare-work takes on or off');patch.spare_work=str('spare-work')==='on';}
           if(str('spare-providers')!==undefined){const list=str('spare-providers')==='any'?[]:str('spare-providers')!.split(',').map(p=>p.trim());check(list.every(Boolean),'--spare-providers takes provider names separated by commas, or any');patch.spare_providers=list;}
+          if(str('rule-relays')!==undefined)patch.rule_relays=str('rule-relays')==='none'?[]:str('rule-relays')!.split(',').map(r=>r.trim());
           if(str('feedback-closers')!==undefined)patch.feedback_closers=str('feedback-closers')==='none'?[]:str('feedback-closers')!.split(',').map(r=>r.trim());
           if(str('nudge-minutes')!==undefined){check(/^[0-9]+$/.test(str('nudge-minutes')!),'--nudge-minutes takes a whole number of minutes (0 turns it off)');patch.nudge_minutes=Number(str('nudge-minutes'));}
           if(str('nudge-escalate')!==undefined)patch.nudge_escalate=str('nudge-escalate')==='none'?null:str('nudge-escalate')!;
@@ -451,6 +458,16 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'feedback add': {const kind=arg('kind');result=fb.addFeedback(s,kind,rest('feedback'),{re:str('re')});break;}
         case 'feedback list': empty();result=fb.listFeedback(s,{kind:str('kind'),author:str('author'),all:bool('all'),limit:num('limit'),after:str('after')});break;
         case 'feedback close': {const k=arg('feedback');empty();result=fb.closeFeedback(s,k,{task:str('task'),fact:str('fact'),dropped:str('dropped')});break;}
+        case 'rule propose': {const key=arg('key'),file=str('file');let body:string;
+          if(file!==undefined){const fd=openSync(file,'r');try{check(fstatSync(fd).size<=65536,'--file is larger than 64 KiB');body=readFileSync(fd,'utf8');}finally{closeSync(fd);}check(p.length===0,'Give the rule text with --file or as words, not both');}
+          else body=rest('rule text');
+          result=rules.proposeRule(s,key,body,{scope:str('scope'),kind:str('kind'),forHuman:str('for')});break;}
+        case 'rule retire': {const key=arg('key');result=rules.retireRule(s,key,rest('reason'),{forHuman:str('for')});break;}
+        case 'rule withdraw': {const proposal=arg('proposal');result=rules.withdrawRule(s,proposal,rest('reason'));break;}
+        case 'rule get': {const ref=arg('key or proposal');empty();result=rules.getRule(s,ref);break;}
+        case 'rule list': empty();result=rules.listRules(s,{forRole:str('for'),pending:bool('pending')});break;
+        case 'rule diff': {const since=arg('set version');empty();result=rules.diffRules(s,since);break;}
+        case 'rule export': empty();result=s.tx(()=>{if(!bool('force'))return rules.exportRules(s);s.requireHuman();const done=rules.exportRules(s,{allowOlder:true});if(done)s.event('rule-set',s.workspace,'export-forced',{set_version:done.set_version});return done;});check(result,'A database in memory has no export');break;
         case 'facts': empty();result=c.facts(s,{limit:num('limit')});break;
         case 'wip show': {const role=p.shift();empty();result=c.getWip(s,role);break;}
         case 'wip set': empty();{const warnings=humanWaits(s,{current:str('current'),next:str('next'),notes:str('notes')});result=withWarnings(c.setWip(s,{current:str('current'),next:str('next'),notes:str('notes'),expected_version:num('expect')}),warnings);}break;

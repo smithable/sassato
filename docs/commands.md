@@ -74,7 +74,7 @@ advances handled notification progress or permits work in the frozen generation.
 | `migrate` | Apply pending schema migrations to the selected database; no workspace required |
 | `doctor` | Schema, SQLite/FTS availability, WAL/FULL, integrity and foreign-key checks |
 | `backup NEW_FILE --as alice` | Online consistent backup of **all workspaces**; no overwrite |
-| `restore BACKUP --db NEW_FILE` | Validate and restore into a new file; never overwrite an existing database |
+| `restore BACKUP --db NEW_FILE [--force --as HUMAN]` | Validate and restore into a new file; never overwrite an existing database. Refused (exit 4) when a workspace's rules are older than the rule export beside the new file, unless a human accepts the older set with `--force` (recorded as a `rule-set` event) |
 | `machine` | Host load, CPU, memory and uptime; no per-job ownership attribution |
 
 Use `init --config ./sassato.config.json` for a workspace and its team. See
@@ -264,6 +264,34 @@ never wakes anyone, is never ready work, and needs no check first whether it is 
   `context --brief`; nobody else sees a feedback section.
 - `show K1` prints one record, `search` finds feedback text (`--type feedback`), and `export` writes
   `feedback.md`.
+
+## Rules (T1276)
+
+A rule is a standing instruction for the sessions (the text the machine rules file holds today), kept with
+its history. Any role proposes one; a human decides. A proposal is fixed once made: its key, action, text,
+scope (`all` or one role), kind (`always`, read at every start, or `step`, read before a step) and the
+version it replaces, with a digest of all of these. It makes a task and asks the human its question with
+the full text; the answer to that question decides it.
+
+| Command | Meaning |
+| - | - |
+| `rule propose KEY (--file PATH \| TEXT) [--scope all\|ROLE] [--kind always\|step] [--for HUMAN]` | Any role. KEY is lowercase words joined by dots. At most 3000 characters for an always rule, 6000 for a step rule, and 40000 for all always rules together; text that looks like a secret is refused. Prints the proposal `P1`, its task and its question |
+| `rule retire KEY REASON [--for HUMAN]` | Proposes retiring a rule in force, asked the same way |
+| `rule withdraw P1 REASON` | Withdraws a pending proposal and its question: its proposer or a human |
+| `rule get KEY\|P1` | A rule's text, version, scope, kind, who approved and who relayed, its earlier versions and pending proposals; or one proposal in full |
+| `rule list [--for ROLE] [--pending]` | The rules in force (for one role: those for all and for it), one line each, with the set's version and digest; `--pending` adds the waiting proposals |
+| `rule diff SET_VERSION` | Each change to the set after that version, in order, with the text it replaced |
+| `rule export [--force --as HUMAN]` | Writes the set in force to `rules/WORKSPACE.json` beside the database (also done on every approval). Refused when the export is newer, unreadable or another set at the same version; a human rewrites it from this database with `--force` (recorded) |
+
+- The answer is `1`/`approve` or `2`/`reject`, words after it kept (`answer H1 "approve: his words"`).
+  Any other answer is refused. The human answers, or a role named in `rule_relays` relays the human's
+  answer with `--relayed-by`; a relay by any other role is refused and nothing is recorded.
+  `workspace set --rule-relays fable,ha --as HUMAN` names the relays (`none` clears them; the default is none).
+- An approval is refused when the rule moved after the proposal (another approval came first); the answer is
+  kept, the proposal shows `refused` with the reason, and nothing changes. Propose again on the new version.
+- Each approval adds one version of the rule and one version of the whole set, and writes the export before
+  it commits: a failed export leaves the approval unmade. Proposals and versions are never changed or deleted.
+- Answering a rule proposal's question closes its task.
 
 ## Dependencies, blockers and decisions
 

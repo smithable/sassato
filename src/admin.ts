@@ -3,8 +3,8 @@ import { processIdentity } from './coordination.js';
 import { getNotificationProgress } from './notification-progress.js';
 import { contextLine } from './context-brief.js';
 import { backup, DatabaseSync } from 'node:sqlite';
-import { closeSync, existsSync, mkdirSync, openSync, realpathSync, statSync, unlinkSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, realpathSync, statSync, unlinkSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { cpus, freemem, loadavg, totalmem, uptime } from 'node:os';
 import { Store, databasePath, SCHEMA_VERSION, type Row, type Param } from './storage.js';
 import { WATCH_REASONS } from './launch-watch.js';
@@ -13,6 +13,7 @@ import { AppError, check, id, integer, name, now, safe, text } from './errors.js
 import { normalizeOption, ROLE_OPTION_KEYS, validateRoleOptions } from './role-options.js';
 import { loadConfig, workingDirectory } from './config.js';
 import { validateSettings } from './workspace-settings.js';
+import { EMPTY_SET_DIGEST, exportRules, readExport, ruleSet, rulesExportPath } from './rules.js';
 
 export function initWorkspace(s: Store, workspace: string, configPath?: string | Row, humans?: string[]): Row {
   name(workspace);
@@ -145,22 +146,61 @@ export async function backupDatabase(s: Store, output: string): Promise<Row> {
   try {await backup(s.db,destination);return {path:destination,scope:'all workspaces',schema:SCHEMA_VERSION};}
   catch (error) {unlinkSync(destination);throw error;}
 }
-export async function restoreDatabase(source: string, target: string): Promise<Row> {
+// A restore whose rules differ from the export beside its destination (T1276) is refused: every export
+// file counts, a workspace the backup lacks has the empty set, and an export that cannot be read or holds
+// another set at the same version counts as newer. A human may accept the restored set with force; the
+// decision is recorded in each workspace the backup holds, and the exports are rewritten before the restore.
+// The check is against accidents (a restore of the wrong file), not an authority: whoever runs restore
+// can already copy the files.
+function olderRules(databasePath: string, beside: string, options: { force?: boolean; actor?: string }): Row[] {
+  const folder = join(dirname(beside), 'rules'), older: Row[] = [];
+  const names = existsSync(folder) ? readdirSync(folder).filter(n => n.endsWith('.json')).map(n => n.slice(0, -5)).sort() : [];
+  const reader = new Store(databasePath, undefined, { readonly: true });
+  try {
+    for (const workspace of names) {
+      const exported = readExport(beside, workspace);
+      if (exported === undefined) continue;
+      const held = Boolean(reader.get('SELECT id FROM workspaces WHERE name=?', workspace));
+      if (held) reader.use(workspace);
+      const set = held ? ruleSet(reader) : { set_version: 0, digest: EMPTY_SET_DIGEST };
+      if (exported !== 'unreadable' && (exported.set_version < set.set_version || exported.set_version === set.set_version && exported.digest === set.digest)) continue;
+      older.push({ workspace, held, set_version: set.set_version, export_set_version: exported === 'unreadable' ? 'unreadable' : exported.set_version });
+    }
+  } finally { reader.close(); }
+  if (!older.length) return [];
+  const list = older.map(w => `${w.workspace} (set version ${w.set_version}, export ${w.export_set_version})`).join(', ');
+  check(options.force, `The restored rules differ from their export and are not newer: ${list}. A human decides: restore again with --force --as HUMAN to accept them`, 4);
+  check(options.actor, 'Accepting older rules needs --as HUMAN', 3);
+  // Accepted: recorded, and each export rewritten from the restored rules before the destination appears;
+  // a workspace the backup lacks loses its export.
+  for (const w of older) {
+    if (!w.held) { unlinkSync(rulesExportPath(beside, w.workspace)); continue; }
+    const s = new Store(databasePath, options.actor);
+    try { s.use(w.workspace); s.tx(() => { s.requireHuman(); s.event('rule-set', w.workspace, 'restored-older', { set_version: w.set_version, export_set_version: w.export_set_version }); exportRules(s, { allowOlder: true }); }); } finally { s.close(); }
+  }
+  return older;
+}
+export async function restoreDatabase(source: string, target: string, options: { force?: boolean; actor?: string } = {}): Promise<Row> {
   const src=databasePath(source), dest=databasePath(target);
   check(existsSync(src),'Backup file does not exist');check(!existsSync(dest),'Restore destination already exists',4);
   const db=new DatabaseSync(src,{readOnly:true});
+  let older: Row[] = [];
   try {
     const sourceVersion = Number(db.prepare('PRAGMA user_version').get()!.user_version);
     check(sourceVersion >= 1 && sourceVersion <= SCHEMA_VERSION,'Unsupported backup schema');
     check(Object.values(db.prepare('PRAGMA integrity_check').get()!)[0]==='ok','Backup integrity check failed');
     check(db.prepare('PRAGMA foreign_key_check').all().length===0,'Backup foreign key check failed');
-    mkdirSync(dirname(dest),{recursive:true,mode:0o700});closeSync(openSync(dest,'wx',0o600));
+    // Built and checked under a temporary name; the destination appears only once it passed.
+    mkdirSync(dirname(dest),{recursive:true,mode:0o700});
+    const building=`${dest}.${process.pid}.restoring`;closeSync(openSync(building,'wx',0o600));
     try {
-      await backup(db,dest);
-      const restored = new Store(dest);
+      await backup(db,building);
+      const restored = new Store(building);
       restored.close();
-    } catch(error) {unlinkSync(dest);throw error;}
-    return {path:dest,scope:'all workspaces',schema:SCHEMA_VERSION,source_schema:sourceVersion};
+      older = olderRules(building, dest, options);
+      linkSync(building,dest);
+    } finally {unlinkSync(building);}
+    return {path:dest,scope:'all workspaces',schema:SCHEMA_VERSION,source_schema:sourceVersion,...(older.length?{older_rules_accepted:older}:{})};
   } finally {db.close();}
 }
 export function machine(): Row { return {load:loadavg(),cpus:cpus().length,free_memory:freemem(),total_memory:totalmem(),uptime_seconds:uptime(),note:'System totals only. Per-job ownership is not tracked.'}; }
