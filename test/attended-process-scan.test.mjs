@@ -1,3 +1,4 @@
+import { retirementObservation } from '../dist/attended.js';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
@@ -136,4 +137,15 @@ print(json.dumps({"result": ap.await_exit(fd, child.pid, "x:1", seconds=5), "cal
   assert.equal(out.calls, 2);
   assert.equal(out.result.exited, true);
   assert.equal(out.result.pidfd_exit, true);
+});
+
+test('the retirement proposal names the clipboard readers that end with the worker (T958)', () => {
+  const row = (pid) => ({ pid, group: 10, session: 10, start: `s${pid}`, parent: 10, state: 'S', argv: ['x'] });
+  assert.deepEqual(retirementObservation({ leader: row(10), live_members: [row(10)], helpers: [row(11)], exited: false }), {
+    leader: { pid: 10, group: 10, session: 10, start: 's10' },
+    live_members: [{ pid: 10, group: 10, session: 10, start: 's10' }],
+    helpers: [{ pid: 11, group: 10, session: 10, start: 's11' }],
+    exited: false,
+  });
+  assert.deepEqual(retirementObservation({ leader: null, live_members: [], exited: true }).helpers, [], 'an older observation without helpers');
 });
