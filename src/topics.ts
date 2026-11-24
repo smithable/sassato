@@ -115,7 +115,7 @@ export function closeTopic(s: Store, task: string, options: CloseTopicOptions): 
           check(!isTopic(work), `${item} is a topic: a topic closes into work or a fact`, 4);
           check(work.id !== row.id, 'A topic does not close into itself', 4);
           // A dropped task led to nothing, so closing into it would be a close without a result (T1435).
-          check(work.status !== 'dropped', `${item} was dropped: close into work that goes on, or with --reason`, 4);
+          check(work.status !== 'dropped', `${item} was dropped: close into a task that was not dropped, a fact, or with --reason`, 4);
         } else {
           check(item.startsWith('fact:'), `${item} is neither a task nor fact:KEY`);
           fact(s, item.slice(5));
