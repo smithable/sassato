@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { Store } from '../dist/storage.js';
 import { initWorkspace } from '../dist/admin.js';
-import { admit, enqueue, needOf, releaseStale, jobStats, maintenancePolicy, REFUSED } from '../dist/jobs.js';
+import { admit, enqueue, needOf, releaseStale, jobStats, maintenancePolicy, parentOfStat, REFUSED } from '../dist/jobs.js';
 
 test('maintenance uses current policies across workspaces, ignores obsolete corrupt rows and rejects malformed current locks',t=>{
   const f=fixture(t),s=f.store('human');
@@ -206,10 +206,18 @@ test('a forwarded signal is logged and recorded with who the job answered to (T1
   for (let i = 0; i < 50 && !alive(); i++) await new Promise(done => setTimeout(done, 100));
   assert.ok(alive(), 'the job started');
   child.kill('SIGTERM');
-  await new Promise(done => child.on('exit', done));
-  assert.match(err, new RegExp(`J\\d+ got SIGTERM at \\S+, passed to the whole job; started under ${process.pid} `));
+  await new Promise(done => child.on('close', done));
+  for (let i = 0; i < 30 && alive(); i++) await new Promise(done => setTimeout(done, 100));
+  assert.equal(alive(), false, 'the signal reached the job');
+  assert.match(err, new RegExp(`J\\d+ got SIGTERM at \\S+, passed to the whole job; job run started under ${process.pid} node`));
   const row = f.store('human').get('SELECT reason FROM jobs ORDER BY id DESC LIMIT 1');
-  assert.match(row.reason, /^got SIGTERM at .* started under \d+ .*; parent now \d+ /);
+  assert.match(row.reason, /^got SIGTERM at .* job run started under \d+ \S+.*; parent now \d+ \S+$/);
+  assert.doesNotMatch(row.reason, /--db|--workspace/, 'no arguments are kept');
+});
+
+test('the parent pid is read after the last ") " of a stat line', () => {
+  assert.equal(parentOfStat('4242 (we) ird) name) S 77 4242 4242 0 -1'), 77);
+  assert.equal(parentOfStat('1 (systemd) S 0 1 1 0 -1'), 0);
 });
 
 test('a signal to job run reaches every process of the job', { timeout: 30_000 }, async t => {

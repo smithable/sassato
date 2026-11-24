@@ -161,16 +161,19 @@ function cgroupOf(pid: number): string | null {
 function commandOf(pid: number): string {
   try { return basename(readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0')[0] || '?'); } catch { return '?'; }
 }
-/** Who a process answers to: its parent, and theirs, as `pid command` (the line cut short), nearest first. */
+/** The parent pid from a /proc/PID/stat line; the command name in it may hold spaces or ")". */
+export function parentOfStat(stat: string): number {
+  return Number(stat.slice(stat.lastIndexOf(') ') + 2).split(' ')[1]);
+}
+/** Who a process answers to: its parent, and theirs, as `pid name` (the program's name only, never its
+ *  arguments, which may hold secrets), nearest first. Ancestry, not the sender: Node cannot read who sent a signal. */
 export function callersOf(pid: number, depth = 3): string[] {
   const out: string[] = [];
   for (let at = pid; out.length < depth;) {
     let parent: number;
-    try { parent = Number(readFileSync(`/proc/${at}/stat`, 'utf8').split(') ').pop()!.split(' ')[1]); } catch { break; }
+    try { parent = parentOfStat(readFileSync(`/proc/${at}/stat`, 'utf8')); } catch { break; }
     if (!parent) break;
-    let line = '?';
-    try { line = readFileSync(`/proc/${parent}/cmdline`, 'utf8').split('\0').filter(Boolean).join(' ') || '?'; } catch { /* gone */ }
-    out.push(`${parent} ${line.length > 100 ? `${line.slice(0, 100)}…` : line}`);
+    out.push(`${parent} ${commandOf(parent).replace(/[^\x21-\x7e]/g, '?')}`);
     if (parent === 1) break;
     at = parent;
   }
@@ -291,20 +294,25 @@ async function runProtectedJob(s:Store,options:RunOptions,assertProtection:()=>v
     : spawn(options.command[0], options.command.slice(1), { stdio: 'inherit', detached: true });
   // A signal goes to every process of the job, as a terminal would send it to its group: the whole
   // scope, or without one the job's own process group.
-  // Which signal came, and who the job answered to then, so a stopped job shows its caller (T1284).
-  // Node cannot read the sender's pid; the parent at the start and now name the likely one.
-  const caller = callersOf(process.pid).join(' < ') || '?';
+  // The signal goes on first; then which signal came and the ancestry of job run is logged and kept
+  // as the job's reason, so a stopped job shows its likely caller (T1284). A failing log or a locked
+  // database never delays or stops the signal.
+  let caller: string | null = null;
   const forward = (signal: NodeJS.Signals) => () => {
-    const said = `got ${signal} at ${now()}, passed to the whole job; started under ${caller}; parent now ${callersOf(process.pid, 1)[0] ?? '?'}`;
-    log(`J${id} ${said}`);
-    try { s.tx(() => s.run('UPDATE jobs SET reason=? WHERE id=?', said, id)); } catch { /* the record is best effort */ }
     try {
-      if (scoped && spawnSync('systemctl', ['--user', 'kill', `--signal=${signal}`, `${unit}.scope`], { stdio: 'ignore', timeout: 5000 }).status === 0) return;
-      if (!scoped && child.pid) process.kill(-child.pid, signal); else child.kill(signal);
+      if (!(scoped && spawnSync('systemctl', ['--user', 'kill', `--signal=${signal}`, `${unit}.scope`], { stdio: 'ignore', timeout: 5000 }).status === 0)) {
+        if (!scoped && child.pid) process.kill(-child.pid, signal); else child.kill(signal);
+      }
     } catch { /* already gone */ }
+    try {
+      const said = `got ${signal} at ${now()}, passed to the whole job; job run started under ${caller ?? '?'}; parent now ${callersOf(process.pid, 1)[0] ?? '?'}`;
+      log(`J${id} ${said}`);
+      s.tx(() => s.run('UPDATE jobs SET reason=? WHERE id=?', said, id));
+    } catch { /* the report is best effort */ }
   };
   const handlers = (['SIGINT', 'SIGTERM', 'SIGHUP'] as const).map(signal => [signal, forward(signal)] as const);
   for (const [signal, handler] of handlers) process.on(signal, handler);
+  caller = callersOf(process.pid).join(' < ') || '?';
 
   let cgroup: string | null = null, peak = 0, current = 0, cpu = 0, written = 0, tree: number[] = [], cgroupPeak = 0;
   const sample = () => {

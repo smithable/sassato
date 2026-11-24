@@ -472,7 +472,8 @@ Jobs count across every workspace in the database, since they share one machine.
   process group and descendants are sampled from /proc. SIGINT, SIGTERM and SIGHUP to
   `job run` go to every process of the job (the scope, or the process group); the job's log and
   its record's reason say which signal came, when, the parent chain `job run` started under and
-  its parent then, since the sender itself cannot be read. Processes a job
+  its parent then (pid and program name, never arguments), since the sender itself cannot be read; the
+  signal is passed on before the report, which never delays it. Processes a job
   leaves running after a normal end are named, never killed. A job whose `job run` process
   is gone is released.
 
