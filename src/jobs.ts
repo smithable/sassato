@@ -2,7 +2,7 @@
 // machine has no room for it, and its memory and CPU are measured, so the next run of its kind
 // asks for what it really used. Jobs are machine-wide: every workspace in this database counts.
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, readlinkSync } from 'node:fs';
 import { availableParallelism, constants } from 'node:os';
 import { basename,isAbsolute } from 'node:path';
 import type { Row, Store } from './storage.js';
@@ -161,6 +161,27 @@ function cgroupOf(pid: number): string | null {
 function commandOf(pid: number): string {
   try { return basename(readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0')[0] || '?'); } catch { return '?'; }
 }
+/** The parent pid from a /proc/PID/stat line; the command name in it may hold spaces or ")". */
+export function parentOfStat(stat: string): number {
+  return Number(stat.slice(stat.lastIndexOf(') ') + 2).split(' ')[1]);
+}
+/** Who a process answers to: its parent, and theirs, as `pid name` (the program's name only, never its
+ *  arguments, which may hold secrets), nearest first. Ancestry, not the sender: Node cannot read who sent a signal. */
+export function callersOf(pid: number, depth = 3): string[] {
+  const out: string[] = [];
+  for (let at = pid; out.length < depth;) {
+    let parent: number;
+    try { parent = parentOfStat(readFileSync(`/proc/${at}/stat`, 'utf8')); } catch { break; }
+    if (!parent) break;
+    // The executable's own name: argv[0] can be rewritten by the process and may hold arguments.
+    let exe = '?';
+    try { exe = basename(readlinkSync(`/proc/${parent}/exe`)).replace(/ \(deleted\)$/, '').replace(/[^\x21-\x7e]/g, '?'); } catch { /* not ours to read */ }
+    out.push(`${parent} ${exe}`);
+    if (parent === 1) break;
+    at = parent;
+  }
+  return out;
+}
 function leftInCgroup(cgroup: string): { pid: number; command: string }[] {
   try {
     return readFileSync(`${cgroup}/cgroup.procs`, 'utf8').split('\n').filter(Boolean).map(Number).map(pid => ({ pid, command: commandOf(pid) }));
@@ -276,14 +297,25 @@ async function runProtectedJob(s:Store,options:RunOptions,assertProtection:()=>v
     : spawn(options.command[0], options.command.slice(1), { stdio: 'inherit', detached: true });
   // A signal goes to every process of the job, as a terminal would send it to its group: the whole
   // scope, or without one the job's own process group.
+  // The signal goes on first; then which signal came and the ancestry of job run is logged and kept
+  // as the job's reason, so a stopped job shows its likely caller (T1284). A failing log or a locked
+  // database never delays or stops the signal.
+  let caller: string | null = null;
   const forward = (signal: NodeJS.Signals) => () => {
+    let target: string;
     try {
-      if (scoped && spawnSync('systemctl', ['--user', 'kill', `--signal=${signal}`, `${unit}.scope`], { stdio: 'ignore', timeout: 5000 }).status === 0) return;
-      if (!scoped && child.pid) process.kill(-child.pid, signal); else child.kill(signal);
-    } catch { /* already gone */ }
+      if (scoped && spawnSync('systemctl', ['--user', 'kill', `--signal=${signal}`, `${unit}.scope`], { stdio: 'ignore', timeout: 5000 }).status === 0) target = 'the whole job (its scope)';
+      else if (!scoped && child.pid) { process.kill(-child.pid, signal); target = 'the whole job (its process group)'; }
+      else { child.kill(signal); target = 'the job\'s first process only (the scope refused it)'; }
+    } catch (error) { target = `nobody (${error instanceof Error ? error.message : String(error)})`; }
+    let said = `got ${signal}, passed to ${target}`;
+    try { said = `got ${signal} at ${now()}, passed to ${target}; job run started under ${caller ?? '?'}; parent now ${callersOf(process.pid, 1)[0] ?? '?'}`; } catch { /* keep the short form */ }
+    try { log(`J${id} ${said}`); } catch { /* the database below still keeps it */ }
+    try { s.tx(() => s.run('UPDATE jobs SET reason=? WHERE id=?', said, id)); } catch { /* the report is best effort */ }
   };
   const handlers = (['SIGINT', 'SIGTERM', 'SIGHUP'] as const).map(signal => [signal, forward(signal)] as const);
   for (const [signal, handler] of handlers) process.on(signal, handler);
+  caller = callersOf(process.pid).join(' < ') || '?';
 
   let cgroup: string | null = null, peak = 0, current = 0, cpu = 0, written = 0, tree: number[] = [], cgroupPeak = 0;
   const sample = () => {

@@ -2,6 +2,10 @@
 
 ## 0.1.3 — unreleased
 
+- A signal `job run` passes on to its job is logged and kept as the job's reason (T1367): which signal, when,
+  the parent chain `job run` started under and its parent at that moment (pid and program name, never arguments),
+  so a job stopped from outside shows its likely caller; the sender itself cannot be read (T1284: a cancelled caller's command took a gate down with it).
+
 - `humans` lists a human's whole queue by default (T1379). It stopped at 50 without saying so, which hid the three
   newest of 53 questions; `--limit N` still cuts, and then says on stderr how many it left out.
 
