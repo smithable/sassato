@@ -5,7 +5,7 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
-import {Store} from '../dist/storage.js';
+import {Store,SCHEMA_VERSION} from '../dist/storage.js';
 import {initWorkspace} from '../dist/admin.js';
 import {context,setFact} from '../dist/coordination.js';
 import {contextDelta} from '../dist/context-brief.js';
@@ -25,10 +25,10 @@ test('schema 17 gives every existing task kind work and keeps its rows',t=>{
   const {s,path}=fixture(t);
   addTask(s,{title:'Old work'});addTask(s,{title:'Older work'});s.close();
   const db=new DatabaseSync(path);
-  db.exec("DROP TABLE schedule_ticks; DROP TABLE occurrences; DROP INDEX schedules_due; DROP TABLE schedules; DROP INDEX topic_links_topic; DROP TABLE topic_links; ALTER TABLE tasks DROP COLUMN kind; DELETE FROM schema_migrations WHERE version>=17; PRAGMA user_version=16;");db.close();
+  db.exec("DROP INDEX refusals_time; DROP TABLE refusals; DROP TABLE schedule_ticks; DROP TABLE occurrences; DROP INDEX schedules_due; DROP TABLE schedules; DROP INDEX topic_links_topic; DROP TABLE topic_links; ALTER TABLE tasks DROP COLUMN kind; DELETE FROM schema_migrations WHERE version>=17; PRAGMA user_version=16;");db.close();
   const again=new Store(path,'a');again.use('team');
   assert.deepEqual(again.all('SELECT title,kind FROM tasks ORDER BY id').map(r=>[r.title,r.kind]),[['Old work','work'],['Older work','work']]);
-  assert.equal(again.get('PRAGMA user_version').user_version,18);
+  assert.equal(again.get('PRAGMA user_version').user_version,SCHEMA_VERSION);
   again.close();
 });
 
