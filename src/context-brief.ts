@@ -1,7 +1,7 @@
 import type { Store,Row } from './storage.js';
 import { feedbackSummary } from './feedback.js';
 import type { ContextData } from './coordination.js';
-import { check,integer } from './errors.js';
+import { check,integer,now } from './errors.js';
 
 /** One physical line, bounded by Unicode code points including its lookup ID. */
 export function contextLine(value:unknown,max=200):string {
@@ -24,8 +24,8 @@ function change(s:Store,actor:string,event:Row):{section:string;row:Row}|undefin
     if(row)return {section:'mail',row:{id:event.entity_id,from:row.sender,task:row.task_id?`T${row.task_id}`:null,state:row.state,text:contextLine(row.text)}};
   }
   if(event.entity==='fact'&&/^F\d+$/.test(event.entity_id)) {
-    const row=s.get('SELECT key,substr(body,1,200) AS text,version FROM facts WHERE workspace_id=? AND id=?',s.ws,Number(event.entity_id.slice(1)));
-    if(row)return {section:'facts',row:{id:event.entity_id,...row,text:contextLine(row.text)}};
+    const row=s.get('SELECT key,substr(body,1,200) AS text,version,expires_at FROM facts WHERE workspace_id=? AND id=? AND (expires_at IS NULL OR expires_at>=?)',s.ws,Number(event.entity_id.slice(1)),now());
+    if(row){const {expires_at,...rest}=row;return {section:'facts',row:{id:event.entity_id,...rest,text:contextLine(row.text),until:expires_at?String(expires_at).endsWith('T23:59:59.999Z')?String(expires_at).slice(0,10):expires_at:null}};}
   }
   if(event.entity==='question'&&event.action==='answered'&&/^H\d+$/.test(event.entity_id)) {
     const row=s.get("SELECT q.task_id,substr(q.answer,1,200) AS answer FROM questions q JOIN tasks t ON t.workspace_id=q.workspace_id AND t.id=q.task_id WHERE q.workspace_id=? AND q.id=? AND q.status='answered' AND (q.asked_by=? OR t.owner=?)",s.ws,Number(event.entity_id.slice(1)),actor,actor);

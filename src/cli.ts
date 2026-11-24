@@ -9,6 +9,7 @@ import { humanWaits } from './humans.js';
 import { AppError, check, integer } from './errors.js';
 import * as a from './admin.js';
 import * as t from './tasks.js';
+import { prune, renderPrune, type PruneData } from './prune.js';
 import * as c from './coordination.js';
 import * as fb from './feedback.js';
 import * as rules from './rules.js';
@@ -80,8 +81,9 @@ Mail:       send ROLE[,ROLE]|all TEXT [--re T1] [--urgency 0..10] [--reason TEXT
               (STOP, each entry's full text, mail to acknowledge), save the cursor, and end with the re-arm command
               [--waiting-for TEXT] [--expect-minutes N]: what the wait is for and how long it should take (else the open blocks)
             idle-reason TEXT: answer a nudge (why nothing is being written); no new nudge until something changes for you
-Knowledge:  fact set KEY TEXT --source LOCATION [--expect VERSION]
-            fact get KEY | fact history KEY | facts
+Knowledge:  fact set KEY TEXT --source LOCATION [--expires DATE|none] [--expect VERSION]
+            fact get KEY | fact history KEY | facts (an expired fact stays readable, marked, and leaves the context)
+            prune [--days N] [--section NAME[,NAME]] (read-only: what may be closed, dropped or corrected, each with its rule)
 Stats:      stats [--since DATE] [--role ROLE] (read-only: mail unread times, urgent mail not acknowledged, mail a cursor passed unread, idle with work, review and question waits)
             stats --day DATE [--role ROLE] (read-only: each role's day as working per task, waiting per what for, not running; its nudges and idle reasons)
 Rules:      rule propose KEY (--file PATH | TEXT) [--scope all|ROLE] [--kind always|step] [--for HUMAN]
@@ -132,7 +134,7 @@ select workspace when not explicit. Writes require --as; human actions require a
 Lists default to bounded results; --limit N. Context never consumes inbox receipts.
 Exit codes: 0 success/no matches; 1 storage/runtime; 2 input; 3 identity/access; 4 conflict; 5 mail-wait timeout.
 `;
-export const strings = ['reviewer','feedback-closers','nudge-minutes','nudge-escalate','waiting-for','expect-minutes','author','fact','dropped','spare-work','spare-providers','new','asked','remote','epoch','role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes','digest-skip','ack','autocompact','advisor','wake-mode','speed','wake-roles','urgency','reason','scored-receipt','idle-receipt','day','rule-relays','scope'];
+export const strings = ['expires','section','days','reviewer','feedback-closers','nudge-minutes','nudge-escalate','waiting-for','expect-minutes','author','fact','dropped','spare-work','spare-providers','new','asked','remote','epoch','role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes','digest-skip','ack','autocompact','advisor','wake-mode','speed','wake-roles','urgency','reason','scored-receipt','idle-receipt','day','rule-relays','scope'];
 export const booleans = ['watched','close-stale','spare','no-spare','pending','untouched','unread','attended','now','json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','wait','keep','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
 export const globalFlags = ['db','workspace','as','json','help'];
 export const allowed: Record<string,string[]> = {
@@ -141,7 +143,7 @@ export const allowed: Record<string,string[]> = {
   add:['title','body','for','owner','priority','human-only','review-required','spare'],tasks:['status','owner','for','available','limit','after','spare'],show:['limit','before-event'],
   take:['hours'],renew:['hours'],note:[],update:['expect','title','body','priority','for','human-only','agent-allowed','review-required','no-review','spare','no-spare'],handoff:['brief-file','expect'],release:[],submit:['reviewer'],review:['approve','reject','note','expect'],done:['ref'],drop:[],reopen:[],after:[],unafter:[],block:['kind','waits-on','on'],blockers:['task','chain','limit','all'],resolve:[],
   'ask-human':['for','options','recommend','command','new'],answer:['close','relayed-by','asked','on','new'],withdraw:[],humans:['for','limit','untouched','brief','line-length'],send:['re','urgent','needs-reply','now','urgency','reason'],wait:['urgent','timeout','stop-file','since','idle-minutes','settle','settle-max'],inbox:['peek','state','limit','unread'],wake:['pending','since','ack','timeout','stop-file','idle-minutes','settle','settle-max','waiting-for','expect-minutes'],'idle-reason':[],outbox:['limit'],sent:['limit'],retitle:['owner','apply'],ack:[],
-  'fact set':['source','checked-at','expect','answers'],'feedback add':['re'],'feedback list':['kind','author','all','limit','after'],'feedback close':['task','fact','dropped'],'fact get':[],'fact history':[],'codex accept':['replace'],'codex versions':[],'codex round':['force','model','keep'],facts:['limit'],'rule propose':['file','scope','kind','for'],'rule retire':['for'],'rule withdraw':[],'rule get':[],'rule list':['for','pending'],'rule diff':[],'rule export':['force'],'rule loaded':[],
+  'fact set':['source','checked-at','expect','answers','expires'],prune:['days','section','line-length'],'feedback add':['re'],'feedback list':['kind','author','all','limit','after'],'feedback close':['task','fact','dropped'],'fact get':[],'fact history':[],'codex accept':['replace'],'codex versions':[],'codex round':['force','model','keep'],facts:['limit'],'rule propose':['file','scope','kind','for'],'rule retire':['for'],'rule withdraw':[],'rule get':[],'rule list':['for','pending'],'rule diff':[],'rule export':['force'],'rule loaded':[],
   'wip show':[],'wip set':['current','next','notes','expect'],sessions:[], 'session register':['provider','session-id','pid','replace'],'session heartbeat':['session-id'],'session end':['session-id'],usage:['until'],
   stop:['all','timeout','no-wait','force'],'stop-status':['quiet','stop-file'],stopped:[],'resume-work':['all'],
   context:['brief','since','limit','line-length'],status:['line-length'],'job run':['kind','wait','no-wait','job-version','load','mem'],'job list':[],'job stats':[],stats:['since','role','day'],search:['type','owner','status','since','limit','phrase','prefix'],
@@ -344,7 +346,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     else if(command==='restore') {const source=arg('backup');empty();check(str('db'),'Restore requires explicit --db NEW_FILE');result=await a.restoreDatabase(source,db,{force:bool('force'),actor});}
     else if(command==='machine') {empty();result=a.machine();}
     else {
-      const reads=['watch-status','supervise assignment','supervise status','checkout list','checkout show','checkout resolve','brief show','job list','job stats','stats','tasks','show','blockers','humans','outbox','sent','fact get','fact history','rule get','rule list','rule diff','feedback list','codex versions','facts','wip show','sessions','roles','workspace settings','workspace wake-audit','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
+      const reads=['watch-status','supervise assignment','supervise status','checkout list','checkout show','checkout resolve','brief show','job list','job stats','stats','tasks','show','blockers','humans','outbox','sent','fact get','fact history','prune','rule get','rule list','rule diff','feedback list','codex versions','facts','wip show','sessions','roles','workspace settings','workspace wake-audit','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
       const readonly=reads.includes(command)||command==='retitle'&&!bool('apply')||command==='inbox'&&bool('peek')||['launch','import'].includes(command)&&bool('dry-run');
       store=new Store(db,actor,{readonly,managedWriteMode:command==='supervise reconcile'?'reconcile':command==='supervise ack'?'normal':command==='stopped'?'stop-ack':'normal'});
       const s=store;
@@ -454,7 +456,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         }
         case 'sent': case 'outbox': empty();result=c.outbox(s,{limit:num('limit')});break;
         case 'ack': {const messages=[arg('message'),...p.splice(0)];const rows=c.acknowledgeMany(s,messages);result=messages.length===1?rows[0]:rows;break;}
-        case 'fact set': {const key=arg('key'),answers=str('answers');const set=()=>c.setFact(s,key,{body:rest('fact'),source:need('source'),checked_at:str('checked-at'),expected_version:num('expect')});
+        case 'fact set': {const key=arg('key'),answers=str('answers');const set=()=>c.setFact(s,key,{body:rest('fact'),source:need('source'),checked_at:str('checked-at'),expected_version:num('expect'),expires:str('expires')});
           result=answers===undefined?set():s.tx(()=>{const fact=set();t.markFactAnswer(s,answers,{id:fact.id,key:fact.key});return {...fact,answers};});break;}
         case 'fact get': case 'fact history': {const key=arg('key');empty();result=command==='fact get'?c.facts(s,{key}):c.factHistory(s,key);break;}
         case 'feedback add': {const kind=arg('kind');result=fb.addFeedback(s,kind,rest('feedback'),{re:str('re')});break;}
@@ -497,6 +499,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'stopped': {const request=arg('stop request');empty();result=control.acknowledgeStop(s,request);break;}
         case 'resume-work': result=control.resumeWork(s,p.splice(0),{all:bool('all')});break;
         case 'usage': result=c.setUsage(s,rest('usage note'),str('until'));break;
+        case 'prune': empty();result=prune(s,{days:num('days'),sections:str('section')});break;
         case 'context': empty();result=c.context(s,{since:num('since'),limit:num('limit'),brief:bool('brief'),lineLength:num('line-length')});break;
         case 'supervise attended': empty();check(bool('attended'),'Attended execution requires --attended');check(!bool('json'),'Interactive attended execution cannot use --json');result=await attended.runAttended(s,need('role'));break;
         case 'supervise enroll': empty();result=attended.enrollAttended(s,need('role'),checkpointEvidence(need('file')));break;
@@ -575,7 +578,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'backup': {const path=arg('backup destination');empty();result=await a.backupDatabase(s,path);break;}
       }
     }
-    console.log(bool('json')?JSON.stringify(result):command==='context'?c.renderContext(result as c.ContextData):command==='humans'&&bool('brief')?t.renderHumanBrief(result as Parameters<typeof t.renderHumanBrief>[0],num('line-length')):command==='status'?a.renderStatus(result as Row,num('line-length')):humanOutput(result,command));
+    console.log(bool('json')?JSON.stringify(result):command==='context'?c.renderContext(result as c.ContextData):command==='prune'?renderPrune(result as PruneData,num('line-length')):command==='humans'&&bool('brief')?t.renderHumanBrief(result as Parameters<typeof t.renderHumanBrief>[0],num('line-length')):command==='status'?a.renderStatus(result as Row,num('line-length')):humanOutput(result,command));
   } catch(error) {
     const code=error instanceof AppError?error.code:typeof (error as NodeJS.ErrnoException)?.code==='string'&&(error as NodeJS.ErrnoException).code!.startsWith('ERR_PARSE_ARGS')?2:1;
     const message=error instanceof Error?error.message:'Unexpected failure';
