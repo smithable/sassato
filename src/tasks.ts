@@ -6,10 +6,10 @@ import { decideRuleProposal, exportRules, requireRulesLoaded, withdrawnRulePropo
 
 export const STATUSES = ['open', 'doing', 'blocked', 'review', 'done', 'dropped'] as const;
 export type TaskStatus = typeof STATUSES[number];
-const terminal = (row: Row): boolean => row.status === 'done' || row.status === 'dropped';
-const human = (s: Store): boolean => s.role(s.requireActor()).kind === 'human';
+export const terminal = (row: Row): boolean => row.status === 'done' || row.status === 'dropped';
+export const human = (s: Store): boolean => s.role(s.requireActor()).kind === 'human';
 const taskId = (row: Row): string => `T${row.id}`;
-const taskView = (row: Row): Row => ({ ...row, id: taskId(row), human_only: Boolean(row.human_only), review_required: Boolean(row.review_required), spare: Boolean(row.spare), stale: Boolean(row.lease_until && row.lease_until < now() && !terminal(row)) });
+export const taskView = (row: Row): Row => ({ ...row, id: taskId(row), human_only: Boolean(row.human_only), review_required: Boolean(row.review_required), spare: Boolean(row.spare), stale: Boolean(row.lease_until && row.lease_until < now() && !terminal(row)) });
 const blockerView = (row: Row): Row => ({ ...row, id: `B${row.id}`, task_id: `T${row.task_id}` });
 const questionView = (row: Row): Row => ({ ...row, id: `H${row.id}`, task_id: `T${row.task_id}`, blocker_id: `B${row.blocker_id}`, options: JSON.parse(row.options) });
 // What to ask for when a task is another role's: who can pass it on, and the command they run (T972).
@@ -20,22 +20,25 @@ function retarget(row: Row, actor: string): string {
   return `Ask ${who || 'a human'} to retarget it to you (sassato update ${id} --for ${actor} --expect ${row.version}), then take it.`;
 }
 const unownedEditor = (row: Row, actor: string): boolean => !row.owner && (row.creator === actor || (!row.human_only && row.for_role === actor));
-function writable(s: Store, row: Row): string {
+export function writable(s: Store, row: Row): string {
   const actor = s.requireActor();
   check(human(s) || row.owner === actor || unownedEditor(row, actor), `Only the owner, an unowned task's creator or target, or a human role may modify this task. ${retarget(row, actor)}`, 3);
   return actor;
 }
-function pendingHandoff(s:Store,row:Row):boolean {
+export function pendingHandoff(s:Store,row:Row):boolean {
   // Finalization names the exact pending event; one completion must not clear a
   // different outstanding request, nor keep blocking later unbound work forever.
   return Boolean(s.get(`SELECT p.id FROM events p WHERE p.workspace_id=? AND p.entity='task-handoff' AND p.entity_id=? AND p.action='pending'
     AND NOT EXISTS (SELECT 1 FROM events f WHERE f.workspace_id=p.workspace_id AND f.entity=p.entity AND f.entity_id=p.entity_id AND f.action='finalized' AND f.id>p.id
       AND CASE WHEN json_valid(f.detail) THEN json_extract(f.detail,'$.pending_event') END='E'||p.id) LIMIT 1`,s.ws,taskId(row)));
 }
+// A topic (T1419) is never work: it is noted, linked and closed with sas topic close, never taken.
+export const isTopic = (row: Row): boolean => row.kind === 'topic';
+function workOnly(row: Row): void { check(!isTopic(row), `${taskId(row)} is a topic: note it, link it, or close it with sas topic close`, 4); }
 function active(row: Row): void { check(!terminal(row), 'Task is closed; reopen it before changing work state', 4); }
 function executable(s: Store, row: Row): void { check(!row.human_only || human(s), 'Human-only work cannot be claimed or completed by an agent', 3); }
 function indexTask(s: Store, row: Row): void { s.index('task', taskId(row), row.title, row.body, { role: row.owner ?? row.for_role, status: row.status, updated_at: row.updated_at }); }
-function change(s: Store, row: Row, patch: Row, action: string, detail: Row = {}): Row {
+export function change(s: Store, row: Row, patch: Row, action: string, detail: Row = {}): Row {
   safe(patch); safe(detail);
   const values = { ...patch, version: row.version + 1, updated_at: now() };
   const keys = Object.keys(values);
@@ -106,7 +109,7 @@ export function addTask(s: Store, options: AddTaskOptions): Row {
   });
 }
 // spare: true lists only spare tasks, false only the others; unset lists both (T1102).
-export interface ListTaskOptions { status?: string; owner?: string; forRole?: string; available?: boolean; limit?: number; after?: string; spare?: boolean }
+export interface ListTaskOptions { status?: string; owner?: string; forRole?: string; available?: boolean; limit?: number; after?: string; spare?: boolean; kind?: string }
 function queryTasks(s: Store, options: ListTaskOptions, fetchLimit: number): Row[] {
   const clauses = ['t.workspace_id=?'], params: Param[] = [s.ws];
   if (options.status && options.status !== 'all') {
@@ -116,6 +119,9 @@ function queryTasks(s: Store, options: ListTaskOptions, fetchLimit: number): Row
   if (options.owner) { s.role(options.owner); clauses.push('t.owner=?'); params.push(options.owner); }
   if (options.forRole) { s.role(options.forRole); clauses.push('t.for_role=?'); params.push(options.forRole); }
   if (options.spare !== undefined) clauses.push(options.spare ? 't.spare=1' : 't.spare=0');
+  // Topics are listed only when asked for (T1419); available work is never a topic.
+  const kind = options.available ? 'work' : options.kind ?? 'work'; check(['work', 'topic', 'all'].includes(kind), 'Kind must be work, topic or all');
+  if (kind !== 'all') { clauses.push('t.kind=?'); params.push(kind); }
   if (options.after) { const cursor = s.task(options.after); clauses.push('(t.priority<? OR (t.priority=? AND t.id>?))'); params.push(cursor.priority, cursor.priority, cursor.id); }
   if (options.available) {
     const actor = s.requireActor();
@@ -155,7 +161,7 @@ export function showTask(s: Store, task: string, options: { historyLimit?: numbe
 }
 export function takeTask(s: Store, task: string, options: { hours?: number } = {}): Row {
   return s.tx(() => {
-    const row = s.task(task), actor = s.requireActor(); assertWorkAllowed(s, actor); executable(s, row);
+    const row = s.task(task), actor = s.requireActor(); workOnly(row); assertWorkAllowed(s, actor); executable(s, row);
     check(row.status === 'open', `Task is not open for claiming: ${notWorkable(s, row, 'take it')}`, 4);
     requireRulesLoaded(s, actor);
     check(!row.owner || row.owner === actor, 'Task is assigned to another role', 4);
@@ -166,7 +172,7 @@ export function takeTask(s: Store, task: string, options: { hours?: number } = {
 }
 export function renewTask(s: Store, task: string, options: { hours?: number } = {}): Row {
   return s.tx(() => {
-    const row = s.task(task); writable(s, row); executable(s, row); active(row);
+    const row = s.task(task); workOnly(row); writable(s, row); executable(s, row); active(row);
     check(row.owner && row.lease_until, 'Task has no claim to renew', 4);
     return change(s, row, { lease_until: lease(options.hours) }, 'renewed');
   });
@@ -176,7 +182,8 @@ export function renewTask(s: Store, task: string, options: { hours?: number } = 
 export function noteTask(s: Store, task: string, note: string): Row {
   return s.tx(() => {
     const row = s.task(task), actor = s.requireActor();
-    if (row.creator !== actor && row.for_role !== actor) writable(s, row);
+    // Any role notes an open topic; a closed one, like work, takes notes from its holder, creator or target.
+    if (!(isTopic(row) && !terminal(row)) && row.creator !== actor && row.for_role !== actor) writable(s, row);
     text(note, 'note'); return change(s, row, {}, 'note', { note });
   });
 }
@@ -223,7 +230,7 @@ export function updateTask(s: Store, task: string, options: UpdateTaskOptions): 
 }
 export function handoffTask(s: Store, task: string, to: string, note: string): Row {
   return s.tx(() => {
-    const row = s.task(task); writable(s, row); active(row); text(note, 'handoff summary');
+    const row = s.task(task); workOnly(row); writable(s, row); active(row); text(note, 'handoff summary');
     check(!pendingHandoff(s,row) && !s.get('SELECT id FROM checkout_bindings WHERE workspace_id=? AND task_id=? AND released_at IS NULL',s.ws,row.id),'Registered checkout handoff requires --brief-file FILE and --expect VERSION; ownership stays pending verified retirement',4);
     const target = s.role(to); check(!row.human_only || target.kind === 'human', 'Human-only work cannot be handed to an agent', 3);
     check(to !== row.owner, 'Task already belongs to this role', 4);
@@ -232,13 +239,13 @@ export function handoffTask(s: Store, task: string, to: string, note: string): R
   });
 }
 export function releaseTask(s: Store, task: string, note: string): Row {
-  return s.tx(() => { const row = s.task(task); writable(s, row); active(row); text(note, 'release reason'); check(!pendingHandoff(s,row) && !s.get('SELECT id FROM checkout_bindings WHERE workspace_id=? AND task_id=? AND released_at IS NULL',s.ws,row.id),'Bound work cannot be released before verified retirement and handoff reconciliation',4); return change(s, row, { owner: null, lease_until: null, status: blocking(s, row).some(b => b.kind !== 'dependency') ? 'blocked' : 'open', reviewed_by: null, review_note: null }, 'released', { note }); });
+  return s.tx(() => { const row = s.task(task); workOnly(row); writable(s, row); active(row); text(note, 'release reason'); check(!pendingHandoff(s,row) && !s.get('SELECT id FROM checkout_bindings WHERE workspace_id=? AND task_id=? AND released_at IS NULL',s.ws,row.id),'Bound work cannot be released before verified retirement and handoff reconciliation',4); return change(s, row, { owner: null, lease_until: null, status: blocking(s, row).some(b => b.kind !== 'dependency') ? 'blocked' : 'open', reviewed_by: null, review_note: null }, 'released', { note }); });
 }
 /** Submits work for review. reviewers names the roles a review is asked of (their waiters wake);
  *  without it the task's creator is asked, or every role when the owner created it. */
 export function submitTask(s: Store, task: string, note: string, reviewers?: string[]): Row {
   return s.tx(() => {
-    const row = s.task(task); writable(s, row); executable(s, row); text(note, 'submission summary');
+    const row = s.task(task); workOnly(row); writable(s, row); executable(s, row); text(note, 'submission summary');
     check(row.status === 'doing', 'Only doing work can be submitted for review', 4); unblocked(s, row);
     const asked = [...new Set((reviewers ?? []).map(r => r.trim()).filter(Boolean))];
     for (const r of asked) { s.role(r); check(r !== row.owner || s.role(r).kind === 'human', `${r} owns ${task} and cannot review it`, 3); }
@@ -247,7 +254,7 @@ export function submitTask(s: Store, task: string, note: string, reviewers?: str
 }
 export function reviewTask(s: Store, task: string, options: { approve: boolean; note: string; expected_version: number }): Row {
   return s.tx(() => {
-    const row = s.task(task), actor = s.requireActor(); text(options.note, 'review explanation');
+    const row = s.task(task), actor = s.requireActor(); workOnly(row); text(options.note, 'review explanation');
     const expected = integer(options.expected_version, 'expected version', 1);
     check(row.version === expected, 'Task changed; reload it and review the current version', 4);
     check(row.status === 'review', 'Task is not awaiting review', 4);
@@ -258,7 +265,8 @@ export function reviewTask(s: Store, task: string, options: { approve: boolean; 
   });
 }
 function completeTask(s: Store, row: Row, options: { ref?: string }, allowOpen: boolean): Row {
-  writable(s, row); executable(s, row);
+  // Every way to finish work (done, answer --close) refuses a topic: it closes with topic close.
+  workOnly(row); writable(s, row); executable(s, row);
   check(row.status === 'doing' || row.status === 'review' || (allowOpen && row.status === 'open' && !row.lease_until), row.status === 'blocked' ? `Cannot complete: ${notWorkable(s, row, 'take it and complete it')}` : row.status === 'done' || row.status === 'dropped' ? `Cannot complete: ${taskId(row)} is already ${row.status}` : 'Claim the task before completing it, or reconcile eligible imported/human-only work', 4);
   unblocked(s, row);
   check(!row.review_required || row.reviewed_by, 'This task needs an approved review before completion', 4);
@@ -267,7 +275,7 @@ function completeTask(s: Store, row: Row, options: { ref?: string }, allowOpen: 
 }
 export function doneTask(s: Store, task: string, options: { ref?: string } = {}): Row {
   return s.tx(() => {
-    const row = s.task(task), actor = s.requireActor(), isHuman = human(s);
+    const row = s.task(task), actor = s.requireActor(), isHuman = human(s); workOnly(row);
     // Imported status is historical: an authorized editor may reconcile finished work without
     // manufacturing a new claim. Ordinary open agent work still requires take.
     const imported = s.get("SELECT 1 FROM events WHERE workspace_id=? AND entity='task' AND entity_id=? AND action='imported' LIMIT 1", s.ws, task);
@@ -277,9 +285,14 @@ export function doneTask(s: Store, task: string, options: { ref?: string } = {})
 }
 export function dropTask(s: Store, task: string, note: string): Row {
   return s.tx(() => {
-    const row = s.task(task), actor = writable(s, row); active(row); text(note, 'drop reason');
-    const normalizedTask = taskId(row);
-    const at = now(), cancelled: string[] = [];
+    const row = s.task(task); workOnly(row); const actor = writable(s, row); active(row); text(note, 'drop reason');
+    const at = now(), cancelled = cancelPending(s, row, actor, note, at);
+    return change(s, row, { status: 'dropped', lease_until: null, completed_at: at }, 'dropped', { note, cancelled_questions: cancelled });
+  });
+}
+/** Closing work or a topic cancels its pending questions and resolves their blockers. */
+export function cancelPending(s: Store, row: Row, actor: string, note: string, at: string): string[] {
+    const normalizedTask = taskId(row), cancelled: string[] = [];
     for (const question of s.all("SELECT q.*,b.waiting_on,b.body AS blocker_body FROM questions q JOIN blockers b ON b.workspace_id=q.workspace_id AND b.id=q.blocker_id WHERE q.workspace_id=? AND q.task_id=? AND q.status='pending' ORDER BY q.id", s.ws, row.id)) {
       const questionId = `H${question.id}`, blockerId = `B${question.blocker_id}`;
       s.run("UPDATE questions SET status='cancelled',cancelled_at=?,cancelled_by=?,cancel_reason=? WHERE workspace_id=? AND id=?", at, actor, note, s.ws, question.id);
@@ -289,18 +302,18 @@ export function dropTask(s: Store, task: string, note: string): Row {
       s.event('question', questionId, 'cancelled', { task: normalizedTask, blocker: blockerId, reason: note });
       cancelled.push(questionId);
     }
-    return change(s, row, { status: 'dropped', lease_until: null, completed_at: at }, 'dropped', { note, cancelled_questions: cancelled });
-  });
+    return cancelled;
 }
 export function reopenTask(s: Store, task: string, note: string): Row {
   return s.tx(() => {
     const row = s.task(task); writable(s, row); check(terminal(row), 'Task is already open', 4); text(note, 'reopen reason');
-    return change(s, row, { status: blocking(s, row).some(b => b.kind !== 'dependency') ? 'blocked' : 'open', lease_until: null, completed_at: null, reviewed_by: null, review_note: null }, 'reopened', { note });
+    // A topic is never blocked: reopened, it is open again.
+    return change(s, row, { status: !isTopic(row) && blocking(s, row).some(b => b.kind !== 'dependency') ? 'blocked' : 'open', lease_until: null, completed_at: null, reviewed_by: null, review_note: null }, 'reopened', { note });
   });
 }
 export function addDependency(s: Store, task: string, after: string): Row {
   return s.tx(() => {
-    const row = s.task(task), dependency = s.task(after); writable(s, row); active(row);
+    const row = s.task(task), dependency = s.task(after); workOnly(row); workOnly(dependency); writable(s, row); active(row);
     check(row.id !== dependency.id, 'A task cannot depend on itself', 4);
     const cycle = s.get('WITH RECURSIVE ancestors(id) AS (SELECT depends_on FROM dependencies WHERE workspace_id=? AND task_id=? UNION SELECT d.depends_on FROM dependencies d JOIN ancestors a ON d.task_id=a.id WHERE d.workspace_id=?) SELECT 1 FROM ancestors WHERE id=? LIMIT 1', s.ws, dependency.id, s.ws, row.id);
     check(!cycle, 'Dependency would create a cycle', 4);
@@ -311,26 +324,29 @@ export function addDependency(s: Store, task: string, after: string): Row {
 }
 export function removeDependency(s: Store, task: string, after: string): Row {
   return s.tx(() => {
-    const row = s.task(task), dependency = s.task(after); writable(s, row); active(row);
+    const row = s.task(task), dependency = s.task(after); workOnly(row); workOnly(dependency); writable(s, row); active(row);
     check(s.run('DELETE FROM dependencies WHERE workspace_id=? AND task_id=? AND depends_on=?', s.ws, row.id, dependency.id).changes === 1, 'Dependency does not exist', 4);
     return change(s, row, { reviewed_by: null, review_note: null }, 'dependency-removed', { depends_on: after });
   });
 }
 export interface BlockOptions { kind: string; waitingOn: string; body: string }
 export function blockTask(s: Store, task: string, options: BlockOptions): Row {
-  return s.tx(() => {
-    const row = s.task(task), actor = writable(s, row); active(row);
-    check(['agent', 'human', 'external', 'other'].includes(options.kind), 'Blocker kind must be agent, human, external or other; use after for dependencies');
-    text(options.waitingOn, 'waiting on', 500); text(options.body, 'blocker');
-    if (options.kind === 'agent' || options.kind === 'human') {
-      const role = s.role(options.waitingOn);
-      check(role.kind === options.kind, `Waiting role must be ${options.kind}`);
-    }
-    const at = now(), n = s.run('INSERT INTO blockers(workspace_id,task_id,kind,waiting_on,body,created_by,created_at) VALUES(?,?,?,?,?,?,?)', s.ws, row.id, options.kind, options.waitingOn, options.body, actor, at).lastInsertRowid;
-    s.index('blocker', `B${n}`, `${task} waits on ${options.waitingOn}`, options.body, { role: options.waitingOn, status: 'open', updated_at: at });
-    change(s, row, { status: 'blocked', reviewed_by: null, review_note: null }, 'blocked', { blocker: `B${n}`, ...options });
-    return blockerView(s.get('SELECT * FROM blockers WHERE workspace_id=? AND id=?', s.ws, n)!);
-  });
+  return s.tx(() => { const row = s.task(task); workOnly(row); return block(s, row, options, writable(s, row)); });
+}
+// A question on a topic keeps its blocker for the human queue, but the topic stays open (T1419).
+function block(s: Store, row: Row, options: BlockOptions, actor: string): Row {
+  const task = taskId(row);
+  active(row);
+  check(['agent', 'human', 'external', 'other'].includes(options.kind), 'Blocker kind must be agent, human, external or other; use after for dependencies');
+  text(options.waitingOn, 'waiting on', 500); text(options.body, 'blocker');
+  if (options.kind === 'agent' || options.kind === 'human') {
+    const role = s.role(options.waitingOn);
+    check(role.kind === options.kind, `Waiting role must be ${options.kind}`);
+  }
+  const at = now(), n = s.run('INSERT INTO blockers(workspace_id,task_id,kind,waiting_on,body,created_by,created_at) VALUES(?,?,?,?,?,?,?)', s.ws, row.id, options.kind, options.waitingOn, options.body, actor, at).lastInsertRowid;
+  s.index('blocker', `B${n}`, `${task} waits on ${options.waitingOn}`, options.body, { role: options.waitingOn, status: 'open', updated_at: at });
+  change(s, row, isTopic(row) ? {} : { status: 'blocked', reviewed_by: null, review_note: null }, isTopic(row) ? 'topic-question' : 'blocked', { blocker: `B${n}`, ...options });
+  return blockerView(s.get('SELECT * FROM blockers WHERE workspace_id=? AND id=?', s.ws, n)!);
 }
 function restoredState(s: Store, task: Row, at: string): Row {
   // Existing transition events retain the status before the first blocker. Skip
@@ -388,12 +404,12 @@ export interface AskOptions { question: string; options?: string[]; recommendati
 // askedBy: the role that asked, when a human records a question relayed for it (recordAnswered).
 export function askHuman(s: Store, task: string, options: AskOptions, askedBy?: string): Row {
   return s.tx(() => {
-    const row = s.task(task), actor = writable(s, row); active(row); text(options.question, 'question');
+    const row = s.task(task), actor = isTopic(row) ? s.requireActor() : writable(s, row); active(row); text(options.question, 'question');
     const choices = options.options ?? []; check(Array.isArray(choices) && choices.length <= 20, 'At most 20 options are allowed'); for (const choice of choices) text(choice, 'option', 2000);
     if (options.recommendation !== undefined) text(options.recommendation, 'recommendation', 5000);
     if (options.command !== undefined) text(options.command, 'command', 10_000);
     const recipient = humanRole(s, options.forRole);
-    const blocker = blockTask(s, task, { kind: 'human', waitingOn: recipient, body: options.question });
+    const blocker = block(s, row, { kind: 'human', waitingOn: recipient, body: options.question }, actor);
     const at = now(), n = s.run('INSERT INTO questions(workspace_id,task_id,blocker_id,asked_by,question,options,recommendation,command,created_at) VALUES(?,?,?,?,?,?,?,?,?)', s.ws, row.id, id(blocker.id, 'B'), askedBy ?? actor, options.question, JSON.stringify(choices), options.recommendation ?? null, options.command ?? null, at).lastInsertRowid;
     const question = s.get('SELECT * FROM questions WHERE workspace_id=? AND id=?', s.ws, n)!;
     s.index('question', `H${n}`, options.question, JSON.stringify({ options: choices, recommendation: options.recommendation, command: options.command }), { role: recipient, status: 'pending', updated_at: at });
@@ -522,8 +538,9 @@ export function humanBrief(s: Store, options: { forRole?: string } = {}): { for_
     const holds = (taskNumber: number, question: boolean): string[] => {
       const held: string[] = [];
       if (question) {
-        const t = s.get("SELECT id,owner,for_role FROM tasks WHERE workspace_id=? AND id=? AND status NOT IN ('done','dropped')", s.ws, taskNumber);
-        const who = [t?.owner, t?.for_role].find((r) => r && agents.has(r));
+        const t = s.get("SELECT id,owner,for_role,kind FROM tasks WHERE workspace_id=? AND id=? AND status NOT IN ('done','dropped')", s.ws, taskNumber);
+        // No work waits on a topic: its question can wait.
+        const who = t?.kind === 'topic' ? undefined : [t?.owner, t?.for_role].find((r) => r && agents.has(r));
         if (who) held.push(`T${taskNumber} (${who})`);
       }
       for (const d of s.all("SELECT t.id,t.owner,t.for_role FROM dependencies d JOIN tasks t ON t.workspace_id=d.workspace_id AND t.id=d.task_id WHERE d.workspace_id=? AND d.depends_on=? AND t.status NOT IN ('done','dropped') ORDER BY t.id", s.ws, taskNumber)) {

@@ -194,7 +194,7 @@ or model calls. Do not install a development build against a live coordination d
 | `show T1 [--limit N] [--before-event NUMBER]` | Body, blockers, dependencies, questions and latest 100 audit events by default |
 | `take T1 [--hours 4]` | Atomically claim eligible open work; lease 1–168 hours |
 | `renew T1 [--hours 4]` | Renew owned lease, including stale lease |
-| `note T1 TEXT` | Append a note to owned work, or as the task's creator or target to work another role holds; can annotate closed work |
+| `note T1 TEXT` | Append a note to owned work, or as the task's creator or target to work another role holds; can annotate closed work. Any role notes a topic |
 | `update T1 --expect VERSION [--title TEXT] [--body TEXT] [--priority N\|now\|normal] [--for ROLE\|none]` | Reject stale client versions; only a human moves a task into or out of 90 and above |
 | `handoff T1 ROLE SUMMARY` | Transfer ownership/target with notification; recipient explicitly claims |
 | `release T1 REASON` | Remove ownership/lease, keep routing target; clear --for separately if needed |
@@ -264,6 +264,30 @@ never wakes anyone, is never ready work, and needs no check first whether it is 
   `context --brief`; nobody else sees a feedback section.
 - `show K1` prints one record, `search` finds feedback text (`--type feedback`), and `export` writes
   `feedback.md`.
+
+## Topics (T1419)
+
+A topic is a task of kind `topic`: a shared page for planning, research and decisions. It is never
+offered, taken or woken for as work, and closes only into named follow-ups or with a reason a human
+acknowledged. The design is in [topics.md](topics.md).
+
+| Command | Meaning |
+| - | - |
+| `topic add TITLE [--body TEXT] [--keeper ROLE] [--link T1,H1,fact:KEY,owner/repo#N,PATH]` | Any role opens a topic; its keeper (`for_role`) is the creator unless named. Wakes nobody |
+| `topic from T1` | An open, held or blocked task that is not human-only, unowned or held by the caller and without dependencies, becomes a topic. It keeps its id, notes and questions; the caller becomes its keeper |
+| `topics [--all]` | One line per open topic: id, title, keeper, days since its last event, its pending questions and its linked tasks with their status. `--all` adds closed ones |
+| `topic link T1 TARGET [--label TEXT]` / `topic unlink T1 L1` | Any role adds or removes a link. A removed link stays in the record as `removed`; a follow-up is never removed |
+| `topic close T1 --into T2,fact:KEY,…` | The keeper, the creator or a human closes it as `done` into existing work tasks or facts; each becomes a follow-up link |
+| `topic close T1 --reason TEXT [--acknowledged H1]` | Closes it as `dropped`. `H1` is an answered question on this topic; a human role may close it without one |
+| `tasks --kind topic\|all` | Lists topics beside work; `tasks` alone lists work only |
+
+- On a topic, `take`, `renew`, `handoff`, `release`, `submit`, `review`, `done`, `drop`, `block` and
+  `after` are refused (exit 4): "T… is a topic: note it, link it, or close it with sas topic close".
+  `ask-human` works as on work, and its question is listed under "Can wait" in `humans`.
+- Closing a topic cancels its pending questions and resolves its blockers.
+- A note, a link or a question on a topic gives its keeper a quiet wake entry. `context` shows
+  `Topics: N open (M pending questions)`, and `context --since` a `topics` row for each topic the role
+  keeps or has noted that another role changed.
 
 ## Rules (T1276)
 
@@ -389,8 +413,9 @@ mark it `expired`. In `context` a fact with an expiry shows it as `until=DATE`. 
 by default.
 
 **Prune listing.** `sas prune` reads one snapshot, writes nothing and may be run by any role. Its
-sections are `quiet-review`, `names-merged-pr`, `old-questions`, `same-title`, `expired-facts`,
-`dated-facts` and `marked-facts`; `unchecked-facts` (not checked for 30 days) is listed only when
+sections are `quiet-review`, `quiet-topics` (an open topic with no event for 30 days, a fixed age), `names-merged-pr`,
+`old-questions`, `same-title`, `expired-facts`, `dated-facts` and `marked-facts` (topics are left out of
+`quiet-review` and `names-merged-pr`); `unchecked-facts` (not checked for 30 days) is listed only when
 named with `--section`. `--days` is the quiet age, default 7. Each line gives the id, its age, its
 holder or key, a short text and the rule that matched; `--json` gives `{days, sections}`.
 

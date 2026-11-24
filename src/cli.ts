@@ -12,6 +12,7 @@ import * as t from './tasks.js';
 import { prune, renderPrune, type PruneData } from './prune.js';
 import * as c from './coordination.js';
 import * as fb from './feedback.js';
+import * as tp from './topics.js';
 import * as rules from './rules.js';
 import * as st from './stats.js';
 import { timeTable, formatTimeTable } from './stats-time.js';
@@ -90,6 +91,10 @@ Rules:      rule propose KEY (--file PATH | TEXT) [--scope all|ROLE] [--kind alw
             (asks the human; the answer 1 approve or 2 reject decides; relays: workspace set --rule-relays)
             rule retire KEY REASON [--for HUMAN] | rule withdraw P1 REASON (its proposer or a human)
             rule get KEY|P1 | rule list [--for ROLE] [--pending] | rule diff SET_VERSION | rule export [--force --as HUMAN] | rule loaded SET_VERSION DIGEST SESSION
+Topics:     topic add TITLE [--body TEXT] [--keeper ROLE] [--link T1,H1,fact:KEY,owner/repo#N,PATH] (wakes nobody)
+            topics [--all] | topic from T1 | topic link T1 TARGET [--label TEXT] | topic unlink T1 L1
+            topic close T1 --into T2,fact:KEY,… | --reason TEXT [--acknowledged H1] (keeper, creator or a human)
+            tasks --kind topic|all lists topics beside work; notes on a topic are open to every role
 Feedback:   feedback add workflow|tokens|untested|sampleusers|sassato TEXT [--re T1] (one line; wakes nobody)
             feedback list [--kind K] [--author ROLE] [--all] [--limit N] [--after K1]
             feedback close K1 --task T1 | --fact KEY | --dropped REASON (a human, or a role in --feedback-closers)
@@ -134,13 +139,13 @@ select workspace when not explicit. Writes require --as; human actions require a
 Lists default to bounded results; --limit N. Context never consumes inbox receipts.
 Exit codes: 0 success/no matches; 1 storage/runtime; 2 input; 3 identity/access; 4 conflict; 5 mail-wait timeout.
 `;
-export const strings = ['expires','section','days','reviewer','feedback-closers','nudge-minutes','nudge-escalate','waiting-for','expect-minutes','author','fact','dropped','spare-work','spare-providers','new','asked','remote','epoch','role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes','digest-skip','ack','autocompact','advisor','wake-mode','speed','wake-roles','urgency','reason','scored-receipt','idle-receipt','day','rule-relays','scope'];
+export const strings = ['keeper','link','label','into','acknowledged','expires','section','days','reviewer','feedback-closers','nudge-minutes','nudge-escalate','waiting-for','expect-minutes','author','fact','dropped','spare-work','spare-providers','new','asked','remote','epoch','role','line-length','settle','settle-max','generation','repo','cache','diff','brief-file','mode','file','job-version','open-work-roles','load','mem','db','workspace','as','config','default-human','import-timezone','humans','launch','provider','model','effort','permission-mode','sandbox','approval','dir','kind','body','title','for','owner','priority','status','limit','hours','expect','ref','note','waits-on','task','chain','options','recommend','command','re','state','source','checked-at','current','next','notes','session-id','pid','until','since','type','backlog','wip','actions','sessions','confirm','terminal','distro','window','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','timeout','before-event','after','evidence','cursor','relayed-by','on','answers','idle-minutes','digest-skip','ack','autocompact','advisor','wake-mode','speed','wake-roles','urgency','reason','scored-receipt','idle-receipt','day','rule-relays','scope'];
 export const booleans = ['watched','close-stale','spare','no-spare','pending','untouched','unread','attended','now','json','help','version','human-only','agent-allowed','review-required','no-review','available','approve','reject','peek','replace','brief','phrase','prefix','dry-run','fresh','resume','all','no-prompt','new-window','force','no-wait','wait','keep','urgent','needs-reply','close','repair','interactive','no-interactive','quiet','apply'];
 export const globalFlags = ['db','workspace','as','json','help'];
 export const allowed: Record<string,string[]> = {
   'index build':['repo','cache'],'index update':['repo','cache','diff'],'index find':['repo','cache','limit'],'index show':['repo','cache','limit'],
   init:['config','humans','interactive','no-interactive','launch','dry-run','fresh','resume','no-prompt','terminal','distro','window','stop-file','new-window'], 'workspace attach':[], 'workspace settings':[], 'workspace wake-audit':['limit'], 'workspace set':['default-human','import-timezone','stop-file','busy-checks','import-answer-markers','import-role-aliases','import-timezone-aliases','open-work-roles','digest-skip','wake-mode','speed','wake-roles','spare-work','spare-providers','feedback-closers','rule-relays','nudge-minutes','nudge-escalate'],roles:[], 'role set':['provider','model','effort','permission-mode','sandbox','approval','dir','kind','autocompact','advisor'],
-  add:['title','body','for','owner','priority','human-only','review-required','spare'],tasks:['status','owner','for','available','limit','after','spare'],show:['limit','before-event'],
+  add:['title','body','for','owner','priority','human-only','review-required','spare'],tasks:['status','owner','for','available','limit','after','spare','kind'],topics:['all'],'topic add':['body','keeper','link'],'topic from':[],'topic link':['label'],'topic unlink':[],'topic close':['into','reason','acknowledged'],show:['limit','before-event'],
   take:['hours'],renew:['hours'],note:[],update:['expect','title','body','priority','for','human-only','agent-allowed','review-required','no-review','spare','no-spare'],handoff:['brief-file','expect'],release:[],submit:['reviewer'],review:['approve','reject','note','expect'],done:['ref'],drop:[],reopen:[],after:[],unafter:[],block:['kind','waits-on','on'],blockers:['task','chain','limit','all'],resolve:[],
   'ask-human':['for','options','recommend','command','new'],answer:['close','relayed-by','asked','on','new'],withdraw:[],humans:['for','limit','untouched','brief','line-length'],send:['re','urgent','needs-reply','now','urgency','reason'],wait:['urgent','timeout','stop-file','since','idle-minutes','settle','settle-max'],inbox:['peek','state','limit','unread'],wake:['pending','since','ack','timeout','stop-file','idle-minutes','settle','settle-max','waiting-for','expect-minutes'],'idle-reason':[],outbox:['limit'],sent:['limit'],retitle:['owner','apply'],ack:[],
   'fact set':['source','checked-at','expect','answers','expires'],prune:['days','section','line-length'],'feedback add':['re'],'feedback list':['kind','author','all','limit','after'],'feedback close':['task','fact','dropped'],'fact get':[],'fact history':[],'codex accept':['replace'],'codex versions':[],'codex round':['force','model','keep'],facts:['limit'],'rule propose':['file','scope','kind','for'],'rule retire':['for'],'rule withdraw':[],'rule get':[],'rule list':['for','pending'],'rule diff':[],'rule export':['force'],'rule loaded':[],
@@ -305,7 +310,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (bool('version')) {const build=JSON.parse(readFileSync(new URL('./build-info.json',import.meta.url),'utf8'));console.log(bool('json')?JSON.stringify({...build,schema:SCHEMA_VERSION}):`${build.version} (build ${build.build})`);return;}
     const p=[...positionals];let command=p.shift()!;
     if (command==='task') command=p.shift()??'tasks';
-    if (['workspace','role','fact','rule','feedback','session','job','checkout','brief','index','codex'].includes(command)) command+=' '+(p.shift()??'');
+    if (['workspace','role','fact','rule','feedback','topic','session','job','checkout','brief','index','codex'].includes(command)) command+=' '+(p.shift()??'');
     if (command==='supervise') command+=' '+(p.shift()??(bool('attended')?'attended':'status'));
     if (command==='checkpoint' || command==='progress') command+=' '+(p.shift()??'show');
     // wip get is an alias of wip show, which prints the version that wip set --expect takes.
@@ -346,7 +351,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     else if(command==='restore') {const source=arg('backup');empty();check(str('db'),'Restore requires explicit --db NEW_FILE');result=await a.restoreDatabase(source,db,{force:bool('force'),actor});}
     else if(command==='machine') {empty();result=a.machine();}
     else {
-      const reads=['watch-status','supervise assignment','supervise status','checkout list','checkout show','checkout resolve','brief show','job list','job stats','stats','tasks','show','blockers','humans','outbox','sent','fact get','fact history','prune','rule get','rule list','rule diff','feedback list','codex versions','facts','wip show','sessions','roles','workspace settings','workspace wake-audit','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
+      const reads=['watch-status','supervise assignment','supervise status','checkout list','checkout show','checkout resolve','brief show','job list','job stats','stats','tasks','topics','show','blockers','humans','outbox','sent','fact get','fact history','prune','rule get','rule list','rule diff','feedback list','codex versions','facts','wip show','sessions','roles','workspace settings','workspace wake-audit','wait','stop-status','context','status','search','export','doctor','checkpoint show','progress show'];
       const readonly=reads.includes(command)||command==='retitle'&&!bool('apply')||command==='inbox'&&bool('peek')||['launch','import'].includes(command)&&bool('dry-run');
       store=new Store(db,actor,{readonly,managedWriteMode:command==='supervise reconcile'?'reconcile':command==='supervise ack'?'normal':command==='stopped'?'stop-ack':'normal'});
       const s=store;
@@ -395,8 +400,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           if(advisorValue!==undefined)result={...(result as Row),advisor:setRoleAdvisor(s,role,advisorValue)};
           break;}
         case 'add': {const title=str('title')??rest('title');empty();result=t.addTask(s,{title,body:str('body'),owner:str('owner'),forRole:str('for'),priority:num('priority'),humanOnly:bool('human-only'),reviewRequired:bool('review-required'),spare:bool('spare')||undefined});break;}
-        case 'tasks': empty();result=t.listTaskPage(s,{status:str('status'),owner:str('owner'),forRole:str('for'),available:bool('available'),limit:num('limit'),after:str('after'),spare:bool('spare')||undefined});break;
-        case 'show': {const task=arg('task');empty();result=task.startsWith('T')?t.showTask(s,task,{historyLimit:num('limit'),beforeEvent:num('before-event')}):a.showRecord(s,task);break;}
+        case 'tasks': empty();result=t.listTaskPage(s,{status:str('status'),owner:str('owner'),forRole:str('for'),available:bool('available'),limit:num('limit'),after:str('after'),spare:bool('spare')||undefined,kind:str('kind')});break;
+        case 'show': {const task=arg('task');empty();result=task.startsWith('T')?t.showTask(s,task,{historyLimit:num('limit'),beforeEvent:num('before-event')}):a.showRecord(s,task);if((result as Row).kind==='topic'){const v=tp.showTopic(s,task);result={...(result as Row),links:v.links,pending_questions:v.pending_questions};}break;}
         case 'retitle': empty();result=retitleImportedTasks(s,{owner:str('owner'),apply:bool('apply')});break;
         case 'take': case 'renew': {const task=arg('task');empty();result=(command==='take'?t.takeTask:t.renewTask)(s,task,{hours:num('hours')});break;}
         case 'submit': {const task=arg('task'),note=rest('note');result=t.submitTask(s,task,note,str('reviewer')?.split(','));break;}
@@ -461,6 +466,12 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'fact get': case 'fact history': {const key=arg('key');empty();result=command==='fact get'?c.facts(s,{key}):c.factHistory(s,key);break;}
         case 'feedback add': {const kind=arg('kind');result=fb.addFeedback(s,kind,rest('feedback'),{re:str('re')});break;}
         case 'feedback list': empty();result=fb.listFeedback(s,{kind:str('kind'),author:str('author'),all:bool('all'),limit:num('limit'),after:str('after')});break;
+        case 'topics': empty();result=tp.listTopics(s,{all:bool('all')});break;
+        case 'topic add': {const title=rest('title');result=tp.addTopic(s,{title,body:str('body'),keeper:str('keeper'),links:str('link')?.split(',').map(v=>v.trim()).filter(Boolean)});break;}
+        case 'topic from': {const task=arg('task');empty();result=tp.topicFrom(s,task);break;}
+        case 'topic link': {const task=arg('task'),target=arg('link');empty();result=tp.linkTopic(s,task,target,str('label'));break;}
+        case 'topic unlink': {const task=arg('task'),link=arg('link id');empty();result=tp.unlinkTopic(s,task,link);break;}
+        case 'topic close': {const task=arg('task');empty();result=tp.closeTopic(s,task,{into:str('into')?.split(',').map(v=>v.trim()).filter(Boolean),reason:str('reason'),acknowledged:str('acknowledged')});break;}
         case 'feedback close': {const k=arg('feedback');empty();result=fb.closeFeedback(s,k,{task:str('task'),fact:str('fact'),dropped:str('dropped')});break;}
         case 'rule propose': {const key=arg('key'),file=str('file');let body:string;
           if(file!==undefined){const fd=openSync(file,'r');try{check(fstatSync(fd).size<=65536,'--file is larger than 64 KiB');body=readFileSync(fd,'utf8');}finally{closeSync(fd);}check(p.length===0,'Give the rule text with --file or as words, not both');}
@@ -578,7 +589,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'backup': {const path=arg('backup destination');empty();result=await a.backupDatabase(s,path);break;}
       }
     }
-    console.log(bool('json')?JSON.stringify(result):command==='context'?c.renderContext(result as c.ContextData):command==='prune'?renderPrune(result as PruneData,num('line-length')):command==='humans'&&bool('brief')?t.renderHumanBrief(result as Parameters<typeof t.renderHumanBrief>[0],num('line-length')):command==='status'?a.renderStatus(result as Row,num('line-length')):humanOutput(result,command));
+    console.log(bool('json')?JSON.stringify(result):command==='context'?c.renderContext(result as c.ContextData):command==='prune'?renderPrune(result as PruneData,num('line-length')):command==='topics'?tp.renderTopics(result as Row[]):command==='humans'&&bool('brief')?t.renderHumanBrief(result as Parameters<typeof t.renderHumanBrief>[0],num('line-length')):command==='status'?a.renderStatus(result as Row,num('line-length')):humanOutput(result,command));
   } catch(error) {
     const code=error instanceof AppError?error.code:typeof (error as NodeJS.ErrnoException)?.code==='string'&&(error as NodeJS.ErrnoException).code!.startsWith('ERR_PARSE_ARGS')?2:1;
     const message=error instanceof Error?error.message:'Unexpected failure';

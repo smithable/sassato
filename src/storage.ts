@@ -8,7 +8,7 @@ import { assertManagedIdentity,assertManagedWrite,type ManagedCredentials,type M
 // SQLite rows deliberately stay flexible at this small adapter boundary.
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 17;
 export function databasePath(value?: string): string {
   const path = resolve(value ?? process.env.SASSATO_DB ?? `${process.env.XDG_DATA_HOME ?? `${homedir()}/.local/share`}/sassato/sassato.db`);
   let ancestor = path;
@@ -145,7 +145,8 @@ export class Store {
       if (current === 12) { this.db.exec(MIGRATION_13); current = 13; }
       if (current === 13) { this.db.exec(MIGRATION_14); current = 14; }
       if (current === 14) { this.db.exec(MIGRATION_15); current = 15; }
-      if (current === 15) this.db.exec(MIGRATION_16);
+      if (current === 15) { this.db.exec(MIGRATION_16); current = 16; }
+      if (current === 16) this.db.exec(MIGRATION_17);
     });
   }
   private cancelClosedQuestions(): void {
@@ -391,4 +392,11 @@ const MIGRATION_16 = `
 ALTER TABLE facts ADD COLUMN expires_at TEXT;
 INSERT INTO schema_migrations VALUES(16,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 PRAGMA user_version=16;
+`;
+const MIGRATION_17 = `
+ALTER TABLE tasks ADD COLUMN kind TEXT NOT NULL DEFAULT 'work' CHECK(kind IN ('work','topic'));
+CREATE TABLE topic_links(id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id INTEGER NOT NULL REFERENCES workspaces(id), topic_id INTEGER NOT NULL, target TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', follow_up INTEGER NOT NULL DEFAULT 0 CHECK(follow_up IN (0,1)), status TEXT NOT NULL DEFAULT 'linked' CHECK(status IN ('linked','removed')), added_by TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(workspace_id,id), FOREIGN KEY(workspace_id,topic_id) REFERENCES tasks(workspace_id,id));
+CREATE INDEX topic_links_topic ON topic_links(workspace_id,topic_id,status);
+INSERT INTO schema_migrations VALUES(17,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+PRAGMA user_version=17;
 `;

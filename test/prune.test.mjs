@@ -110,7 +110,7 @@ test('prune lists each rule\'s case, leaves the near miss out, and writes nothin
   const listing = prune(s);
   assert.equal(s.get('SELECT count(*) n FROM events').n, events, 'prune writes no event');
   const sec = listing.sections;
-  assert.deepEqual(Object.keys(sec), ['quiet-review', 'names-merged-pr', 'old-questions', 'same-title', 'expired-facts', 'dated-facts', 'marked-facts']);
+  assert.deepEqual(Object.keys(sec), ['quiet-review', 'quiet-topics', 'names-merged-pr', 'old-questions', 'same-title', 'expired-facts', 'dated-facts', 'marked-facts']);
   // The question's task is blocked on it and quiet for 9 days, so it is listed too.
   assert.deepEqual(ids(sec['quiet-review']), [quiet.id, qt.id]);
   assert.deepEqual(ids(sec['names-merged-pr']).sort(), [merged.id, submitted.id].sort());
@@ -175,7 +175,7 @@ test('migration 16 adds the expiry and keeps every fact without one', (t) => {
   let s = new Store(path, undefined, { create: true }); initWorkspace(s, 'team', undefined, ['alice']); s.actor = 'builder';
   setFact(s, 'decisions.host', { body: 'host chosen', source: 'chat' }); s.close();
   const db = new DatabaseSync(path);
-  db.exec("BEGIN; ALTER TABLE facts DROP COLUMN expires_at; DELETE FROM schema_migrations WHERE version>=16; PRAGMA user_version=15; COMMIT;");
+  db.exec("BEGIN; DROP INDEX topic_links_topic; DROP TABLE topic_links; ALTER TABLE tasks DROP COLUMN kind; ALTER TABLE facts DROP COLUMN expires_at; DELETE FROM schema_migrations WHERE version>=16; PRAGMA user_version=15; COMMIT;");
   db.close();
   assert.throws(() => new Store(path, undefined, { readonly: true }), /migrat/);
   s = new Store(path); s.actor = 'builder'; s.use('team');

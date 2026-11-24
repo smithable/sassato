@@ -111,7 +111,7 @@ export function observeRepository(directory:string|null):RepositoryEvidence {
 
 /** Called under the checkpoint transaction, including task IDs routed to this role. */
 export function observeTasks(s:Store,role:string):TaskEvidence {
-  const predicate="workspace_id=? AND (owner=? OR for_role=?) AND status NOT IN ('done','dropped')";
+  const predicate="workspace_id=? AND kind='work' AND (owner=? OR for_role=?) AND status NOT IN ('done','dropped')";
   const total=Number(s.get(`SELECT count(*) AS n FROM tasks WHERE ${predicate}`,s.ws,role,role)!.n);
   const items=s.all(`SELECT id,version,status,owner,for_role FROM tasks WHERE ${predicate} ORDER BY id LIMIT 100`,s.ws,role,role).map(row=>({id:`T${row.id}`,version:Number(row.version),status:String(row.status),owner:row.owner as string|null,for_role:row.for_role as string|null}));
   return {items,total,truncated:total>items.length};
