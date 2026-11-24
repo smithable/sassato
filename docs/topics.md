@@ -51,7 +51,7 @@ A topic has no owner and no lease, and is never `doing`, `review` or `blocked`. 
 | `topic link T TARGET [--label TEXT]` / `topic unlink T L…` | Any role adds or removes a link. |
 | `note T TEXT` | On a topic, **any role** may note it, agent or human. |
 | `ask-human T …` | As today: the question is recorded on the topic and shows in `humans`. |
-| `topic close T --into T2[,fact:KEY…]` | The keeper, the creator or a human closes it as `done` into tasks of kind `work` or facts that exist. Each becomes a follow-up link. A pull request alone is not a follow-up. |
+| `topic close T --into T2[,fact:KEY…]` | The keeper, the creator or a human closes it as `done` into tasks of kind `work` that were not dropped, or facts that exist. Each becomes a follow-up link. A pull request alone is not a follow-up. |
 | `topic close T --reason TEXT --acknowledged H…` | Closes it as `dropped`. `H…` must be an answered question on this topic. A human role may close it this way without `--acknowledged`. |
 | `show T` | Adds `kind`, the links, the follow-ups and the pending questions. |
 | `reopen T NOTE` / `update T` | As for work: a closed topic reopens as `open`, and its title or body may change while open. Neither wakes anyone as work. |

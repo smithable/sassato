@@ -92,6 +92,8 @@ test('close --into needs existing work or facts; --reason needs an answered ques
   s.actor='b';
   assert.throws(()=>closeTopic(s,topic.id,{into:['T999']}),e=>e.code===3);
   assert.throws(()=>closeTopic(s,topic.id,{into:[other.id]}),code(4));
+  const abandoned=addTask(s,{title:'Abandoned'});dropTask(s,abandoned.id,'not needed');
+  assert.throws(()=>closeTopic(s,topic.id,{into:[work.id,abandoned.id]}),e=>e.code===4&&/was dropped/.test(e.message),'a dropped task is not a follow-up');
   assert.throws(()=>closeTopic(s,topic.id,{into:['smithable/sassato#91']}),e=>e.code===2,'a pull request alone is not a follow-up');
   assert.throws(()=>closeTopic(s,topic.id,{into:[work.id],reason:'x'}),e=>e.code===2);
   const pending=askHuman(s,topic.id,{question:'Sign them?',forRole:'human'});
