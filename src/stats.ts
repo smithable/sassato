@@ -110,6 +110,10 @@ export function stats(s: Store, options: StatsOptions = {}): Row {
       .map(q => ({ question: `H${q.id}`, task: `T${q.task_id}`, asked_by: q.asked_by, minutes: minutes(q.created_at, q.answered_at ?? now), open: q.status === 'pending' }))
       .sort((a, b) => b.minutes - a.minutes);
 
+    // Refused take, note and done, kept apart because a refusal writes nothing else (T1387).
+    const refusals = s.all(`SELECT role, verb, task, reason, code, created_at FROM refusals WHERE workspace_id=? AND created_at>=? ${role ? 'AND role=?' : ''} ORDER BY id DESC`, ...[s.ws, since, ...(role ? [role] : [])])
+      .map(r => ({ role: r.role, verb: r.verb, task: r.task, reason: r.reason, code: r.code, at: r.created_at }));
+
     return {
       since: since || null, role: role ?? null, generated_at: now,
       mail_unread: { by_role: unreadByRole, longest: longestUnread },
@@ -118,8 +122,9 @@ export function stats(s: Store, options: StatsOptions = {}): Row {
       idle_with_work: idleWithWork,
       reviews: { ...summary(reviews as Wait[]), longest: reviews.slice(0, NAMED) },
       human_questions: { ...summary(questions as Wait[]), longest: questions.slice(0, NAMED) },
+      refused_writes: { count: refusals.length, by_role: countBy(refusals, 'role'), by_verb: countBy(refusals, 'verb'), latest: refusals.slice(0, NAMED) },
       not_stored: [
-        'refused writes (take, note, done refused by sassato): a refusal writes nothing, so it cannot be counted',
+        'refused writes before schema 19 (take, note, done): a refusal wrote nothing then',
         'which mail a wake digest listed, before 0.1.3: older saved cursors do not name it, so those deliveries are listed as unknown',
         'how long a role was idle with work before its first own-work wake after a restart, and idle time with no wake at all (a waiter not armed)',
       ],
@@ -167,6 +172,9 @@ export function formatStats(r: Row): string {
     lines.push('', `${title}: ${w.count} · median ${span(w.median_minutes)} · longest ${span(w.longest_minutes)}${w.open ? ` · ${w.open} open` : ''}`);
     for (const x of w.longest) lines.push(`  ${who(x)}: ${span(x.minutes)}${open(x)}`);
   }
+  const refused = r.refused_writes;
+  lines.push('', `Refused take, note and done: ${refused.count}${refused.count ? ` (${Object.entries(refused.by_role).map(([k, v]) => `${k} ${v}`).join(', ')})` : ''}`);
+  for (const x of refused.latest) lines.push(`  ${x.at} ${x.role} ${x.verb} ${x.task}: ${x.reason}`);
   lines.push('', 'Not stored, so not counted:', ...r.not_stored.map((x: string) => `  ${x}`));
   return lines.join('\n');
 }

@@ -175,7 +175,7 @@ test('migration 16 adds the expiry and keeps every fact without one', (t) => {
   let s = new Store(path, undefined, { create: true }); initWorkspace(s, 'team', undefined, ['alice']); s.actor = 'builder';
   setFact(s, 'decisions.host', { body: 'host chosen', source: 'chat' }); s.close();
   const db = new DatabaseSync(path);
-  db.exec("BEGIN; DROP TABLE schedule_ticks; DROP TABLE occurrences; DROP INDEX schedules_due; DROP TABLE schedules; DROP INDEX topic_links_topic; DROP TABLE topic_links; ALTER TABLE tasks DROP COLUMN kind; ALTER TABLE facts DROP COLUMN expires_at; DELETE FROM schema_migrations WHERE version>=16; PRAGMA user_version=15; COMMIT;");
+  db.exec("BEGIN; DROP INDEX refusals_time; DROP TABLE refusals; DROP TABLE schedule_ticks; DROP TABLE occurrences; DROP INDEX schedules_due; DROP TABLE schedules; DROP INDEX topic_links_topic; DROP TABLE topic_links; ALTER TABLE tasks DROP COLUMN kind; ALTER TABLE facts DROP COLUMN expires_at; DELETE FROM schema_migrations WHERE version>=16; PRAGMA user_version=15; COMMIT;");
   db.close();
   assert.throws(() => new Store(path, undefined, { readonly: true }), /migrat/);
   s = new Store(path); s.actor = 'builder'; s.use('team');

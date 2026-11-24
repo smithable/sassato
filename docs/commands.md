@@ -1037,7 +1037,8 @@ it reads current task states, so it shows what still applies, not every past wak
 ### Stats (read-only)
 
 `sas stats [--since DATE] [--role ROLE]` counts, from stored records: mail unread times, urgent mail not
-acknowledged, mail a cursor passed unread, idle with ready work, and review and question waits.
+acknowledged, mail a cursor passed unread, idle with ready work, review and question waits, and refused
+`take`, `note` and `done` (per role and verb, with the five latest and their reasons; kept from schema 19).
 
 `sas stats --day DATE [--role ROLE]` shows where each agent role's day went, in the machine's time zone,
 minute by minute, summing to the part of the day gone:

@@ -1,5 +1,5 @@
 import { type Store, type Row, type Param } from './storage.js';
-import { check, text, safe, integer, id, now } from './errors.js';
+import { AppError, check, text, safe, integer, id, now } from './errors.js';
 import { assertWorkAllowed } from './control.js';
 import { humanRole } from './humans.js';
 import { decideRuleProposal, exportRules, requireRulesLoaded, withdrawnRuleProposal } from './rules.js';
@@ -572,4 +572,14 @@ export function renderHumanBrief(data: { for_role: string | null; blocks_work: R
     `Blocks work (${data.blocks_work.length}), oldest first:`, ...data.blocks_work.map(line),
     `Can wait (${data.can_wait.length}), oldest first:`, ...data.can_wait.map(line),
   ].join('\n');
+}
+
+/** A take, note or done that sassato refused writes nothing, so the refusal is kept apart for `stats` (T1387).
+ * Only a known role's refusal is kept; when even that write is refused, the original refusal still stands. */
+export function recordRefusal(s: Store, verb: 'take' | 'note' | 'done', task: string, error: unknown): void {
+  if (!(error instanceof AppError) || !s.actor) return;
+  try {
+    s.role(s.actor);
+    s.tx(() => s.run('INSERT INTO refusals(workspace_id,role,verb,task,reason,code,created_at) VALUES(?,?,?,?,?,?,?)', s.ws, s.actor, verb, task.slice(0, 32), error.message.slice(0, 500), error.code, now()));
+  } catch { /* the refusal itself is what the caller reports */ }
 }

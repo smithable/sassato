@@ -8,7 +8,7 @@ import { assertManagedIdentity,assertManagedWrite,type ManagedCredentials,type M
 // SQLite rows deliberately stay flexible at this small adapter boundary.
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
-export const SCHEMA_VERSION = 18;
+export const SCHEMA_VERSION = 19;
 export function databasePath(value?: string): string {
   const path = resolve(value ?? process.env.SASSATO_DB ?? `${process.env.XDG_DATA_HOME ?? `${homedir()}/.local/share`}/sassato/sassato.db`);
   let ancestor = path;
@@ -147,7 +147,8 @@ export class Store {
       if (current === 14) { this.db.exec(MIGRATION_15); current = 15; }
       if (current === 15) { this.db.exec(MIGRATION_16); current = 16; }
       if (current === 16) { this.db.exec(MIGRATION_17); current = 17; }
-      if (current === 17) this.db.exec(MIGRATION_18);
+      if (current === 17) { this.db.exec(MIGRATION_18); current = 18; }
+      if (current === 18) this.db.exec(MIGRATION_19);
     });
   }
   private cancelClosedQuestions(): void {
@@ -409,4 +410,10 @@ CREATE TABLE occurrences(id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id INTE
 CREATE TABLE schedule_ticks(workspace_id INTEGER PRIMARY KEY REFERENCES workspaces(id), last_tick_at TEXT NOT NULL, last_actor TEXT NOT NULL);
 INSERT INTO schema_migrations VALUES(18,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 PRAGMA user_version=18;
+`;
+const MIGRATION_19 = `
+CREATE TABLE refusals(id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id INTEGER NOT NULL REFERENCES workspaces(id), role TEXT NOT NULL, verb TEXT NOT NULL CHECK(verb IN ('take','note','done')), task TEXT NOT NULL, reason TEXT NOT NULL, code INTEGER NOT NULL, created_at TEXT NOT NULL);
+CREATE INDEX refusals_time ON refusals(workspace_id,created_at);
+INSERT INTO schema_migrations VALUES(19,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+PRAGMA user_version=19;
 `;
