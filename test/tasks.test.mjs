@@ -469,3 +469,16 @@ test('a fact marks the human task it answers; the human queue says so and closin
   assert.match(queued.answered_in, /^F1 \(decisions\.host\)/);
   expectCode(() => tasks.doneTask(s, decision.id), 3);
 });
+
+test('a blocked task\'s take and done refusals name what holds it (T1417)', t => {
+  const { s } = fixture(t);
+  const task = tasks.addTask(s, { title: 'Wait for the publish' });
+  const b = tasks.blockTask(s, task.id, { kind: 'external', waitingOn: 'docs-publish', body: 'Check the headers after the publish' });
+  assert.throws(() => tasks.takeTask(s, task.id), e => e.code === 4 && e.message === `Task is not open for claiming: ${task.id} is blocked by ${b.id} (external, waiting on docs-publish): when it no longer holds, sas resolve B… REASON, then take it`);
+  assert.throws(() => tasks.doneTask(s, task.id), e => e.code === 4 && e.message.startsWith(`Cannot complete: ${task.id} is blocked by ${b.id} (external, waiting on docs-publish)`) && e.message.endsWith('then take it and complete it'));
+  // Status and blockers disagree: said plainly, not as "claim it first".
+  s.run("UPDATE blockers SET status='resolved' WHERE workspace_id=? AND task_id=?", s.ws, Number(task.id.slice(1)));
+  assert.throws(() => tasks.takeTask(s, task.id), /is blocked with no open blocker, which should not happen/);
+  const other = tasks.addTask(s, { title: 'Plain' }); tasks.takeTask(s, other.id); tasks.doneTask(s, other.id);
+  assert.throws(() => tasks.takeTask(s, other.id), /Task is not open for claiming: T\d+ is done/);
+});
