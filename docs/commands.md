@@ -303,11 +303,11 @@ design, and what this first step leaves out, is in [recurring-tasks.md](recurrin
 | `schedule list [--due] [--all]` | The last tick, overdue count, and per schedule its rule, next time and last occurrence. `--due` only those due now, `--all` adds archived ones |
 | `schedule show C1 [--limit N]` | The schedule and its occurrences, newest first |
 | `schedule preview C1 [--count N]` | The next due times, in UTC and local time. No side effects |
-| `schedule edit C1 --expect REVISION [--title\|--body\|--for\|--human-only\|a new rule]` | A human changes it from now on; due times not yet ticked are recorded as `superseded`, never issued under the new revision |
+| `schedule edit C1 --expect REVISION [--title\|--body\|--for ROLE\|none\|--human-only\|--agent-allowed\|a new rule]` | A human changes it from now on; due times not yet ticked are recorded as `superseded`, never issued under the new revision |
 | `schedule pause C1 --expect REVISION --reason TEXT` | Any role; issues nothing until resumed |
 | `schedule resume C1 --expect REVISION` | A human; the times passed while paused are recorded as `skipped` |
 | `schedule archive C1 --expect REVISION --reason TEXT` | A human; history and issued tasks stay |
-| `schedule tick` | Issues what is due: one task per schedule for the whole missed range, or a `coalesced` record while its last task is still open. A role under STOP is left due |
+| `schedule tick` | Issues what is due: one task per schedule for the whole missed range, or a `coalesced` record while its last task is still open. A role under STOP is left due, and so is a schedule that cannot issue (listed under `deferred` with the reason) |
 
 ## Rules (T1276)
 

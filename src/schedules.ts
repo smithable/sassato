@@ -14,7 +14,7 @@ export type Rule =
   | { kind: 'interval'; minutes: number; anchor: string };
 export interface RuleOptions { once?: string; daily?: boolean; weekly?: string; at?: string; tz?: string; every?: string | number; anchor?: string }
 export interface ScheduleOptions extends RuleOptions { title: string; body?: string; forRole?: string; humanOnly?: boolean }
-export interface EditOptions extends RuleOptions { expect: string | number; title?: string; body?: string; forRole?: string; humanOnly?: boolean }
+export interface EditOptions extends RuleOptions { expect: string | number; title?: string; body?: string; forRole?: string | null; humanOnly?: boolean }
 
 const DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 const MIN = 60_000, DAY = 86_400_000, HISTORY = 50;
@@ -120,11 +120,12 @@ const occurrenceView = (row: Row): Row => ({
   task: row.task_id ? `T${row.task_id}` : null, task_status: row.task_status ?? null, created_at: row.created_at,
 });
 
-function template(s: Store, o: { title?: string; body?: string; forRole?: string; humanOnly?: boolean }, current?: Row): void {
+function template(s: Store, o: { title?: string; body?: string; forRole?: string | null; humanOnly?: boolean }, current?: Row): void {
   if (o.title !== undefined) text(o.title, 'title', 400);
   if (o.body !== undefined) { safe(o.body); check(o.body.length <= 50_000 && !o.body.includes('\0'), 'Body must be at most 50000 characters without NUL'); }
-  const role = o.forRole ?? current?.for_role, humanOnly = o.humanOnly ?? Boolean(current?.human_only);
+  const role = o.forRole === undefined ? current?.for_role : o.forRole, humanOnly = o.humanOnly ?? Boolean(current?.human_only);
   if (role) check(!humanOnly || s.role(role).kind === 'human', 'Human-only items must be for a human', 3);
+  if (o.forRole) s.role(o.forRole);
 }
 
 function slotsUntil(rule: Rule, first: number, until: number): { last: number; slots: number; next: number | null } {
@@ -240,6 +241,7 @@ export function archiveSchedule(s: Store, schedule: string, o: { expect: string 
     check(human(s), 'Only a human archives a schedule', 3);
     check(row.state !== 'archived', `C${row.id} is already archived`, 4);
     expectRevision(row, o.expect); text(o.reason, 'reason', 1000);
+    settleOverdue(s, row, 'skipped', at);
     return changed(s, row, { state: 'archived', state_reason: o.reason, next_due: null, revision: row.revision + 1, updated_by: actor, updated_at: at }, 'archived');
   });
 }
@@ -269,21 +271,29 @@ export function tickSchedules(s: Store): Row {
       if (row.for_role && s.get('SELECT 1 FROM stop_requests WHERE workspace_id=? AND role=? AND cleared_at IS NULL', s.ws, row.for_role)) {
         deferred.push({ schedule: `C${row.id}`, due_at: row.next_due, reason: `${row.for_role} is stopped` }); continue;
       }
-      const rule = ruleOf(row), first = Date.parse(row.next_due), { last, slots, next } = slotsUntil(rule, first, t);
-      const prior = s.get("SELECT o.task_id,t.status,t.for_role,t.human_only FROM occurrences o JOIN tasks t ON t.workspace_id=o.workspace_id AND t.id=o.task_id WHERE o.workspace_id=? AND o.schedule_id=? AND o.status='issued' ORDER BY o.id DESC LIMIT 1", s.ws, row.id);
-      // Coalesce only into an open task for the same audience; a template now for someone else gets its own task.
-      const same = prior && (prior.for_role ?? null) === (row.for_role ?? null) && prior.human_only === row.human_only;
-      if (prior && same && !['done', 'dropped'].includes(prior.status)) coalesced.push(record(s, row, first, last, slots, 'coalesced', prior.task_id, at));
-      else {
-        const when = slots > 1 ? `${civil(rule, iso(first))} to ${civil(rule, iso(last))}, ${slots} due times` : civil(rule, iso(first));
-        const task = addTask(s, {
-          title: `${row.title} (due ${civil(rule, iso(last))})`,
-          body: `${row.body ? `${row.body}\n\n` : ''}From schedule C${row.id} (revision ${row.revision}): due ${when}.`,
-          forRole: row.for_role ?? undefined, humanOnly: Boolean(row.human_only),
-        });
-        issued.push(record(s, row, first, last, slots, 'issued', Number(String(task.id).slice(1)), at));
+      // Each schedule in its own savepoint: one that cannot issue (its role changed kind) is left due, the rest go on.
+      s.db.exec('SAVEPOINT schedule_tick');
+      try {
+        const rule = ruleOf(row), first = Date.parse(row.next_due), { last, slots, next } = slotsUntil(rule, first, t);
+        const prior = s.get("SELECT o.task_id,t.status,t.for_role,t.human_only FROM occurrences o JOIN tasks t ON t.workspace_id=o.workspace_id AND t.id=o.task_id WHERE o.workspace_id=? AND o.schedule_id=? AND o.status='issued' ORDER BY o.id DESC LIMIT 1", s.ws, row.id);
+        // Coalesce only into an open task for the same audience; a template now for someone else gets its own task.
+        const same = prior && (prior.for_role ?? null) === (row.for_role ?? null) && prior.human_only === row.human_only;
+        if (prior && same && !['done', 'dropped'].includes(prior.status)) coalesced.push(record(s, row, first, last, slots, 'coalesced', prior.task_id, at));
+        else {
+          const when = slots > 1 ? `${civil(rule, iso(first))} to ${civil(rule, iso(last))}, ${slots} due times` : civil(rule, iso(first));
+          const task = addTask(s, {
+            title: `${row.title} (due ${civil(rule, iso(last))})`,
+            body: `${row.body ? `${row.body}\n\n` : ''}From schedule C${row.id} (revision ${row.revision}): due ${when}.`,
+            forRole: row.for_role ?? undefined, humanOnly: Boolean(row.human_only),
+          });
+          issued.push(record(s, row, first, last, slots, 'issued', Number(String(task.id).slice(1)), at));
+        }
+        s.run('UPDATE schedules SET next_due=? WHERE workspace_id=? AND id=?', next === null ? null : iso(next), s.ws, row.id);
+        s.db.exec('RELEASE schedule_tick');
+      } catch (error) {
+        s.db.exec('ROLLBACK TO schedule_tick'); s.db.exec('RELEASE schedule_tick');
+        deferred.push({ schedule: `C${row.id}`, due_at: row.next_due, reason: error instanceof Error ? error.message : String(error) });
       }
-      s.run('UPDATE schedules SET next_due=? WHERE workspace_id=? AND id=?', next === null ? null : iso(next), s.ws, row.id);
     }
     s.run('INSERT INTO schedule_ticks(workspace_id,last_tick_at,last_actor) VALUES(?,?,?) ON CONFLICT(workspace_id) DO UPDATE SET last_tick_at=excluded.last_tick_at,last_actor=excluded.last_actor', s.ws, at, actor);
     return { at, issued, coalesced, deferred };

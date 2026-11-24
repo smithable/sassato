@@ -226,6 +226,24 @@ test('review points: a template edit is prospective, a new audience gets its own
   assert.equal(tickSchedules(s).coalesced[0].due_at,'2027-01-04T12:00:00.000Z');
 });
 
+test('final read: one schedule that cannot issue leaves the rest; archive records due times; template flags can be cleared',t=>{
+  const {s}=fixture(t);
+  const broken=addSchedule(s,{title:'For a human',every:60,forRole:'human',humanOnly:true});
+  addSchedule(s,{title:'Fine',every:60});
+  s.run("UPDATE schedules SET for_role='a' WHERE id=1");
+  mock.timers.tick(HOUR);
+  const out=tickSchedules(s);
+  assert.deepEqual([out.issued.length,out.issued[0].schedule,out.deferred[0].schedule],[1,'C2','C1']);
+  assert.match(out.deferred[0].reason,/Human-only/);
+  assert.deepEqual([showSchedule(s,'C1').history.length,listSchedules(s).schedules.find(r=>r.id==='C1').next_due],[0,'2027-01-04T07:00:00.000Z'],'nothing of C1 is kept');
+  assert.throws(()=>editSchedule(s,broken.id,{expect:1,forRole:'nobody'}),/Unknown role nobody/,'an AppError, not a foreign-key failure');
+  const cleared=editSchedule(s,broken.id,{expect:1,forRole:null,humanOnly:false});
+  assert.deepEqual([cleared.for_role,cleared.human_only],[null,false]);
+  mock.timers.tick(HOUR);
+  archiveSchedule(s,'C2',{expect:1,reason:'done with it'});
+  assert.deepEqual(['status','slots'].map(k=>showSchedule(s,'C2').history[0][k]),['skipped',1]);
+});
+
 test('impossible calendar dates are refused',t=>{
   fixture(t);
   for(const once of ['2027-02-30T12:00:00Z','2027-04-31T12:00:00Z','2027-13-01T12:00:00Z'])assert.throws(()=>parseRule({once},Date.now()),coded(2),once);
