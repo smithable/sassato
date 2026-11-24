@@ -21,6 +21,41 @@ export const cutTitle = (title: string) => title.toLowerCase().replace(/^\s*(low
 export const saysMerged = (note: string) => /(#\d+|\/pull\/\d+)/.test(note) && /\bmerged\b/i.test(note)
   && !/\b(not|never|once|until|when|after|before|if|unmerged)\b[^.;]{0,40}\bmerged\b|n't[^.;]{0,40}\bmerged\b/i.test(note);
 export interface PruneData { days: number; sections: Record<string, Row[]> }
+
+// Every task closed since a time, with what it led to (T1447): its last note, drop reason or done reference.
+// A result names a merged pull request or another task; a row with neither is marked for the daily read.
+export const namesResult = (note: string, self: string) => saysMerged(note) || [...note.matchAll(/\bT(\d+)\b/g)].some((m) => `T${m[1]}` !== self);
+export interface ClosedData { since: string; items: Row[]; has_more: boolean }
+export function closedSince(s: Store, options: { since: string; owner?: string; forRole?: string; limit?: number }): ClosedData {
+  check(Number.isFinite(Date.parse(options.since)), 'Use --closed-since with a date or a time, such as 2026-11-24 or 2026-11-24T06:00:00Z', 2);
+  const since = new Date(options.since).toISOString(), limit = integer(options.limit ?? 1000, 'limit', 1, 5000);
+  return s.snapshot(() => {
+    if (options.owner) s.role(options.owner);
+    if (options.forRole) s.role(options.forRole);
+    const rows = s.all(`SELECT t.id,t.title,t.status,t.owner,t.for_role,t.completed_at FROM tasks t WHERE t.workspace_id=? AND t.kind='work' AND t.status IN ('done','dropped') AND t.completed_at>=?${options.owner ? ' AND t.owner=?' : ''}${options.forRole ? ' AND t.for_role=?' : ''} ORDER BY t.completed_at,t.id LIMIT ?`,
+      s.ws, since, ...(options.owner ? [options.owner] : []), ...(options.forRole ? [options.forRole] : []), limit + 1);
+    const items = rows.slice(0, limit).map((r) => {
+      const self = `T${r.id}`;
+      const texts = s.all("SELECT action,detail FROM events WHERE workspace_id=? AND entity='task' AND entity_id=? AND action IN ('note','dropped','completed') ORDER BY id DESC LIMIT 20", s.ws, self)
+        .map((e) => { const d = JSON.parse(e.detail); return String((e.action === 'completed' ? d.ref : d.note) ?? '').trim(); }).filter(Boolean);
+      const result = texts[0] ?? '';
+      return { id: self, status: r.status, closed_at: r.completed_at, holder: r.owner ?? r.for_role ?? null, title: clip(r.title), result: clip(result, 400), names_result: namesResult(result, self) };
+    });
+    return { since, items, has_more: rows.length > limit };
+  });
+}
+export function renderClosed(data: ClosedData, lineLength = 160): string {
+  integer(lineLength, 'line length', 60, 1000);
+  const without = data.items.filter((r) => !r.names_result).length;
+  const lines = [`Closed since ${data.since}: ${data.items.length} task(s), ${without} naming no result (no merged pull request, no task).`];
+  for (const r of data.items) {
+    const head = `${r.names_result ? '  ' : '! '}${r.id} · ${r.status} ${String(r.closed_at).slice(0, 16).replace('T', ' ')}${r.holder ? ` · ${r.holder}` : ''} · ${r.title} → `;
+    const text = r.result || '(no note)', room = Math.max(lineLength - head.length, 20);
+    lines.push(head + (text.length > room ? `${text.slice(0, room - 1)}…` : text));
+  }
+  if (data.has_more) lines.push('More closed tasks exist: raise --limit or narrow --closed-since.');
+  return lines.join('\n');
+}
 export function prune(s: Store, options: { days?: number; sections?: string } = {}): PruneData {
   const quiet = integer(options.days ?? 7, 'days', 1, 3650);
   const wanted = options.sections === undefined ? [...DEFAULT_SECTIONS] : options.sections.split(',');

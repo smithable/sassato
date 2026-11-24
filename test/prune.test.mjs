@@ -9,7 +9,7 @@ import { Store, SCHEMA_VERSION } from '../dist/storage.js';
 import { initWorkspace, search } from '../dist/admin.js';
 import { setFact, facts, factHistory, context, renderContext } from '../dist/coordination.js';
 import * as tasks from '../dist/tasks.js';
-import { prune, renderPrune, cutTitle, saysMerged } from '../dist/prune.js';
+import { prune, renderPrune, cutTitle, saysMerged, closedSince, renderClosed, namesResult } from '../dist/prune.js';
 
 const cli = resolve('bin/sassato.js');
 const DAY = 86_400_000;
@@ -183,4 +183,34 @@ test('migration 16 adds the expiry and keeps every fact without one', (t) => {
   assert.equal(s.get('PRAGMA user_version').user_version, SCHEMA_VERSION);
   const f = facts(s, { key: 'decisions.host' })[0];
   assert.equal(f.body, 'host chosen'); assert.equal(f.expires_at, null); assert.equal(f.expired, false);
+});
+
+test('tasks --closed-since: every task closed since a time, its result, and a mark on one naming none', (t) => {
+  const { s, db } = fixture(t);
+  const old = tasks.addTask(s, { title: 'Closed long ago' }); tasks.takeTask(s, old.id); tasks.doneTask(s, old.id);
+  s.run("UPDATE tasks SET completed_at=? WHERE workspace_id=? AND id=?", ago(3), s.ws, Number(old.id.slice(1)));
+  const since = ago(1);
+  const merged = tasks.addTask(s, { title: 'Merged work' }); tasks.takeTask(s, merged.id); tasks.noteTask(s, merged.id, 'Merged as #12 at abc123'); tasks.doneTask(s, merged.id);
+  const ref = tasks.addTask(s, { title: 'Done with a ref' }); tasks.takeTask(s, ref.id); tasks.noteTask(s, ref.id, 'PR #13 merged'); tasks.doneTask(s, ref.id, { ref: 'read only, nothing changed' });
+  const follow = tasks.addTask(s, { title: 'Led to a task' }); tasks.dropTask(s, follow.id, 'duplicate; the work is T1');
+  const self = tasks.addTask(s, { title: 'Names only itself' }); tasks.takeTask(s, self.id); tasks.noteTask(s, self.id, `${self.id}: looked, not merged yet`); tasks.doneTask(s, self.id);
+  const bare = tasks.addTask(s, { title: 'No note at all' }); tasks.takeTask(s, bare.id); tasks.doneTask(s, bare.id);
+  const openTask = tasks.addTask(s, { title: 'Still open' }); tasks.noteTask(s, openTask.id, 'Merged as #14');
+  const data = closedSince(s, { since });
+  assert.deepEqual(data.items.map((r) => [r.id, r.status, r.names_result]), [
+    [merged.id, 'done', true], [ref.id, 'done', false], [follow.id, 'dropped', true], [self.id, 'done', false], [bare.id, 'done', false],
+  ], 'the newest text is the result: a done reference after a merged note replaces it');
+  assert.equal(data.items[1].result, 'read only, nothing changed');
+  assert.equal(data.items[4].result, '');
+  assert.equal(namesResult('Not merged: #15 waits', 'T9'), false);
+  const text = renderClosed(data, 120);
+  assert.match(text, /^Closed since .*: 5 task\(s\), 3 naming no result/);
+  assert.match(text, new RegExp(`\\n! ${bare.id} · done .* · No note at all → \\(no note\\)`));
+  assert.match(text, new RegExp(`\\n  ${merged.id} · done `));
+  assert.deepEqual(closedSince(s, { since, limit: 2 }).has_more, true);
+  assert.throws(() => closedSince(s, { since: 'yesterday' }), /--closed-since/);
+  const r = raw(db, ['tasks', '--closed-since', since, '--json']);
+  assert.equal(r.status, 0, r.stderr); assert.equal(JSON.parse(r.stdout).items.length, 5);
+  const mixed = raw(db, ['tasks', '--closed-since', since, '--status', 'done']);
+  assert.equal(mixed.status, 2); assert.match(mixed.stderr, /takes --owner, --for, --limit and --line-length only/);
 });
