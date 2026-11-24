@@ -63,7 +63,7 @@ export function civil(rule: Rule, at: string): string {
   return `${new Date(t + offset(tz, t)).toISOString().slice(0, 16).replace('T', ' ')} ${tz}`;
 }
 
-function strictInstant(value: string, label: string): string {
+export function strictInstant(value: string, label: string): string {
   const [y, m, d] = value.slice(0, 10).split('-').map(Number), day = new Date(0); day.setUTCFullYear(y!, m! - 1, d!);
   check(INSTANT.test(value) && Number.isFinite(Date.parse(value)) && day.getUTCMonth() === m! - 1 && day.getUTCDate() === d,
     `${label} needs an ISO instant with Z or an offset, such as 2027-01-15T12:00:00Z`);
