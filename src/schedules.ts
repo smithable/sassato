@@ -263,9 +263,16 @@ export function previewSchedule(s: Store, schedule: string, count = 5): Row {
  * record against that task and no new wake. A schedule whose role is stopped is left due. A second
  * tick finds nothing due; a clock set back finds the cursor ahead of it.
  */
+// Schedules a tick under a clock ahead of this one advanced: their recorded range ends after now,
+// so their next due time is held there until the clock reaches it (T1445). Nothing is duplicated.
+function heldAhead(s: Store, at: string): Row[] {
+  return s.all("SELECT 'C'||schedule_id AS schedule, MAX(last_due_at) AS until FROM occurrences WHERE workspace_id=? GROUP BY schedule_id HAVING MAX(last_due_at)>? ORDER BY schedule_id", s.ws, at).map(r => ({ schedule: r.schedule, until: r.until }));
+}
+
 export function tickSchedules(s: Store): Row {
   return s.tx(() => {
     const actor = s.requireActor(), at = now(), t = Date.parse(at);
+    const before = s.get('SELECT last_tick_at FROM schedule_ticks WHERE workspace_id=?', s.ws)?.last_tick_at as string | undefined;
     const issued: Row[] = [], coalesced: Row[] = [], deferred: Row[] = [];
     for (const row of s.all("SELECT * FROM schedules WHERE workspace_id=? AND state='active' AND next_due IS NOT NULL AND next_due<=? ORDER BY next_due,id", s.ws, at)) {
       if (row.for_role && s.get('SELECT 1 FROM stop_requests WHERE workspace_id=? AND role=? AND cleared_at IS NULL', s.ws, row.for_role)) {
@@ -297,7 +304,10 @@ export function tickSchedules(s: Store): Row {
       }
     }
     s.run('INSERT INTO schedule_ticks(workspace_id,last_tick_at,last_actor) VALUES(?,?,?) ON CONFLICT(workspace_id) DO UPDATE SET last_tick_at=excluded.last_tick_at,last_actor=excluded.last_actor', s.ws, at, actor);
-    return { at, issued, coalesced, deferred };
+    const held = heldAhead(s, at);
+    // Shown only when a clock was ahead: an earlier tick later than now, or a range recorded past now.
+    const ahead = before && before > at || held.length ? { clock_ahead: { last_tick_at: before && before > at ? before : null, held } } : {};
+    return { at, issued, coalesced, deferred, ...ahead };
   });
 }
 
@@ -310,7 +320,8 @@ export function listSchedules(s: Store, o: { all?: boolean; due?: boolean } = {}
       const last = s.get('SELECT o.*,t.status AS task_status FROM occurrences o LEFT JOIN tasks t ON t.workspace_id=o.workspace_id AND t.id=o.task_id WHERE o.workspace_id=? AND o.schedule_id=? ORDER BY o.id DESC LIMIT 1', s.ws, row.id);
       return { ...view(row), last: last ? occurrenceView(last) : null };
     });
-    return { last_tick_at: tick?.last_tick_at ?? null, last_tick_by: tick?.last_actor ?? null, overdue, schedules };
+    const held = heldAhead(s, at);
+    return { last_tick_at: tick?.last_tick_at ?? null, last_tick_by: tick?.last_actor ?? null, overdue, schedules, ...(held.length ? { held_ahead: held } : {}) };
   });
 }
 
@@ -329,5 +340,6 @@ export function renderSchedules(data: Row): string {
     return `${r.id} r${r.revision} · ${r.title} · ${r.for_role ?? 'anyone'} · ${r.rule_text} · ${next}${last}`;
   });
   const head = `Last tick: ${data.last_tick_at ?? 'never'}${data.last_tick_by ? ` by ${data.last_tick_by}` : ''}; ${data.overdue} overdue.`;
-  return [head, ...(lines.length ? lines : ['No schedules.'])].join('\n');
+  const held = (data.held_ahead as Row[] | undefined)?.map(r => `${r.schedule} until ${r.until}`).join(', ');
+  return [head, ...(held ? [`Held by a tick whose clock was ahead: ${held}.`] : []), ...(lines.length ? lines : ['No schedules.'])].join('\n');
 }

@@ -114,6 +114,24 @@ test('two stores ticking the same calendar issue one task',t=>{
   assert.equal(s.all('SELECT * FROM occurrences').length,1);
 });
 
+test('a tick under a clock far ahead is flagged when the clock comes back, and the held schedule is named (T1445)',t=>{
+  const {s}=fixture(t);
+  addSchedule(s,{title:'Once a day',daily:true,at:'09:00',tz:'Europe/Helsinki'});
+  const start=Date.now();
+  mock.timers.setTime(start+10*24*HOUR);
+  const ahead=tickSchedules(s);assert.equal(ahead.issued.length,1);assert.equal(ahead.clock_ahead,undefined,'nothing to compare with yet');
+  const farTick=ahead.at,until=s.get('SELECT last_due_at FROM occurrences').last_due_at;
+  mock.timers.setTime(start+HOUR);
+  const back=tickSchedules(s);
+  assert.deepEqual(back.issued,[],'nothing duplicated');
+  assert.deepEqual(back.clock_ahead,{last_tick_at:farTick,held:[{schedule:'C1',until}]});
+  const list=listSchedules(s);assert.deepEqual(list.held_ahead,[{schedule:'C1',until}]);
+  assert.match(renderSchedules(list).split('\n')[1],new RegExp(`^Held by a tick whose clock was ahead: C1 until ${until}\\.$`));
+  mock.timers.setTime(Date.parse(until)+HOUR);
+  assert.equal(tickSchedules(s).clock_ahead,undefined,'gone once the clock reaches the held time');
+  assert.equal(listSchedules(s).held_ahead,undefined);
+});
+
 test('a tick issues one task per due time, and a second tick finds nothing',t=>{
   const {s}=fixture(t);
   const c=addSchedule(s,{title:'Read the queue',body:'Every morning.',daily:true,at:'09:00',tz:'Europe/Helsinki',forRole:'a'});
