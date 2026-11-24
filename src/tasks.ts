@@ -47,6 +47,23 @@ function change(s: Store, row: Row, patch: Row, action: string, detail: Row = {}
   s.event('task', taskId(row), action, { before, after: values, ...detail });
   indexTask(s, after); return taskView(after);
 }
+// What clears a task's hold: each blocker resolved by its own id, and what it depends on finished.
+function clearing(held: Row[]): string {
+  const blockers = held.filter(b => b.kind !== 'dependency').map(b => b.id), steps: string[] = [];
+  if (blockers.length) steps.push(`when ${blockers.length > 1 ? 'they no longer hold' : 'it no longer holds'}, sas resolve ${blockers.length > 1 ? 'each of ' : ''}${blockers.join(', ')} REASON`);
+  if (blockers.length < held.length) steps.push('finish what it depends on');
+  return steps.join('; ');
+}
+// Why a task cannot be taken or completed in its state (T1417): a blocked one names what holds it and how to clear it.
+function notWorkable(s: Store, row: Row, doing: string): string {
+  const id = taskId(row);
+  if (row.status === 'blocked') {
+    const held = blocking(s, row);
+    if (!held.length) return `${id} is blocked with no open blocker, which should not happen: run sas show ${id} and put its output in a sassato issue`;
+    return `${id} is blocked by ${held.slice(0,3).map(b => b.kind === 'dependency' ? `${b.waiting_on} (not done)` : `${b.id} (${b.kind}, waiting on ${b.waiting_on})`).join(', ')}${held.length > 3 ? ` and ${held.length - 3} more` : ''}: ${clearing(held)}, then ${doing}`;
+  }
+  return `${id} is ${row.status}`;
+}
 function blocking(s: Store, row: Row): Row[] {
   const explicit = s.all('SELECT * FROM blockers WHERE workspace_id=? AND task_id=? AND status=? ORDER BY id', s.ws, row.id, 'open').map(blockerView);
   const dependencies = s.all('SELECT t.id,t.title,t.status,t.owner FROM dependencies d JOIN tasks t ON t.workspace_id=d.workspace_id AND t.id=d.depends_on WHERE d.workspace_id=? AND d.task_id=? AND t.status!=? ORDER BY t.id', s.ws, row.id, 'done').map(r => ({ id: `D${row.id}-${r.id}`, kind: 'dependency', task_id: taskId(row), waiting_on: `T${r.id}`, body: r.title, status: 'open', dependency_status: r.status, owner: r.owner }));
@@ -139,7 +156,7 @@ export function showTask(s: Store, task: string, options: { historyLimit?: numbe
 export function takeTask(s: Store, task: string, options: { hours?: number } = {}): Row {
   return s.tx(() => {
     const row = s.task(task), actor = s.requireActor(); assertWorkAllowed(s, actor); executable(s, row);
-    check(row.status === 'open', 'Task is not open for claiming', 4);
+    check(row.status === 'open', `Task is not open for claiming: ${notWorkable(s, row, 'take it')}`, 4);
     requireRulesLoaded(s, actor);
     check(!row.owner || row.owner === actor, 'Task is assigned to another role', 4);
     check(!row.for_role || row.for_role === actor, `Task is for ${row.for_role}. ${retarget(row, actor)}`, 3);
@@ -242,7 +259,7 @@ export function reviewTask(s: Store, task: string, options: { approve: boolean; 
 }
 function completeTask(s: Store, row: Row, options: { ref?: string }, allowOpen: boolean): Row {
   writable(s, row); executable(s, row);
-  check(row.status === 'doing' || row.status === 'review' || (allowOpen && row.status === 'open' && !row.lease_until), 'Claim the task before completing it, or reconcile eligible imported/human-only work', 4);
+  check(row.status === 'doing' || row.status === 'review' || (allowOpen && row.status === 'open' && !row.lease_until), row.status === 'blocked' ? `Cannot complete: ${notWorkable(s, row, 'take it and complete it')}` : row.status === 'done' || row.status === 'dropped' ? `Cannot complete: ${taskId(row)} is already ${row.status}` : 'Claim the task before completing it, or reconcile eligible imported/human-only work', 4);
   unblocked(s, row);
   check(!row.review_required || row.reviewed_by, 'This task needs an approved review before completion', 4);
   if (options.ref !== undefined) text(options.ref, 'reference', 1000);
