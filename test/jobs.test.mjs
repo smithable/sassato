@@ -209,7 +209,7 @@ test('a forwarded signal is logged and recorded with who the job answered to (T1
   await new Promise(done => child.on('close', done));
   for (let i = 0; i < 30 && alive(); i++) await new Promise(done => setTimeout(done, 100));
   assert.equal(alive(), false, 'the signal reached the job');
-  assert.match(err, new RegExp(`J\\d+ got SIGTERM at \\S+, passed to the whole job; job run started under ${process.pid} node`));
+  assert.match(err, new RegExp(`J\\d+ got SIGTERM at \\S+, passed to the whole job \\(its process group\\); job run started under ${process.pid} node`));
   const row = f.store('human').get('SELECT reason FROM jobs ORDER BY id DESC LIMIT 1');
   assert.match(row.reason, /^got SIGTERM at .* job run started under \d+ \S+.*; parent now \d+ \S+$/);
   assert.doesNotMatch(row.reason, /--db|--workspace/, 'no arguments are kept');

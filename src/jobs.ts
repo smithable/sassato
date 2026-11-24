@@ -2,7 +2,7 @@
 // machine has no room for it, and its memory and CPU are measured, so the next run of its kind
 // asks for what it really used. Jobs are machine-wide: every workspace in this database counts.
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, readlinkSync } from 'node:fs';
 import { availableParallelism, constants } from 'node:os';
 import { basename,isAbsolute } from 'node:path';
 import type { Row, Store } from './storage.js';
@@ -173,7 +173,10 @@ export function callersOf(pid: number, depth = 3): string[] {
     let parent: number;
     try { parent = parentOfStat(readFileSync(`/proc/${at}/stat`, 'utf8')); } catch { break; }
     if (!parent) break;
-    out.push(`${parent} ${commandOf(parent).replace(/[^\x21-\x7e]/g, '?')}`);
+    // The executable's own name: argv[0] can be rewritten by the process and may hold arguments.
+    let exe = '?';
+    try { exe = basename(readlinkSync(`/proc/${parent}/exe`)).replace(/ \(deleted\)$/, '').replace(/[^\x21-\x7e]/g, '?'); } catch { /* not ours to read */ }
+    out.push(`${parent} ${exe}`);
     if (parent === 1) break;
     at = parent;
   }
@@ -299,16 +302,16 @@ async function runProtectedJob(s:Store,options:RunOptions,assertProtection:()=>v
   // database never delays or stops the signal.
   let caller: string | null = null;
   const forward = (signal: NodeJS.Signals) => () => {
+    let target: string;
     try {
-      if (!(scoped && spawnSync('systemctl', ['--user', 'kill', `--signal=${signal}`, `${unit}.scope`], { stdio: 'ignore', timeout: 5000 }).status === 0)) {
-        if (!scoped && child.pid) process.kill(-child.pid, signal); else child.kill(signal);
-      }
-    } catch { /* already gone */ }
-    try {
-      const said = `got ${signal} at ${now()}, passed to the whole job; job run started under ${caller ?? '?'}; parent now ${callersOf(process.pid, 1)[0] ?? '?'}`;
-      log(`J${id} ${said}`);
-      s.tx(() => s.run('UPDATE jobs SET reason=? WHERE id=?', said, id));
-    } catch { /* the report is best effort */ }
+      if (scoped && spawnSync('systemctl', ['--user', 'kill', `--signal=${signal}`, `${unit}.scope`], { stdio: 'ignore', timeout: 5000 }).status === 0) target = 'the whole job (its scope)';
+      else if (!scoped && child.pid) { process.kill(-child.pid, signal); target = 'the whole job (its process group)'; }
+      else { child.kill(signal); target = 'the job\'s first process only (the scope refused it)'; }
+    } catch (error) { target = `nobody (${error instanceof Error ? error.message : String(error)})`; }
+    let said = `got ${signal}, passed to ${target}`;
+    try { said = `got ${signal} at ${now()}, passed to ${target}; job run started under ${caller ?? '?'}; parent now ${callersOf(process.pid, 1)[0] ?? '?'}`; } catch { /* keep the short form */ }
+    try { log(`J${id} ${said}`); } catch { /* the database below still keeps it */ }
+    try { s.tx(() => s.run('UPDATE jobs SET reason=? WHERE id=?', said, id)); } catch { /* the report is best effort */ }
   };
   const handlers = (['SIGINT', 'SIGTERM', 'SIGHUP'] as const).map(signal => [signal, forward(signal)] as const);
   for (const [signal, handler] of handlers) process.on(signal, handler);
