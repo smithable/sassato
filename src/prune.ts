@@ -26,7 +26,7 @@ export interface PruneData { days: number; sections: Record<string, Row[]> }
 // Every task closed since a time, with what it led to (T1447): its last note, drop reason or done reference.
 // A result names a merged pull request, a pull request number, a commit or another task; a row with none is marked for the daily read.
 export const namesResult = (note: string, self: string) =>
-  saysMerged(note) || /#\d+\b/.test(note) || /\b[0-9a-f]{7,40}\b/.test(note) || [...note.matchAll(/\bT(\d+)\b/g)].some((m) => `T${m[1]}` !== self);
+  saysMerged(note) || /#\d+\b/.test(note) || /\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b/.test(note) || [...note.matchAll(/\bT(\d+)\b/g)].some((m) => `T${m[1]}` !== self);
 export interface ClosedData { since: string; items: Row[]; has_more: boolean }
 export function closedSince(s: Store, options: { since: string; owner?: string; forRole?: string; limit?: number }): ClosedData {
   // A bare date is midnight UTC; a time needs Z or an offset, and an impossible calendar date is refused.
@@ -44,8 +44,9 @@ export function closedSince(s: Store, options: { since: string; owner?: string; 
       // The last note (or the drop reason) and the done reference are judged together: 'note · ref'.
       const closing = (cut < 0 ? events : events.slice(0, cut)).map((e) => ({ action: e.action, d: JSON.parse(e.detail) }));
       const note = String(closing.find((e) => e.action !== 'completed')?.d.note ?? '').trim(), ref = String(closing.find((e) => e.action === 'completed')?.d.ref ?? '').trim();
-      const result = [note, ref].filter(Boolean).join(' · ');
-      return { id: self, status: r.status, closed_at: r.completed_at, holder: r.owner ?? r.for_role ?? null, title: clip(r.title), result: clip(result, 400), names_result: namesResult(result, self) };
+      // Shortened, the note gives way and the reference stays whole, so what was judged is what is shown.
+      const result = [note, ref].filter(Boolean).join(' · '), shown = [clip(note, ref ? 280 : 400), clip(ref, 117)].filter(Boolean).join(' · ');
+      return { id: self, status: r.status, closed_at: r.completed_at, holder: r.owner ?? r.for_role ?? null, title: clip(r.title), result: shown, names_result: namesResult(result, self) };
     });
     return { since, items, has_more: rows.length > limit };
   });
@@ -53,7 +54,7 @@ export function closedSince(s: Store, options: { since: string; owner?: string; 
 export function renderClosed(data: ClosedData, lineLength = 160): string {
   integer(lineLength, 'line length', 60, 1000);
   const without = data.items.filter((r) => !r.names_result).length;
-  const lines = [`Closed since ${data.since}: ${data.items.length} task(s), ${without} naming no result (no merged pull request, no task).`];
+  const lines = [`Closed since ${data.since}: ${data.items.length} task(s).`, `${without} marked ! (no result named).`];
   for (const r of data.items) {
     const head = `${r.names_result ? '  ' : '! '}${r.id} · ${r.status} ${String(r.closed_at).slice(0, 16).replace('T', ' ')}${r.holder ? ` · ${r.holder}` : ''} · `;
     const text = r.result || '(no note)', room = lineLength - head.length - 3, cut = (t: string, n: number) => (t.length > n ? `${t.slice(0, Math.max(n - 1, 0))}…` : t);
