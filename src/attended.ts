@@ -197,6 +197,12 @@ async function idle(s:Store,p:Row,lease:SupervisorLease):Promise<void> {
 function snapshotOf(w:Row):Row {
   const {launch_id,terminal,...snapshot}=JSON.parse(w.context);return snapshot;
 }
+/** What the person confirms at retirement: the leader, the other live members, and the WSL clipboard readers
+ * that end with the worker (T958), each by identity only, so a change after Enter cancels the retirement. */
+export function retirementObservation(observation:Row):Row {
+  const identityOnly=(row:Row|null)=>row?{pid:row.pid,group:row.group,session:row.session,start:row.start}:null;
+  return {leader:identityOnly(observation.leader),live_members:observation.live_members.map(identityOnly),helpers:(observation.helpers??[]).map(identityOnly),exited:observation.exited};
+}
 function guarded(s:Store,p:Row,w:Row):Row {
   permitted(s,p);settled(s,w.role);snapshotEqual(s,w.role,p,snapshotOf(w));
   const launch=s.get('SELECT payload FROM managed_transitions WHERE worker_id=? AND generation=? AND bootstrap_released_at IS NOT NULL ORDER BY rowid DESC LIMIT 1',w.id,w.generation);check(launch,'Owned launch release record is missing',4);
@@ -206,8 +212,7 @@ function guarded(s:Store,p:Row,w:Row):Row {
   const brief=JSON.parse(body.body);check(digest(brief.observed.manifest)===digest(snapshotOf(w).manifest) && brief.observed.worker_generation===w.generation,'Brief does not bind this generation',4);
   const observation=processObservation(w);
   check(observation.exited || observation.live_members.length===1 && observation.live_members[0].pid===w.pid,'Other live group members block retirement',4);
-  const identityOnly=(row:Row|null)=>row?{pid:row.pid,group:row.group,session:row.session,start:row.start}:null;
-  const stableObservation={leader:identityOnly(observation.leader),live_members:observation.live_members.map(identityOnly),exited:observation.exited};
+  const stableObservation=retirementObservation(observation);
   return {transition:t.id,brief_id:t.brief_id,generation:w.generation,pid:w.pid,process_start:w.process_start,pgid:w.pid,checkout:p.cwd,head:brief.observed.identity.head,dirty:brief.observed.manifest,successor:w.generation===2?'final stop':`generation ${w.generation+1}`,observation:stableObservation};
 }
 function prepareRuntime(s:Store,p:Row,generation:number):string {
