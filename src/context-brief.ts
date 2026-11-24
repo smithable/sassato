@@ -1,5 +1,6 @@
 import type { Store,Row } from './storage.js';
 import { feedbackSummary } from './feedback.js';
+import { changedTopics, topicCounts } from './topics.js';
 import type { ContextData } from './coordination.js';
 import { check,integer,now } from './errors.js';
 
@@ -12,8 +13,9 @@ function changedTask(s:Store,actor:string,event:Row):Row|undefined {
   let detail:Row;try{detail=JSON.parse(event.detail);}catch{return undefined;}
   const before=detail?.before??{},after=detail?.after??detail??{};
   if(!['created','imported'].includes(event.action)&&!['status','owner','for_role','priority','reviewed_by'].some(key=>before[key]!==after[key]))return undefined;
-  const row=s.get('SELECT id,title,status,owner,for_role,creator,version,human_only FROM tasks WHERE workspace_id=? AND id=?',s.ws,Number(event.entity_id.slice(1)));
-  if(!row)return undefined;
+  const row=s.get('SELECT id,title,status,owner,for_role,creator,version,human_only,kind FROM tasks WHERE workspace_id=? AND id=?',s.ws,Number(event.entity_id.slice(1)));
+  // A topic's changes are its own section (changedTopics), never work.
+  if(!row||row.kind==='topic')return undefined;
   const relevant=[row.owner,row.for_role,row.creator,before.owner,before.for_role].includes(actor)||(!row.owner&&(!row.for_role||row.for_role===actor)&&(!row.human_only||s.role(actor).kind==='human'));
   return relevant?{id:event.entity_id,title:contextLine(row.title,200),status:row.status,owner:row.owner,version:row.version}:undefined;
 }
@@ -58,6 +60,9 @@ export function contextDelta(s:Store,options:{since:number;limit?:number;lineLen
     const feedback=feedbackSummary(s,actor);
     if(feedback)data.sections.feedback=[feedback];
     data.counts.facts_unchanged=Number(s.get("SELECT count(*) AS n FROM facts f WHERE f.workspace_id=? AND NOT EXISTS(SELECT 1 FROM events e WHERE e.workspace_id=f.workspace_id AND e.entity='fact' AND e.entity_id='F'||f.id AND e.id>?)",s.ws,since)!.n);
+    const topics=changedTopics(s,actor,since,count);
+    if(topics.length)data.sections.topics=topics;
+    Object.assign(data.counts,topicCounts(s));
     for(const [key,rows] of Object.entries(data.sections))data.counts[key]=rows.length;
     return data;
   });

@@ -35,7 +35,7 @@ export interface WaitOptions {
 const maximum=(s:Store):number=>Number(s.get('SELECT coalesce(max(id),0) n FROM events WHERE workspace_id=?',s.ws)!.n);
 export function idleOpenWork(s:Store,actor:string,spare=false):string[] {
   const roles=workspaceSettings(s).open_work_roles,takesOpen=roles===null||roles.includes(actor)?1:0;
-  return s.all(`SELECT t.id FROM tasks t WHERE t.workspace_id=? AND t.status='open' AND t.spare=?
+  return s.all(`SELECT t.id FROM tasks t WHERE t.workspace_id=? AND t.status='open' AND t.kind='work' AND t.spare=?
     AND (t.owner IS NULL OR t.owner=?) AND (t.for_role IS NULL OR t.for_role=?)
     AND (t.owner IS NOT NULL OR t.for_role IS NOT NULL OR ?=1) AND (t.human_only=0 OR ?=1)
     AND NOT EXISTS (SELECT 1 FROM blockers b WHERE b.workspace_id=t.workspace_id AND b.task_id=t.id AND b.status='open')
@@ -55,7 +55,7 @@ function available(s:Store,actor:string,condition:string,params:Param[],includeD
   // These are the same gates as tasks --available, applied to event candidates only, except that a
   // task neither owned nor routed wakes only the roles in open_work_roles (every role when unset).
   const roles=workspaceSettings(s).open_work_roles,takesOpen=roles===null||roles.includes(actor)?1:0;
-  return s.all(`SELECT t.id FROM tasks t WHERE t.workspace_id=? AND t.spare=0 AND (t.status='open'${includeDoing?" OR (t.status='doing' AND t.owner=?)":''})
+  return s.all(`SELECT t.id FROM tasks t WHERE t.workspace_id=? AND t.spare=0 AND t.kind='work' AND (t.status='open'${includeDoing?" OR (t.status='doing' AND t.owner=?)":''})
     AND (t.owner IS NULL OR t.owner=?) AND (t.for_role IS NULL OR t.for_role=?)
     AND (t.human_only=0 OR ?=1) AND (t.owner IS NOT NULL OR t.for_role IS NOT NULL OR ?=1)
     AND NOT EXISTS (SELECT 1 FROM blockers b WHERE b.workspace_id=t.workspace_id AND b.task_id=t.id AND b.status='open')
@@ -176,7 +176,7 @@ function workflow(s:Store,actor:string,event:Row):WaitResult|undefined {
     const repaired=event.action==='import-repaired'&&(detail.after?.task?.status??detail.after?.status)==='open';
     if(!updated&&!repaired&&!['created','imported','reopened','released','handed-off','dependency-removed'].includes(event.action))return undefined;
     if(['created','imported','handed-off','updated'].includes(event.action)) {
-      const assigned=s.get("SELECT id FROM tasks WHERE workspace_id=? AND id=? AND spare=0 AND status NOT IN ('done','dropped') AND (owner IS NULL OR owner=?) AND (for_role IS NULL OR for_role=?) AND (owner=? OR for_role=?)",s.ws,id,actor,actor,actor,actor);
+      const assigned=s.get("SELECT id FROM tasks WHERE workspace_id=? AND id=? AND spare=0 AND kind='work' AND status NOT IN ('done','dropped') AND (owner IS NULL OR owner=?) AND (for_role IS NULL OR for_role=?) AND (owner=? OR for_role=?)",s.ws,id,actor,actor,actor,actor);
       if(assigned)return {...base,reason:'task-assigned',task:event.entity_id,tasks:[event.entity_id]};
     }
     tasks=available(s,actor,'t.id=?',[id],event.action==='dependency-removed');
@@ -235,6 +235,11 @@ function extraDuringDigest(s:Store,actor:string,event:Row):DigestEntry|undefined
   if(event.entity==='task'&&event.action==='completed') {
     const row=s.get('SELECT title FROM tasks WHERE workspace_id=? AND id=? AND (owner=? OR creator=?)',s.ws,Number(String(event.entity_id).slice(1)),actor,actor);
     if(row)return {id:event.entity_id,event_id:`E${event.id}`,from:event.actor,kind:'task-finished',task:event.entity_id,summary:digestText(row.title),group:'finished'};
+  }
+  // A note, link or question on a topic rides along for its keeper only, never waking anyone (T1419).
+  if(event.entity==='task'&&['note','topic-question','topic-linked','topic-unlinked'].includes(event.action)) {
+    const row=s.get("SELECT title FROM tasks WHERE workspace_id=? AND id=? AND kind='topic' AND for_role=?",s.ws,Number(String(event.entity_id).slice(1)),actor);
+    if(row)return {id:event.entity_id,event_id:`E${event.id}`,from:event.actor,kind:'topic',task:event.entity_id,summary:digestText(`${event.action==='note'?'note':event.action==='topic-question'?'question':'link'} on topic: ${row.title}`),group:'other'};
   }
   return undefined;
 }

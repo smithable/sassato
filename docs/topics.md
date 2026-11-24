@@ -1,6 +1,6 @@
 # Topics
 
-Status: design, for review. The command reference will be in [commands.md](commands.md).
+Status: built in schema 17. The command reference is in [commands.md](commands.md#topics-t1419).
 
 Some work is not yet work. A question is being researched, a choice is waiting on a human, or a
 thread of ideas has no action in it yet. Today such a thing is either an open task, which wakes
@@ -26,7 +26,7 @@ CREATE INDEX topic_links_topic ON topic_links(workspace_id,topic_id,status);
 ```
 
 - Every existing task gets `kind='work'`. The migration adds a column and a table and changes no row.
-- A link's `target` is a task (`T…`), a question (`H…`), a fact key, a pull request (`owner/repo#N`
+- A link's `target` is a task (`T…`), a question (`H…`), a fact (`fact:KEY`), a pull request (`owner/repo#N`
   or its URL) or a repository path. A link to a task shows that task's live status.
 - A link is removed by marking it `removed`, never deleted, so the history stays whole.
 
@@ -35,7 +35,7 @@ CREATE INDEX topic_links_topic ON topic_links(workspace_id,topic_id,status);
 | Topic state | Meaning |
 | - | - |
 | `open` | In discussion. The only state a topic is ever worked in. |
-| `done` | Closed into follow-up tasks, which it names. |
+| `done` | Closed into follow-ups, work tasks or facts, which it names. |
 | `dropped` | Closed with a reason a human acknowledged. |
 
 A topic has no owner and no lease, and is never `doing`, `review` or `blocked`. Its **keeper**
@@ -47,10 +47,11 @@ A topic has no owner and no lease, and is never `doing`, `review` or `blocked`. 
 | - | - |
 | `topic add TITLE [--body TEXT] [--keeper ROLE] [--link TARGET]…` | Any role opens a topic. No wake is sent, to the keeper either. |
 | `topics [--all] [--json]` | One line per open topic: id, title, keeper, days since its last event, its pending questions (`H…`) and its linked tasks with their status. `--all` adds closed ones. |
+| `topic from T…` | An open task that is not human-only, unowned or held by the caller, becomes a topic and keeps its id, notes and questions. The caller becomes its keeper. |
 | `topic link T TARGET [--label TEXT]` / `topic unlink T L…` | Any role adds or removes a link. |
 | `note T TEXT` | On a topic, **any role** may note it, agent or human. |
 | `ask-human T …` | As today: the question is recorded on the topic and shows in `humans`. |
-| `topic close T --into T2[,T3…]` | The keeper, the creator or a human closes it as `done` into tasks of kind `work` that exist. Each becomes a follow-up link. |
+| `topic close T --into T2[,fact:KEY…]` | The keeper, the creator or a human closes it as `done` into tasks of kind `work` or facts that exist. Each becomes a follow-up link. A pull request alone is not a follow-up. |
 | `topic close T --reason TEXT --acknowledged H…` | Closes it as `dropped`. `H…` must be an answered question on this topic. A human role may close it this way without `--acknowledged`. |
 | `show T` | Adds `kind`, the links, the follow-ups and the pending questions. |
 
@@ -102,11 +103,10 @@ Each query that offers, counts or wakes for work gains `kind='work'`:
   answered question on the topic or a human role.
 - `prune` lists a 30-day quiet topic under `quiet-topics` and not under `quiet-review`.
 
-## Questions for review
+## Decided in review
 
-1. **Turning tasks into topics.** Should there be `topic from T…`, for an open, unowned task that is
-   not human-only, so the first topics keep their ids and history? The alternative is new topics
-   that link the old tasks, which are then dropped.
-2. **Quiet entries.** Should a note on a topic reach its keeper as a quiet wake entry, as proposed,
-   or nobody until the brief?
-3. **Thirty days** for `quiet-topics`, fixed.
+1. `topic from T…` exists, for an open task that is not human-only and is unowned or held by the
+   one converting it; it keeps the id, notes and questions.
+2. A note, a link or a question on a topic gives its keeper a quiet wake entry.
+3. Thirty days for `quiet-topics`, fixed.
+4. `topic close --into` takes a fact key too; a pull request alone is not a follow-up.

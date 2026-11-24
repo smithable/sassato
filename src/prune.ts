@@ -5,8 +5,9 @@ import { check, integer, now } from './errors.js';
 import { contextLine } from './context-brief.js';
 import { factUntil } from './coordination.js';
 import { humanQueue } from './tasks.js';
+import { TOPIC_DAYS } from './topics.js';
 
-export const PRUNE_SECTIONS = ['quiet-review','names-merged-pr','old-questions','same-title','expired-facts','dated-facts','marked-facts','unchecked-facts'] as const;
+export const PRUNE_SECTIONS = ['quiet-review','quiet-topics','names-merged-pr','old-questions','same-title','expired-facts','dated-facts','marked-facts','unchecked-facts'] as const;
 // unchecked-facts is asked for by name: most decisions are older than a month by nature and would bury the rest.
 const DEFAULT_SECTIONS = PRUNE_SECTIONS.filter((section) => section !== 'unchecked-facts');
 const DAY = 86_400_000;
@@ -30,9 +31,12 @@ export function prune(s: Store, options: { days?: number; sections?: string } = 
     const task = (r: Row, rule: string, since: string): Row => ({ id: `T${r.id}`, age_days: days(since, at), since, holder: r.owner ?? r.for_role ?? null, text: clip(r.title), rule });
     const fact = (r: Row, rule: string, since: string): Row => ({ id: `F${r.id}`, key: r.key, age_days: days(since, at), since, until: factUntil(r.expires_at), text: clip(r.body), rule });
     const rules: Record<string, () => Row[]> = {
-      'quiet-review': () => s.all(`SELECT t.id,t.title,t.owner,t.for_role,t.status,coalesce(${lastEvent},t.updated_at) AS last FROM tasks t WHERE t.workspace_id=? AND t.status IN ('review','blocked') AND coalesce(${lastEvent},t.updated_at)<?`, s.ws, cutoff)
+      'quiet-review': () => s.all(`SELECT t.id,t.title,t.owner,t.for_role,t.status,coalesce(${lastEvent},t.updated_at) AS last FROM tasks t WHERE t.workspace_id=? AND t.kind='work' AND t.status IN ('review','blocked') AND coalesce(${lastEvent},t.updated_at)<?`, s.ws, cutoff)
         .map((r) => task(r, `${r.status}, nothing recorded for ${quiet}+ days`, r.last)),
-      'names-merged-pr': () => s.all(`SELECT t.id,t.title,t.owner,t.for_role,e.created_at,json_extract(e.detail,'$.note') AS note FROM tasks t JOIN events e ON e.workspace_id=t.workspace_id AND e.entity='task' AND e.entity_id='T'||t.id WHERE t.workspace_id=? AND ${open} AND e.id=(SELECT max(x.id) FROM events x WHERE x.workspace_id=t.workspace_id AND x.entity='task' AND x.entity_id='T'||t.id) AND e.action IN ('note','submitted')`, s.ws)
+      // Topics move slowly: a fixed 30 days, not --days; the keeper closes it into work or with a reason.
+      'quiet-topics': () => s.all(`SELECT t.id,t.title,t.owner,t.for_role,coalesce(${lastEvent},t.updated_at) AS last FROM tasks t WHERE t.workspace_id=? AND t.kind='topic' AND t.status='open' AND coalesce(${lastEvent},t.updated_at)<?`, s.ws, new Date(at - TOPIC_DAYS * DAY).toISOString())
+        .map((r) => task(r, `open topic, nothing recorded for ${TOPIC_DAYS}+ days: close it into work or with a reason`, r.last)),
+      'names-merged-pr': () => s.all(`SELECT t.id,t.title,t.owner,t.for_role,e.created_at,json_extract(e.detail,'$.note') AS note FROM tasks t JOIN events e ON e.workspace_id=t.workspace_id AND e.entity='task' AND e.entity_id='T'||t.id WHERE t.workspace_id=? AND t.kind='work' AND ${open} AND e.id=(SELECT max(x.id) FROM events x WHERE x.workspace_id=t.workspace_id AND x.entity='task' AND x.entity_id='T'||t.id) AND e.action IN ('note','submitted')`, s.ws)
         .filter((r) => saysMerged(r.note ?? ''))
         .map((r) => ({ ...task(r, 'its last note says a pull request merged', r.created_at), note: clip(r.note) })),
       'old-questions': () => humanQueue(s).filter((r) => r.kind === 'question' && r.age_days >= quiet)

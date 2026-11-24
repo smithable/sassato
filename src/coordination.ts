@@ -9,6 +9,7 @@ import { workspaceSettings } from './workspace-settings.js';
 import { feedbackSummary } from './feedback.js';
 import { getCheckpoint } from './checkpoints.js';
 import { aged } from './tasks.js';
+import { topicCounts } from './topics.js';
 import { getNotificationProgress } from './notification-progress.js';
 import { normalizeOption, ROLE_OPTION_KEYS, validateRoleOptions, type RoleOptions } from './role-options.js';
 
@@ -364,7 +365,7 @@ export function context(s: Store, options: { since?: number; limit?: number; bri
     sections.wip = wip ? [{stale:!Number.isFinite(Date.parse(wip.updated_at))||Date.now()-Date.parse(wip.updated_at)>24*60*60_000,updated_at:wip.updated_at,version:wip.version,current:clip(wip.current),next:clip(wip.next),notes:clip(wip.notes)}] : [];
     const checkpoint = getCheckpoint(s,actor);
     if (checkpoint) sections.checkpoint = [{id:checkpoint.id,state:checkpoint.state,stale:checkpoint.state!=='current',saved_at:checkpoint.saved_at,own_changes_since:checkpoint.own_changes_since||null,read:'sassato checkpoint show'}];
-    section('available',`SELECT t.id,t.title,t.status,t.owner,t.lease_until,t.priority,t.creator FROM tasks t WHERE t.workspace_id=? AND t.status='open' AND t.spare=0 AND (t.owner IS NULL OR t.owner=?) AND (t.for_role IS NULL OR t.for_role=?) AND (t.human_only=0 OR ?='human') AND NOT EXISTS(SELECT 1 FROM blockers b WHERE b.workspace_id=t.workspace_id AND b.task_id=t.id AND b.status='open') AND NOT EXISTS(SELECT 1 FROM dependencies d JOIN tasks dep ON dep.workspace_id=d.workspace_id AND dep.id=d.depends_on WHERE d.workspace_id=t.workspace_id AND d.task_id=t.id AND dep.status!='done') ORDER BY t.priority DESC,t.id`,[s.ws,actor,actor,s.role(actor).kind],taskRow);
+    section('available',`SELECT t.id,t.title,t.status,t.owner,t.lease_until,t.priority,t.creator FROM tasks t WHERE t.workspace_id=? AND t.status='open' AND t.kind='work' AND t.spare=0 AND (t.owner IS NULL OR t.owner=?) AND (t.for_role IS NULL OR t.for_role=?) AND (t.human_only=0 OR ?='human') AND NOT EXISTS(SELECT 1 FROM blockers b WHERE b.workspace_id=t.workspace_id AND b.task_id=t.id AND b.status='open') AND NOT EXISTS(SELECT 1 FROM dependencies d JOIN tasks dep ON dep.workspace_id=d.workspace_id AND dep.id=d.depends_on WHERE d.workspace_id=t.workspace_id AND d.task_id=t.id AND dep.status!='done') ORDER BY t.priority DESC,t.id`,[s.ws,actor,actor,s.role(actor).kind],taskRow);
     section('reviews',"SELECT id,title,status,owner,lease_until,priority,creator FROM tasks WHERE workspace_id=? AND status='review' AND reviewed_by IS NULL AND (owner IS NULL OR owner!=? OR ?='human') ORDER BY priority DESC,id",[s.ws,actor,s.role(actor).kind],taskRow);
     const inboxCounts = s.all('SELECT state,count(*) AS n FROM receipts WHERE workspace_id=? AND recipient=? GROUP BY state',s.ws,actor);
     for (const row of inboxCounts) counts[`inbox_${row.state}`] = row.n;
@@ -395,6 +396,7 @@ export function context(s: Store, options: { since?: number; limit?: number; bri
       if (omitted.event_id) data.cursor = Math.min(data.cursor,omitted.event_id-1);
       data.truncated = true;
     }
+    Object.assign(data.counts,topicCounts(s));
     // The rules are never cut short: a set read in part is no answer (T1276).
     if (options.brief) data.rules = ruleBrief(s,actor);
     return data;
@@ -418,6 +420,7 @@ export function renderContext(data: ContextData): string {
   lines.push(data.permissions);
   if(data.delta)lines.push(`${data.counts.facts_unchanged??0} unchanged facts; sas facts to read them.`);
   else lines.push(`Inbox: ${data.counts.inbox_unread ?? 0} unread, ${data.counts.inbox_read ?? 0} read and pending.`);
+  if (data.counts.topics_open) lines.push(`Topics: ${data.counts.topics_open} open (${data.counts.topics_questions ?? 0} pending questions); sas topics to read them.`);
   for (const [section,rows] of Object.entries(data.sections)) if (section !== 'stop') for (const row of rows) {
     const values = Object.entries(row).filter(([,value])=>value !== null && value !== '' && value !== false).map(([key,value])=>key === 'id' ? value : `${key}=${value}`).join(' · ');
     lines.push(`${section}: ${clip(values,300)}`);
