@@ -470,7 +470,9 @@ Jobs count across every workspace in the database, since they share one machine.
   counts it free); the peak is the highest of those, and CPU time comes from `cpu.stat`. The
   cgroup's own `memory.peak`, cache included, is kept beside it. Without a scope the job's
   process group and descendants are sampled from /proc. SIGINT, SIGTERM and SIGHUP to
-  `job run` go to every process of the job (the scope, or the process group). Processes a job
+  `job run` go to every process of the job (the scope, or the process group); the job's log and
+  its record's reason say which signal came, when, the parent chain `job run` started under and
+  its parent then, since the sender itself cannot be read. Processes a job
   leaves running after a normal end are named, never killed. A job whose `job run` process
   is gone is released.
 

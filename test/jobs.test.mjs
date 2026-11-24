@@ -197,6 +197,21 @@ test('a command keeps its own flags after --, also ones sassato knows', t => {
   assert.equal(r.stdout, '--json|--as|x|--wait|--mem|5|--kind|y|');
 });
 
+test('a forwarded signal is logged and recorded with who the job answered to (T1284)', { timeout: 30_000 }, async t => {
+  const f = fixture(t);
+  const marker = `sassato-signal-source-${process.pid}`;
+  const child = spawn(process.execPath, [bin, '--db', f.db, '--workspace', 'team', '--as', 'a', 'job', 'run', '--kind', 'other', '--', 'bash', '-c', `exec -a ${marker} sleep 30`], { env: { ...f.env, SASSATO_JOB_SCOPE: '0' }, stdio: ['ignore', 'ignore', 'pipe'] });
+  let err = ''; child.stderr.on('data', d => { err += d; });
+  const alive = () => spawnSync('pgrep', ['-f', `^${marker}`]).status === 0;
+  for (let i = 0; i < 50 && !alive(); i++) await new Promise(done => setTimeout(done, 100));
+  assert.ok(alive(), 'the job started');
+  child.kill('SIGTERM');
+  await new Promise(done => child.on('exit', done));
+  assert.match(err, new RegExp(`J\\d+ got SIGTERM at \\S+, passed to the whole job; started under ${process.pid} `));
+  const row = f.store('human').get('SELECT reason FROM jobs ORDER BY id DESC LIMIT 1');
+  assert.match(row.reason, /^got SIGTERM at .* started under \d+ .*; parent now \d+ /);
+});
+
 test('a signal to job run reaches every process of the job', { timeout: 30_000 }, async t => {
   const f = fixture(t);
   for (const scope of ['0', '']) {

@@ -2,6 +2,10 @@
 
 ## 0.1.3 — unreleased
 
+- A signal `job run` passes on to its job is logged and kept as the job's reason (T1367): which signal, when,
+  the parent chain `job run` started under and its parent at that moment, so a job stopped from outside shows
+  who stopped it (T1284: a cancelled caller's command took a gate down with it).
+
 - `launch --watched ROLE...|--all` starts watched Codex roles in one command, with no question asked (T1193): a
   settings check on a throwaway thread (model, sandbox, approval, effort) replaces the `/status` look, the app server
   runs hidden with its log in the launch folder, the window is the only tab and is registered, and one background
