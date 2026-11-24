@@ -57,7 +57,7 @@ export function contextDelta(s:Store,options:{since:number;limit?:number;lineLen
     if(data.cursor<latest)data.truncated=true;
     const feedback=feedbackSummary(s,actor);
     if(feedback)data.sections.feedback=[feedback];
-    data.counts.facts_unchanged=Number(s.get("SELECT count(*) AS n FROM facts f WHERE f.workspace_id=? AND NOT EXISTS(SELECT 1 FROM events e WHERE e.workspace_id=f.workspace_id AND e.entity='fact' AND e.entity_id='F'||f.id AND e.id>?)",s.ws,since)!.n);
+    data.counts.facts_unchanged=Number(s.get("SELECT count(*) AS n FROM facts f WHERE f.workspace_id=? AND NOT EXISTS(SELECT 1 FROM events e WHERE e.workspace_id=f.workspace_id AND e.entity='fact' AND e.entity_id='F'||f.id AND e.id>?) AND (f.expires_at IS NULL OR f.expires_at>=?)",s.ws,since,now())!.n);
     for(const [key,rows] of Object.entries(data.sections))data.counts[key]=rows.length;
     return data;
   });
