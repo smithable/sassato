@@ -324,12 +324,14 @@ test('a human\'s queue is shown whole by default, and a --limit cut says how man
   const {s,db}=fixture(t);
   const asked=[];
   for(let i=0;i<53;i++){const task=tasks.addTask(s,{title:`Choice ${i}`});asked.push(tasks.askHuman(s,task.id,{question:`Question ${i}?`}).id);}
-  assert.deepEqual(tasks.humanQueue(s,{forRole:'alice'}).map(r=>r.id).sort(),[...asked].sort());
+  const work=tasks.addTask(s,{title:'Sign the form',forRole:'alice'});
+  const whole_queue=tasks.humanQueue(s,{forRole:'alice'});
+  assert.deepEqual(whole_queue.map(r=>r.id).sort(),[...asked,work.id].sort());
   let hidden=0;
-  assert.equal(tasks.humanQueue(s,{forRole:'alice',limit:50,cut:n=>{hidden=n;}}).length,50);
-  assert.equal(hidden,3);
+  assert.deepEqual(tasks.humanQueue(s,{forRole:'alice',limit:50,cut:n=>{hidden=n;}}).map(r=>r.id),whole_queue.slice(0,50).map(r=>r.id));
+  assert.equal(hidden,4);
   const whole=raw(db,['humans','--for','alice','--as','builder']);
-  assert.equal(whole.status,0,whole.stderr);assert.equal(JSON.parse(whole.stdout).length,53);assert.doesNotMatch(whole.stderr,/not shown/);
+  assert.equal(whole.status,0,whole.stderr);assert.equal(JSON.parse(whole.stdout).length,54);assert.doesNotMatch(whole.stderr,/not shown/);
   const cut=raw(db,['humans','--for','alice','--limit','50','--as','builder']);
-  assert.equal(JSON.parse(cut.stdout).length,50);assert.match(cut.stderr,/3 more not shown; leave out --limit/);
+  assert.equal(JSON.parse(cut.stdout).length,50);assert.match(cut.stderr,/4 more not shown; leave out --limit/);
 });
