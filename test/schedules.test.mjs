@@ -248,6 +248,7 @@ test('impossible calendar dates are refused',t=>{
   fixture(t);
   for(const once of ['2027-02-30T12:00:00Z','2027-04-31T12:00:00Z','2027-13-01T12:00:00Z'])assert.throws(()=>parseRule({once},Date.now()),coded(2),once);
   assert.equal(parseRule({once:'2028-02-29T12:00:00Z'},Date.now()).at,'2028-02-29T12:00:00.000Z');
+  assert.throws(()=>parseRule({once:'0000-02-29T12:00:00Z'},Date.now()),coded(4),'year 0 is a leap year (not 1900): a real date, only in the past');
 });
 
 test('a once schedule issues one task and then has no next time',t=>{

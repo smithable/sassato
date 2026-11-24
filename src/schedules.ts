@@ -64,7 +64,7 @@ export function civil(rule: Rule, at: string): string {
 }
 
 function strictInstant(value: string, label: string): string {
-  const [y, m, d] = value.slice(0, 10).split('-').map(Number), day = new Date(Date.UTC(y!, m! - 1, d!));
+  const [y, m, d] = value.slice(0, 10).split('-').map(Number), day = new Date(0); day.setUTCFullYear(y!, m! - 1, d!);
   check(INSTANT.test(value) && Number.isFinite(Date.parse(value)) && day.getUTCMonth() === m! - 1 && day.getUTCDate() === d,
     `${label} needs an ISO instant with Z or an offset, such as 2027-01-15T12:00:00Z`);
   return iso(Date.parse(value));
@@ -275,10 +275,10 @@ export function tickSchedules(s: Store): Row {
       s.db.exec('SAVEPOINT schedule_tick');
       try {
         const rule = ruleOf(row), first = Date.parse(row.next_due), { last, slots, next } = slotsUntil(rule, first, t);
-        const prior = s.get("SELECT o.task_id,t.status,t.for_role,t.human_only FROM occurrences o JOIN tasks t ON t.workspace_id=o.workspace_id AND t.id=o.task_id WHERE o.workspace_id=? AND o.schedule_id=? AND o.status='issued' ORDER BY o.id DESC LIMIT 1", s.ws, row.id);
         // Coalesce only into an open task for the same audience; a template now for someone else gets its own task.
-        const same = prior && (prior.for_role ?? null) === (row.for_role ?? null) && prior.human_only === row.human_only;
-        if (prior && same && !['done', 'dropped'].includes(prior.status)) coalesced.push(record(s, row, first, last, slots, 'coalesced', prior.task_id, at));
+        const prior = s.get("SELECT o.task_id FROM occurrences o JOIN tasks t ON t.workspace_id=o.workspace_id AND t.id=o.task_id WHERE o.workspace_id=? AND o.schedule_id=? AND o.status='issued' AND t.status NOT IN ('done','dropped') AND t.for_role IS ? AND t.human_only=? ORDER BY o.id DESC LIMIT 1", s.ws, row.id, row.for_role ?? null, row.human_only);
+        let result: Row, into: Row[];
+        if (prior) { result = record(s, row, first, last, slots, 'coalesced', prior.task_id, at); into = coalesced; }
         else {
           const when = slots > 1 ? `${civil(rule, iso(first))} to ${civil(rule, iso(last))}, ${slots} due times` : civil(rule, iso(first));
           const task = addTask(s, {
@@ -286,10 +286,11 @@ export function tickSchedules(s: Store): Row {
             body: `${row.body ? `${row.body}\n\n` : ''}From schedule C${row.id} (revision ${row.revision}): due ${when}.`,
             forRole: row.for_role ?? undefined, humanOnly: Boolean(row.human_only),
           });
-          issued.push(record(s, row, first, last, slots, 'issued', Number(String(task.id).slice(1)), at));
+          result = record(s, row, first, last, slots, 'issued', Number(String(task.id).slice(1)), at); into = issued;
         }
         s.run('UPDATE schedules SET next_due=? WHERE workspace_id=? AND id=?', next === null ? null : iso(next), s.ws, row.id);
         s.db.exec('RELEASE schedule_tick');
+        into.push(result);
       } catch (error) {
         s.db.exec('ROLLBACK TO schedule_tick'); s.db.exec('RELEASE schedule_tick');
         deferred.push({ schedule: `C${row.id}`, due_at: row.next_due, reason: error instanceof Error ? error.message : String(error) });
