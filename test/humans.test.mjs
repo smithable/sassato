@@ -335,3 +335,34 @@ test('a human\'s queue is shown whole by default, and a --limit cut says how man
   const cut=raw(db,['humans','--for','alice','--limit','50','--as','builder']);
   assert.equal(JSON.parse(cut.stdout).length,50);assert.match(cut.stderr,/4 more not shown; leave out --limit/);
 });
+
+test('humans --brief splits what waits on a human into what holds work back and what can wait, oldest first (T1411)',t=>{
+  const {s,db}=fixture(t);
+  const own=tasks.addTask(s,{title:'Pick a host',forRole:'builder'});
+  const held=tasks.askHuman(s,own.id,{question:'Which host?'});
+  const loose=tasks.addTask(s,{title:'Someday',forRole:'alice'});
+  const idle=tasks.askHuman(s,loose.id,{question:'A colour, some day?'});
+  const install=tasks.addTask(s,{title:'Install the build',humanOnly:true});
+  const after=tasks.addTask(s,{title:'Use the build',forRole:'builder'});run(db,['block',after.id,'--on',install.id,'--as','builder']);
+  const gone=tasks.addTask(s,{title:'Finished',forRole:'builder'});const stale=tasks.askHuman(s,gone.id,{question:'Still needed?'});
+  as(s,'alice',()=>tasks.dropTask(s,gone.id,'not needed'));
+  const later=tasks.addTask(s,{title:'Read the notes',humanOnly:true});
+  const brief=tasks.humanBrief(s,{forRole:'alice'});
+  assert.deepEqual(brief.blocks_work.map(r=>[r.id,r.holds_back]),[[held.id,[`${own.id} (builder)`]],[install.id,[`${after.id} (builder)`]]]);
+  assert.deepEqual(brief.can_wait.map(r=>r.id).filter(id=>id!==stale.id),[idle.id,later.id]);
+  assert.ok(!brief.blocks_work.some(r=>r.id===stale.id));
+  assert.equal(run(db,['humans','--brief','--for','alice','--as','builder']).blocks_work.length,2);
+  const text=spawnSync(process.execPath,[cli,'--db',db,'--workspace','team','--as','builder','humans','--brief','--for','alice'],{encoding:'utf8',env:{...process.env,SASSATO_ROLE:'',SASSATO_WORKSPACE:'',SASSATO_DB:''}});
+  assert.equal(text.status,0,text.stderr);
+  const lines=text.stdout.trim().split('\n');
+  assert.equal(lines[0],'Blocks work (2), oldest first:');
+  assert.match(lines[1],new RegExp(`^${held.id} on ${own.id} · 0d · Which host\\? · holds back ${own.id} \\(builder\\)$`));
+  assert.match(lines[2],new RegExp(`^${install.id} · 0d · Install the build · holds back ${after.id} \\(builder\\)$`));
+  assert.equal(lines[3],'Can wait (2), oldest first:');
+  assert.ok(lines.length>=6);
+  const refused=raw(db,['humans','--brief','--limit','1','--as','builder']);
+  assert.notEqual(refused.status,0);assert.match(refused.stderr,/whole queue/);
+  assert.match(raw(db,['humans','--line-length','80','--as','builder']).stderr,/goes with --brief/);
+  const many=tasks.renderHumanBrief({for_role:'alice',blocks_work:[{id:'T1',kind:'task',age_days:0,text:'x',holds_back:['T2','T3','T4','T5','T6']}],can_wait:[]});
+  assert.match(many,/holds back T2, T3, T4, 2 more$/m);
+});

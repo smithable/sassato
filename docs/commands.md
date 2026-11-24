@@ -309,6 +309,7 @@ sas resolve B1 'Endpoint confirmed'
 sas ask-human T1 'Choose host' --for alice --options 'local|hosted' --recommend 2
 sas ask-human T1 'Approve manual operation?' --for alice --command 'exact command text'
 sas humans --for alice               # omit --for for the shared human queue
+sas humans --for alice --brief       # what holds work back, then what can wait
 sas answer H1 2 --as alice
 sas answer T1 'Free-text decision' --as alice
 sas withdraw H1 'Asked again as H2'   # the asker, the task's creator or a human
@@ -329,7 +330,10 @@ lists every pending question and human task (`--limit N` shows the first N and s
 left out; before T1379 a silent default of 50 hid the newest), each with who asked (`asked_by`: the asker, or the
 task's creator), its age in days (`age_days`), when it last changed (`touched_at`: the
 question or its task) and `untouched` when that was more than seven days ago; `--untouched`
-lists only those. Any human may answer; routing is not a private
+lists only those. `humans --brief [--for NAME] [--line-length N]` prints the same queue as plain lines in two
+groups, oldest first in each: "Blocks work" (an agent holds or is meant for a question's task, or an open
+task depends on the item's task, `block T --on T`) and "Can wait"; each line gives its H or T number, its
+age, its text and what it holds back (`--json` gives `blocks_work` and `can_wait`). Any human may answer; routing is not a private
 access boundary. Earlier command names remain documented in [compatibility](compatibility.md).
 
 Blocker kinds: agent, human, external, other. Every blocker names `--waits-on` explicitly.
