@@ -36,12 +36,12 @@ options.help = { ...options.help, short: 'h' };
 
 /** Splits one command line into words as a shell would, stopping at a pipe, a list or a redirect. */
 export function words(text) {
-  const line = text.replace(/<[^<>\s][^<>]*>/g, 'PLACEHOLDER'), out = []; let word = '', quote = '', started = false;
-  const push = () => { if (started) out.push(word); word = ''; started = false; };
+  const line = text.replace(/<[^<>\s][^<>]*>/g, 'PLACEHOLDER'), out = []; let word = '', quote = '', started = false, quoted = false;
+  const push = () => { if (started) out.push(Object.assign(new String(word), { quoted })); word = ''; started = false; quoted = false; };
   for (let i = 0; i < line.length; i++) {
     const c = line[i];
     if (quote) { if (c === quote) quote = ''; else word += c; continue; }
-    if (c === '"' || c === "'") { quote = c; started = true; continue; }
+    if (c === '"' || c === "'") { quote = c; started = true; quoted = true; continue; }
     if (/\s/.test(c)) { push(); continue; }
     if ('|;&<>)`#'.includes(c) && !(c === '|' && /^--[\w-]+$/.test(word) && line[i + 1] === '-')) { push(); return out; }
     word += c; started = true;
@@ -54,30 +54,53 @@ export function words(text) {
 function trimmed(ws) {
   const out = [];
   for (const w of ws) {
+    if (w.quoted) { out.push(String(w)); continue; }
     const m = /^(.*?)([.,:;]+)$/.exec(w);
     if (m) { if (m[1]) out.push(m[1]); break; }
-    out.push(w);
+    out.push(String(w));
   }
   return out;
 }
 
-/** Every `sas …` line in a text, marked `code` when in a code span or fenced block of Markdown. */
+/** Where each `sas` in a text starts outside quotes, as a shell would read them. */
+function unquoted(part) {
+  const at = new Set(); let quote = '';
+  for (let i = 0; i < part.length; i++) {
+    if (quote) { if (part[i] === quote) quote = ''; continue; }
+    if (part[i] === '"' || part[i] === "'") quote = part[i]; else at.add(i);
+  }
+  return at;
+}
+
+/** Every `sas …` line in a text, marked `code` when in a code span or a fenced block. */
 export function commandLines(text, prose) {
   const found = [], lines = text.split('\n'); let fenced = false;
-  lines.forEach((line, i) => {
-    if (/^\s*(```|~~~)/.test(line)) { fenced = !fenced; return; }
-    const parts = prose ? [[line, false]] : fenced ? [[line, true]] : line.split('`').map((part, k) => [part, k % 2 === 1]);
-    // Prose wraps: a command in the last prose part of a line reads on into the next line's prose.
-    const last = parts.at(-1), own = parts.map(([part]) => part.length);
-    if (last && !last[1] && i + 1 < lines.length && !/^\s*(```|~~~)/.test(lines[i + 1])) last[0] += ` ${(prose ? lines[i + 1] : lines[i + 1].split('`')[0]).trim()}`;
-    for (const [k, [part, code]] of parts.entries()) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i], n = i + 1;
+    if (!prose && /^\s*(```|~~~)/.test(line)) { fenced = !fenced; continue; }
+    let parts;
+    if (fenced) {
+      // A shell line continued with a backslash is one command.
+      let joined = line;
+      while (joined.endsWith('\\') && i + 1 < lines.length && !/^\s*(```|~~~)/.test(lines[i + 1])) joined = `${joined.slice(0, -1)} ${lines[++i]}`;
+      parts = [[joined, true, joined.length]];
+    } else {
+      parts = line.split('`').map((part, k) => [part, k % 2 === 1, part.length]);
+      // Prose wraps: a command in the last prose part of a line reads on into the next line's prose.
+      const last = parts.at(-1), next = lines[i + 1];
+      if (!last[1] && next !== undefined && (prose || !/^\s*(```|~~~)/.test(next))) last[0] += ` ${next.split('`')[0].trim()}`;
+    }
+    for (const [part, code, own] of parts) {
+      const outside = unquoted(part);
       for (const m of part.matchAll(/(?:^|[\s($=])(?:sas|sassato) +(?=[a-z-])/g)) {
-        if (m.index >= own[k]) break;
+        const start = m.index + m[0].search(/s/);
+        if (start >= own) break;
+        if (!outside.has(start)) continue;
         const ws = trimmed(words(part.slice(m.index + m[0].length)));
-        if (ws.length) found.push({ line: i + 1, code, args: ws, text: `${m[0].trim()} ${ws.join(' ')}` });
+        if (ws.length) found.push({ line: n, code, args: ws, text: `${m[0].trim()} ${ws.join(' ')}` });
       }
     }
-  });
+  }
   return found;
 }
 
