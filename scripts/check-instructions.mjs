@@ -29,7 +29,7 @@ const build = resolve(values.build ?? join(dirname(fileURLToPath(import.meta.url
 if (!existsSync(join(build, 'dist/cli.js'))) usage(`No built sassato at ${build} (dist/cli.js); run npm run build there.`);
 const cli = await import(pathToFileURL(join(build, 'dist/cli.js')).href);
 const info = JSON.parse(readFileSync(join(build, 'dist/build-info.json'), 'utf8'));
-// Builds before commandGroups was exported resolve these same groups in main().
+// Builds before commandGroups was exported resolve these groups in main() (schedule came after the export).
 const groups = cli.commandGroups ?? ['workspace', 'role', 'fact', 'rule', 'feedback', 'topic', 'session', 'job', 'checkout', 'brief', 'index', 'codex'];
 const options = Object.fromEntries([...cli.strings.map((n) => [n, { type: 'string' }]), ...cli.booleans.map((n) => [n, { type: 'boolean' }])]);
 options.help = { ...options.help, short: 'h' };
