@@ -11,7 +11,7 @@ import { validateBusyChecks, observeBusyChecks } from '../dist/busy-checks.js';
 import { stop } from '../dist/stop.js';
 import { activeStop, acknowledgeStop, resumeWork } from '../dist/control.js';
 import { loadConfig } from '../dist/config.js';
-import { registerSession } from '../dist/coordination.js';
+import { registerSession, processIdentity } from '../dist/coordination.js';
 
 function fixture(t) {
   const dir=mkdtempSync(join(tmpdir(),'sassato-busy-')),s=new Store(join(dir,'state.db'),'human',{create:true});
@@ -20,6 +20,9 @@ function fixture(t) {
 }
 const command=(name,script,timeout_ms=500)=>({name,type:'command',argv:[process.execPath,'-e',script],timeout_ms});
 const pause=ms=>new Promise(resolvePause=>setTimeout(resolvePause,ms));
+const procStat=pid=>{try{return readFileSync(`/proc/${pid}/stat`,'utf8').trim();}catch{return 'no /proc entry';}};
+// Where /proc gives an identity, a PID now held by another process does not count as the check.
+const alive=(pid,identity)=>{if(identity)return processIdentity(pid)===identity;try{process.kill(pid,0);return true;}catch(error){return error.code!=='ESRCH';}};
 
 test('busy commands distinguish busy, idle, failed and timed-out without shell interpretation',async t=>{
   const {dir}=fixture(t),unexpected=join(dir,'unexpected');
@@ -149,13 +152,14 @@ test('interrupting the CLI kills and reaps its busy command before returning int
     let checkPid;
     t.after(async()=>{if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');await exited;if(checkPid)try{process.kill(checkPid,'SIGKILL');}catch{ /* Check was already reaped. */ }});
     for(let n=0;n<200&&!existsSync(path);n++)await pause(10);
-    assert(existsSync(path),'busy command started');checkPid=Number(readFileSync(path,'utf8'));
+    assert(existsSync(path),'busy command started');checkPid=Number(readFileSync(path,'utf8'));const identity=processIdentity(checkPid);
     child.kill(signal);const result=await exited;
     assert.deepEqual(result,{code:4,signal:null});
     const report=JSON.parse(output);assert(report.interrupted);assert(!report.complete);assert.equal(report.machine_quiet,false);
-    // Steadied (T1253): on one Node 26 CI run the killed check still answered right after the CLI exited.
-    for(let n=0;n<200;n++){try{process.kill(checkPid,0);}catch{break;}await pause(10);}
-    assert.throws(()=>process.kill(checkPid,0),{code:'ESRCH'});checkPid=undefined;
+    // Steadied (T1253, T1460): the CLI reaps the check before it exits, so only a reused PID can still answer.
+    // Compare the process's identity (boot and start time) rather than whether the PID answers.
+    for(let n=0;n<200&&alive(checkPid,identity);n++)await pause(10);
+    assert(!alive(checkPid,identity),`busy command ${checkPid} still running: ${procStat(checkPid)}`);checkPid=undefined;
     assert(activeStop(s));
   }
 });
