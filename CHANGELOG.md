@@ -2,6 +2,9 @@
 
 ## 0.1.3 — unreleased
 
+- `humans` lists a human's whole queue by default (T1379). It stopped at 50 without saying so, which hid the three
+  newest of 53 questions; `--limit N` still cuts, and then says on stderr how many it left out.
+
 - `launch --watched ROLE...|--all` starts watched Codex roles in one command, with no question asked (T1193): a
   settings check on a throwaway thread (model, sandbox, approval, effort) replaces the `/status` look, the app server
   runs hidden with its log in the launch folder, the window is the only tab and is registered, and one background

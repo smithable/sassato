@@ -319,3 +319,17 @@ test('answer --asked records a question nobody recorded and its answer together 
   assert.notEqual(raw(db,['--as','alice','answer','--asked','Boom?','--new','Orphan','--relayed-by','builder','A']).status,0);
   assert.equal(s.get('SELECT count(*) AS n FROM tasks').n,before);
 });
+
+test('a human\'s queue is shown whole by default, and a --limit cut says how many it left out (T1379)',t=>{
+  const {s,db}=fixture(t);
+  const asked=[];
+  for(let i=0;i<53;i++){const task=tasks.addTask(s,{title:`Choice ${i}`});asked.push(tasks.askHuman(s,task.id,{question:`Question ${i}?`}).id);}
+  assert.deepEqual(tasks.humanQueue(s,{forRole:'alice'}).map(r=>r.id).sort(),[...asked].sort());
+  let hidden=0;
+  assert.equal(tasks.humanQueue(s,{forRole:'alice',limit:50,cut:n=>{hidden=n;}}).length,50);
+  assert.equal(hidden,3);
+  const whole=raw(db,['humans','--for','alice','--as','builder']);
+  assert.equal(whole.status,0,whole.stderr);assert.equal(JSON.parse(whole.stdout).length,53);assert.doesNotMatch(whole.stderr,/not shown/);
+  const cut=raw(db,['humans','--for','alice','--limit','50','--as','builder']);
+  assert.equal(JSON.parse(cut.stdout).length,50);assert.match(cut.stderr,/3 more not shown; leave out --limit/);
+});
