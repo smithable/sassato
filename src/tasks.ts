@@ -505,7 +505,7 @@ export function humanBrief(s: Store, options: { forRole?: string } = {}): { for_
     const holds = (taskNumber: number, question: boolean): string[] => {
       const held: string[] = [];
       if (question) {
-        const t = s.get('SELECT id,owner,for_role FROM tasks WHERE workspace_id=? AND id=?', s.ws, taskNumber);
+        const t = s.get("SELECT id,owner,for_role FROM tasks WHERE workspace_id=? AND id=? AND status NOT IN ('done','dropped')", s.ws, taskNumber);
         const who = [t?.owner, t?.for_role].find((r) => r && agents.has(r));
         if (who) held.push(`T${taskNumber} (${who})`);
       }
@@ -527,7 +527,8 @@ export function renderHumanBrief(data: { for_role: string | null; blocks_work: R
   const who = data.for_role ?? 'a human';
   if (data.blocks_work.length + data.can_wait.length === 0) return `Nothing waits on ${who}.`;
   const line = (r: Row) => {
-    const tail = r.holds_back.length ? ` · holds back ${r.holds_back.join(', ')}` : '';
+    const held = r.holds_back.length > 3 ? [...r.holds_back.slice(0, 3), `${r.holds_back.length - 3} more`] : r.holds_back;
+    const tail = held.length ? ` · holds back ${held.join(', ')}` : '';
     const head = `${r.id}${r.kind === 'question' ? ` on ${r.task_id}` : ''} · ${r.age_days}d · `;
     const room = Math.max(20, lineLength - head.length - tail.length);
     const text = String(r.text).replace(/\s+/g, ' ').trim();
