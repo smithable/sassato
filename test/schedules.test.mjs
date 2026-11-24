@@ -203,6 +203,35 @@ test('edits apply from now and need the current revision',t=>{
   assert.match(showTask(s,issued.task).title,/^Morning standup \(due 2027-01-06 10:00/);
 });
 
+test('review points: a template edit is prospective, a new audience gets its own task, a clock set back repeats nothing',t=>{
+  const {s}=fixture(t);
+  const c=addSchedule(s,{title:'Hourly check',every:60,forRole:'a'});
+  mock.timers.tick(HOUR);
+  const first=tickSchedules(s).issued[0].task;
+  mock.timers.tick(HOUR+30*MIN);
+  const edited=editSchedule(s,c.id,{expect:1,forRole:'human',humanOnly:true});
+  assert.equal(edited.next_due,'2027-01-04T09:00:00.000Z','the due 08:00 is not issued under the new revision');
+  assert.deepEqual(['status','revision','task'].map(k=>showSchedule(s,c.id).history[0][k]),['superseded',1,null]);
+  mock.timers.tick(30*MIN);
+  const out=tickSchedules(s);
+  assert.equal(out.coalesced.length,0,'the open task is for a, the template now for a human');
+  assert.notEqual(out.issued[0].task,first);
+  assert.deepEqual([showTask(s,out.issued[0].task).for_role,showTask(s,out.issued[0].task).human_only],['human',true]);
+  mock.timers.tick(2*HOUR);tickSchedules(s);
+  const paused=pauseSchedule(s,c.id,{expect:2,reason:'clock check'});
+  mock.timers.setTime(Date.now()-2*HOUR-30*MIN);
+  const back=resumeSchedule(s,c.id,{expect:paused.revision});
+  assert.equal(back.next_due,'2027-01-04T12:00:00.000Z','after the last recorded 11:00, not the 09:00 after the clock');
+  mock.timers.setTime(Date.parse('2027-01-04T12:00:00Z'));
+  assert.equal(tickSchedules(s).coalesced[0].due_at,'2027-01-04T12:00:00.000Z');
+});
+
+test('impossible calendar dates are refused',t=>{
+  fixture(t);
+  for(const once of ['2027-02-30T12:00:00Z','2027-04-31T12:00:00Z','2027-13-01T12:00:00Z'])assert.throws(()=>parseRule({once},Date.now()),coded(2),once);
+  assert.equal(parseRule({once:'2028-02-29T12:00:00Z'},Date.now()).at,'2028-02-29T12:00:00.000Z');
+});
+
 test('a once schedule issues one task and then has no next time',t=>{
   const {s}=fixture(t);
   const c=addSchedule(s,{title:'Renew the certificate',once:'2027-01-05T12:00:00+02:00'});

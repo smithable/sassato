@@ -36,7 +36,7 @@ function instant(tz: string, wall: number): number {
   if (valid.length) return Math.min(...valid);
   let lo = Math.min(a, b), hi = Math.max(a, b);
   const before = offset(tz, lo);
-  while (hi - lo > MIN) { const mid = lo + Math.floor((hi - lo) / 2 / MIN) * MIN; if (offset(tz, mid) === before) lo = mid; else hi = mid; }
+  while (hi - lo > MIN) { const mid = lo + Math.max(MIN, Math.floor((hi - lo) / 2 / MIN) * MIN); if (offset(tz, mid) === before) lo = mid; else hi = mid; }
   return hi;
 }
 
@@ -64,7 +64,9 @@ export function civil(rule: Rule, at: string): string {
 }
 
 function strictInstant(value: string, label: string): string {
-  check(INSTANT.test(value) && Number.isFinite(Date.parse(value)), `${label} needs an ISO instant with Z or an offset, such as 2027-01-15T12:00:00Z`);
+  const [y, m, d] = value.slice(0, 10).split('-').map(Number), day = new Date(Date.UTC(y!, m! - 1, d!));
+  check(INSTANT.test(value) && Number.isFinite(Date.parse(value)) && day.getUTCMonth() === m! - 1 && day.getUTCDate() === d,
+    `${label} needs an ISO instant with Z or an offset, such as 2027-01-15T12:00:00Z`);
   return iso(Date.parse(value));
 }
 
@@ -152,6 +154,13 @@ function settleOverdue(s: Store, row: Row, status: 'skipped' | 'superseded', at:
   record(s, row, Date.parse(row.next_due), last, slots, status, null, at);
 }
 
+// The next due time after now, never one a recorded occurrence already covers (a clock set back).
+function nextFrom(s: Store, row: Row, rule: Rule, at: string): string | null {
+  const covered = s.get('SELECT MAX(last_due_at) AS t FROM occurrences WHERE workspace_id=? AND schedule_id=?', s.ws, row.id)?.t;
+  const next = nextDue(rule, Math.max(Date.parse(at), covered ? Date.parse(covered) : -Infinity));
+  return next === null ? null : iso(next);
+}
+
 function changed(s: Store, row: Row, patch: Row, action: string, detail: Row = {}): Row {
   const keys = Object.keys(patch);
   s.run(`UPDATE schedules SET ${keys.map(k => `${k}=?`).join(',')} WHERE workspace_id=? AND id=?`, ...keys.map(k => patch[k]), s.ws, row.id);
@@ -191,14 +200,13 @@ export function editSchedule(s: Store, schedule: string, o: EditOptions): Row {
     if (o.body !== undefined) patch.body = o.body;
     if (o.forRole !== undefined) patch.for_role = o.forRole;
     if (o.humanOnly !== undefined) patch.human_only = o.humanOnly ? 1 : 0;
-    if ([o.once, o.daily, o.weekly, o.every, o.at, o.tz, o.anchor].some(v => v !== undefined && v !== false)) {
-      const rule = parseRule(o, Date.parse(at));
-      settleOverdue(s, row, row.state === 'active' ? 'superseded' : 'skipped', at);
-      const next = nextDue(rule, Date.parse(at));
-      patch.rule = JSON.stringify(rule);
-        patch.next_due = next === null ? null : iso(next);
-    }
+    const ruleChanged = [o.once, o.daily, o.weekly, o.every, o.at, o.tz, o.anchor].some(v => v !== undefined && v !== false);
+    const rule = ruleChanged ? parseRule(o, Date.parse(at)) : ruleOf(row);
+    if (ruleChanged) patch.rule = JSON.stringify(rule);
     check(Object.keys(patch).length > 3, 'Nothing to change');
+    // Every edit applies from now: a due time not yet ticked is recorded under the old revision, not issued under the new one.
+    settleOverdue(s, row, row.state === 'active' ? 'superseded' : 'skipped', at);
+    if (ruleChanged || (row.next_due && Date.parse(row.next_due) <= Date.parse(at))) patch.next_due = nextFrom(s, row, rule, at);
     return changed(s, row, patch, 'edited');
   });
 }
@@ -221,8 +229,7 @@ export function resumeSchedule(s: Store, schedule: string, o: { expect: string |
     check(row.state === 'paused', `C${row.id} is ${row.state}`, 4);
     expectRevision(row, o.expect);
     settleOverdue(s, row, 'skipped', at);
-    const next = nextDue(ruleOf(row), Date.parse(at));
-    return changed(s, row, { state: 'active', state_reason: '', next_due: next === null ? null : iso(next), revision: row.revision + 1, updated_by: actor, updated_at: at }, 'resumed');
+    return changed(s, row, { state: 'active', state_reason: '', next_due: nextFrom(s, row, ruleOf(row), at), revision: row.revision + 1, updated_by: actor, updated_at: at }, 'resumed');
   });
 }
 
@@ -263,8 +270,10 @@ export function tickSchedules(s: Store): Row {
         deferred.push({ schedule: `C${row.id}`, due_at: row.next_due, reason: `${row.for_role} is stopped` }); continue;
       }
       const rule = ruleOf(row), first = Date.parse(row.next_due), { last, slots, next } = slotsUntil(rule, first, t);
-      const prior = s.get("SELECT o.task_id,t.status FROM occurrences o JOIN tasks t ON t.workspace_id=o.workspace_id AND t.id=o.task_id WHERE o.workspace_id=? AND o.schedule_id=? AND o.status='issued' ORDER BY o.id DESC LIMIT 1", s.ws, row.id);
-      if (prior && !['done', 'dropped'].includes(prior.status)) coalesced.push(record(s, row, first, last, slots, 'coalesced', prior.task_id, at));
+      const prior = s.get("SELECT o.task_id,t.status,t.for_role,t.human_only FROM occurrences o JOIN tasks t ON t.workspace_id=o.workspace_id AND t.id=o.task_id WHERE o.workspace_id=? AND o.schedule_id=? AND o.status='issued' ORDER BY o.id DESC LIMIT 1", s.ws, row.id);
+      // Coalesce only into an open task for the same audience; a template now for someone else gets its own task.
+      const same = prior && (prior.for_role ?? null) === (row.for_role ?? null) && prior.human_only === row.human_only;
+      if (prior && same && !['done', 'dropped'].includes(prior.status)) coalesced.push(record(s, row, first, last, slots, 'coalesced', prior.task_id, at));
       else {
         const when = slots > 1 ? `${civil(rule, iso(first))} to ${civil(rule, iso(last))}, ${slots} due times` : civil(rule, iso(first));
         const task = addTask(s, {

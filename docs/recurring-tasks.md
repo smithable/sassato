@@ -96,7 +96,7 @@ CREATE TABLE schedule_ticks(workspace_id PRIMARY KEY, last_tick_at, last_actor);
   (`deferred` in the result) and goes out at the first tick after the STOP is lifted. The occurrence's unique
   key and the advanced `next_due` mean a second tick, a second store or a clock set back issue nothing.
 - **Pause and edits.** A paused schedule shows no next time and issues nothing. On resume, due times passed
-  while paused are recorded once as `skipped`, and the next time is the first one after now. A rule change
+  while paused are recorded once as `skipped`, and the next time is the first one after now. Any edit
   records due times not yet ticked as `superseded` and starts from the edit; tasks already issued keep their
   text and revision.
 - **Time.** Daily and weekly times are civil times in their zone: a time in a spring-forward gap goes out at
