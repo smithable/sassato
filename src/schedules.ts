@@ -263,10 +263,11 @@ export function previewSchedule(s: Store, schedule: string, count = 5): Row {
  * record against that task and no new wake. A schedule whose role is stopped is left due. A second
  * tick finds nothing due; a clock set back finds the cursor ahead of it.
  */
-// Schedules a tick under a clock ahead of this one advanced: their recorded range ends after now,
-// so their next due time is held there until the clock reaches it (T1445). Nothing is duplicated.
+// Active schedules a tick under a clock ahead of this one advanced: their recorded range ends after now,
+// and nextFrom() never goes below it, so their next due time is held there until the clock reaches it
+// (T1445). Nothing is duplicated. Times are all toISOString(), fixed width, so text order is time order.
 function heldAhead(s: Store, at: string): Row[] {
-  return s.all("SELECT 'C'||schedule_id AS schedule, MAX(last_due_at) AS until FROM occurrences WHERE workspace_id=? GROUP BY schedule_id HAVING MAX(last_due_at)>? ORDER BY schedule_id", s.ws, at).map(r => ({ schedule: r.schedule, until: r.until }));
+  return s.all("SELECT 'C'||o.schedule_id AS schedule, MAX(o.last_due_at) AS until FROM occurrences o JOIN schedules c ON c.workspace_id=o.workspace_id AND c.id=o.schedule_id WHERE o.workspace_id=? AND c.state='active' GROUP BY o.schedule_id HAVING MAX(o.last_due_at)>? ORDER BY o.schedule_id", s.ws, at).map(r => ({ schedule: r.schedule, until: r.until }));
 }
 
 export function tickSchedules(s: Store): Row {
@@ -305,8 +306,8 @@ export function tickSchedules(s: Store): Row {
     }
     s.run('INSERT INTO schedule_ticks(workspace_id,last_tick_at,last_actor) VALUES(?,?,?) ON CONFLICT(workspace_id) DO UPDATE SET last_tick_at=excluded.last_tick_at,last_actor=excluded.last_actor', s.ws, at, actor);
     const held = heldAhead(s, at);
-    // Shown only when a clock was ahead: an earlier tick later than now, or a range recorded past now.
-    const ahead = before && before > at || held.length ? { clock_ahead: { last_tick_at: before && before > at ? before : null, held } } : {};
+    // Shown only while a schedule is held; the earlier tick is named when it is later than now.
+    const ahead = held.length ? { clock_ahead: { last_tick_at: before && before > at ? before : null, held } } : {};
     return { at, issued, coalesced, deferred, ...ahead };
   });
 }

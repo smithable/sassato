@@ -97,8 +97,8 @@ CREATE TABLE schedule_ticks(workspace_id PRIMARY KEY, last_tick_at, last_actor);
   key and the advanced `next_due` mean a second tick, a second store or a clock set back issue nothing.
   A tick under a clock far ahead records a range ending in the future, and the schedule's next time is held
   there until the clock reaches it (delayed, never duplicated). Once the clock is back, `schedule tick`
-  reports it under `clock_ahead` (the earlier, later tick and the held schedules) and `schedule list` names
-  the held schedules (`held_ahead`).
+  reports it under `clock_ahead` (the held active schedules, and the earlier tick when it is later than now)
+  and `schedule list` names the held schedules (`held_ahead`).
 - **Pause and edits.** A paused schedule shows no next time and issues nothing. On resume, due times passed
   while paused are recorded once as `skipped`, and the next time is the first one after now. Any edit
   records due times not yet ticked as `superseded` and starts from the edit; tasks already issued keep their

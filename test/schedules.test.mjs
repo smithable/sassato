@@ -130,6 +130,11 @@ test('a tick under a clock far ahead is flagged when the clock comes back, and t
   mock.timers.setTime(Date.parse(until)+HOUR);
   assert.equal(tickSchedules(s).clock_ahead,undefined,'gone once the clock reaches the held time');
   assert.equal(listSchedules(s).held_ahead,undefined);
+  mock.timers.setTime(Date.parse(until)+30*24*HOUR);tickSchedules(s);
+  const pausedUntil=s.get('SELECT MAX(last_due_at) AS t FROM occurrences').t;
+  pauseSchedule(s,'C1',{expect:1,reason:'held test'});mock.timers.setTime(Date.parse(until)+2*HOUR);
+  assert.equal(listSchedules(s).held_ahead,undefined,'a paused schedule is not named');
+  assert.ok(pausedUntil>new Date().toISOString());
 });
 
 test('a tick issues one task per due time, and a second tick finds nothing',t=>{
