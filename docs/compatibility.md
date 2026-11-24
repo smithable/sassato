@@ -105,3 +105,21 @@ A first `wait` now requires an explicit `--since` cursor or saved notification
 progress. Keep the cursor captured before reading/handling current work, as described
 in [context management](context-management.md). Reading urgent mail does not clear
 its wake-up; acknowledge it after handling to avoid repeated delivery.
+
+## Checking instruction files before an upgrade
+
+Instruction files, skills and start prompts name sassato commands and flags. A new build can
+rename or drop one, and a session would then follow a rule the build refuses. Before installing
+a build, check every command line those files name against that build's own parser:
+
+```sh
+node scripts/check-instructions.mjs --build PATH_TO_NEW_BUILD \
+  --roles a,b --workspace WORKSPACE RULES.md skills/*/SKILL.md
+```
+
+It reads `sassato …` and `sas …` in Markdown code spans and fenced blocks, and in prose where the
+next word names a command, and parses each line as the build would. With `--roles` it also reads
+each role's start prompt from `launch ROLE --dry-run --json`, run on a migrated copy of the
+database so the real one is not written. `--unused` lists the build's commands and flags that no
+file mentions, which shows where a rule could use a newer command. It exits 1 when a line does
+not parse or a file cannot be read.
