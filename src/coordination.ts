@@ -26,13 +26,13 @@ function limit(value: number | undefined, fallback = 20): number { return intege
 function publicMessage(row: Row, immediate=false): Row { return { ...row, urgency:row.urgency??(row.urgent?5:row.reply?3:1), now:immediate, urgent:Boolean(row.urgent), reply:Boolean(row.reply), id: `M${row.id}`, task_id: row.task_id === null ? null : `T${row.task_id}` }; }
 function publicFact(row: Row): Row { return { ...row, id: `F${row.id}`, expired: factExpired(row) }; }
 // A fact's expiry (T1415): a date alone means the end of that day in UTC; shown as the date when it is one.
-export const factExpired = (row: Row): boolean => Boolean(row.expires_at && row.expires_at <= now());
+export const factExpired = (row: Row, at = now()): boolean => Boolean(row.expires_at && row.expires_at < at);
 export const factUntil = (expiresAt: string | null | undefined): string | null => !expiresAt ? null : expiresAt.endsWith('T23:59:59.999Z') ? expiresAt.slice(0,10) : expiresAt;
-function expiry(value: string): string | null {
+function expiry(value: string, at: string): string | null {
   if (value === 'none') return null;
-  const at = date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T23:59:59.999Z` : value,'--expires');
-  check(at > now(),'--expires is in the past: give a later date, or none');
-  return at;
+  const until = date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T23:59:59.999Z` : value,'--expires');
+  check(until >= at,'--expires is in the past: give a later date, or none');
+  return until;
 }
 function externalId(value: string | undefined): string | null {
   if (value === undefined) return null;
@@ -282,9 +282,10 @@ export function setFact(s: Store, key: string, input: FactInput): Row {
     if (old) check(input.expected_version !== undefined && integer(input.expected_version,'expected version',1) === old.version,'Fact changed or expected version missing; read it and retry with --expect',4);
     else check(input.expected_version === undefined || input.expected_version === 0,'Fact does not exist at that version',4);
     // A correction keeps a future expiry; one already past must be restated, so a short-lived fact never turns permanent by accident.
-    if (input.expires === undefined && old?.expires_at) check(!factExpired(old),`Fact ${key} expired at ${factUntil(old.expires_at)}: say --expires DATE, or --expires none to keep it for good`);
-    const expires = input.expires === undefined ? old?.expires_at ?? null : expiry(input.expires);
+    // One clock reading decides the expiry checks and stamps the change.
     const at = now();
+    if (input.expires === undefined && old?.expires_at) check(!factExpired(old, at),`Fact ${key} expired at ${factUntil(old.expires_at)}: say --expires DATE, or --expires none to keep it for good`);
+    const expires = input.expires === undefined ? old?.expires_at ?? null : expiry(input.expires, at);
     s.run('INSERT INTO facts(workspace_id,key,body,source,checked_at,updated_by,updated_at,expires_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(workspace_id,key) DO UPDATE SET body=excluded.body,source=excluded.source,checked_at=excluded.checked_at,updated_by=excluded.updated_by,updated_at=excluded.updated_at,expires_at=excluded.expires_at,version=facts.version+1',s.ws,key,body,source,checked,actor,at,expires);
     const result = s.get('SELECT * FROM facts WHERE workspace_id=? AND key=?',s.ws,key)!;
     s.index('fact',`F${result.id}`,key,`${body}\nSource: ${source}\nChecked: ${checked}${expires ? `\nUntil: ${factUntil(expires)}` : ''}`,{role:actor,updated_at:at});
@@ -376,7 +377,7 @@ export function context(s: Store, options: { since?: number; limit?: number; bri
     section('answers',"SELECT q.id,q.task_id,substr(q.answer,1,180) AS answer,e.id AS event_id FROM events e JOIN questions q ON q.workspace_id=e.workspace_id AND e.entity_id='H'||q.id JOIN tasks t ON t.workspace_id=q.workspace_id AND t.id=q.task_id WHERE e.workspace_id=? AND e.id>? AND e.entity='question' AND e.action='answered' AND (q.asked_by=? OR t.owner=?) ORDER BY e.id",[s.ws,since,actor,actor],r=>({id:`H${r.id}`,task:`T${r.task_id}`,answer:clip(r.answer,160),event_id:r.event_id}));
     // An agent sees only its own stale work; a human role keeps the whole workspace in view.
     section('stale',"SELECT id,title,status,owner,lease_until,priority,creator FROM tasks WHERE workspace_id=? AND lease_until<? AND status IN ('doing','blocked','review') AND (owner=? OR ?='human') ORDER BY lease_until,id",[s.ws,now(),actor,s.role(actor).kind],taskRow);
-    section('facts',"SELECT f.id,f.key,substr(f.body,1,160) AS body,substr(f.source,1,120) AS source,f.checked_at,f.version,f.expires_at,min(e.id) AS event_id FROM events e JOIN facts f ON f.workspace_id=e.workspace_id AND e.entity_id='F'||f.id WHERE e.workspace_id=? AND e.id>? AND e.entity='fact' AND (f.expires_at IS NULL OR f.expires_at>?) GROUP BY f.id ORDER BY event_id",[s.ws,since,now()],r=>({id:`F${r.id}`,key:clip(r.key,80),text:clip(r.body,140),until:factUntil(r.expires_at),source:clip(r.source,90),checked_at:r.checked_at,version:r.version,event_id:r.event_id}));
+    section('facts',"SELECT f.id,f.key,substr(f.body,1,160) AS body,substr(f.source,1,120) AS source,f.checked_at,f.version,f.expires_at,min(e.id) AS event_id FROM events e JOIN facts f ON f.workspace_id=e.workspace_id AND e.entity_id='F'||f.id WHERE e.workspace_id=? AND e.id>? AND e.entity='fact' AND (f.expires_at IS NULL OR f.expires_at>=?) GROUP BY f.id ORDER BY event_id",[s.ws,since,now()],r=>({id:`F${r.id}`,key:clip(r.key,80),text:clip(r.body,140),until:factUntil(r.expires_at),source:clip(r.source,90),checked_at:r.checked_at,version:r.version,event_id:r.event_id}));
     const feedback = feedbackSummary(s,actor);
     if (feedback) sections.feedback = [feedback];
     const session = s.get('SELECT * FROM sessions WHERE workspace_id=? AND role=? AND ended_at IS NULL',s.ws,actor);

@@ -37,12 +37,12 @@ audit found.
 | Section | Rule | What a hand audit found |
 | - | - | - |
 | `quiet-review` | Task in `review` or `blocked` with no event (note, change, blocker) for N days. | "done with proof" |
-| `names-merged-pr` | Task not done or dropped whose last event is a note that names a pull request (`#123` or a PR URL) and says `merged`. | "done with proof" |
+| `names-merged-pr` | Task not done or dropped whose last event is a note (or a submit note) that names a pull request (`#123` or a PR URL) and says `merged`, not "not merged" or "once … merged". | "done with proof" |
 | `old-questions` | Pending question older than N days (the `humans` queue's `age_days`). | questions overtaken by events |
 | `same-title` | Two or more open tasks whose titles match once cut down: lower case, a leading `Low:`/`Feedback (…):` and the punctuation removed. | "duplicates" |
 | `expired-facts` | Facts past their `expires_at` (below). | — |
-| `dated-facts` | Facts not expired whose key holds a date (`YYYY-MM-DD`) more than N days old. | "stale facts": usage snapshots, keys with a date |
-| `marked-facts` | Facts whose body starts with `DUPLICATE`, `Superseded` or `Withdrawn` (any case). | "self-marked duplicate" |
+| `dated-facts` | Facts not expired whose key's newest date (`YYYY-MM-DD`) is N or more days old. | "stale facts": usage snapshots, keys with a date |
+| `marked-facts` | Facts not expired whose body starts with `DUPLICATE`, `Superseded` or `Withdrawn` (any case). | "self-marked duplicate" |
 | `unchecked-facts` | Facts not expired whose `checked_at` is more than 30 days old. Only with `--section unchecked-facts`: most decisions are older than that by nature and would bury the rest. | — |
 
 ### Not in v1

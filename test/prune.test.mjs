@@ -9,7 +9,7 @@ import { Store, SCHEMA_VERSION } from '../dist/storage.js';
 import { initWorkspace, search } from '../dist/admin.js';
 import { setFact, facts, factHistory, context, renderContext } from '../dist/coordination.js';
 import * as tasks from '../dist/tasks.js';
-import { prune, renderPrune, cutTitle } from '../dist/prune.js';
+import { prune, renderPrune, cutTitle, saysMerged } from '../dist/prune.js';
 
 const cli = resolve('bin/sassato.js');
 const DAY = 86_400_000;
@@ -81,6 +81,7 @@ test('prune lists each rule\'s case, leaves the near miss out, and writes nothin
   // quiet-review: in review 10 days; the near miss went to review today.
   const quiet = tasks.addTask(s, { title: 'Old review' }); tasks.takeTask(s, quiet.id); tasks.submitTask(s, quiet.id, 'ready');
   setFact(s, 'usage.week', { body: 'x', source: 'y', expires: ahead(1) });
+  setFact(s, 'decisions.gone', { body: 'Withdrawn', source: 'y', expires: ahead(1) });
   mock.timers.tick(DAY);
   const qt = tasks.addTask(s, { title: 'Pick a host' });
   const oldQ = tasks.askHuman(s, qt.id, { question: 'Which host?' });
@@ -90,6 +91,8 @@ test('prune lists each rule\'s case, leaves the near miss out, and writes nothin
   const merged = tasks.addTask(s, { title: 'Merged work' }); tasks.takeTask(s, merged.id); tasks.noteTask(s, merged.id, 'PR #12 merged at abc123');
   const later = tasks.addTask(s, { title: 'Merged then more' }); tasks.takeTask(s, later.id); tasks.noteTask(s, later.id, 'PR #13 merged'); tasks.noteTask(s, later.id, 'found another bug');
   const unmerged = tasks.addTask(s, { title: 'Opened only' }); tasks.takeTask(s, unmerged.id); tasks.noteTask(s, unmerged.id, 'PR #14 opened');
+  const notYet = tasks.addTask(s, { title: 'Not yet' }); tasks.takeTask(s, notYet.id); tasks.noteTask(s, notYet.id, 'PR #15 has not merged');
+  const submitted = tasks.addTask(s, { title: 'Submitted merged' }); tasks.takeTask(s, submitted.id); tasks.submitTask(s, submitted.id, 'PR #16 merged at def456');
   // old-questions: one 9 days old (above), one today.
   const qt2 = tasks.addTask(s, { title: 'Pick a name' }); tasks.askHuman(s, qt2.id, { question: 'Which name?' });
   // same-title: two open tasks that differ in case, prefix and punctuation; a done one does not count.
@@ -98,6 +101,8 @@ test('prune lists each rule\'s case, leaves the near miss out, and writes nothin
   // facts
   setFact(s, 'usage.snapshot-2020-05-01', { body: 'old numbers', source: 'y' });
   setFact(s, `usage.snapshot-${ahead(0)}`, { body: 'today', source: 'y' });
+  setFact(s, `usage.edge-${new Date(Date.now() - 7 * DAY).toISOString().slice(0, 10)}`, { body: 'seven days', source: 'y' });
+  setFact(s, 'usage.build-12020-05-01', { body: 'not a date', source: 'y' });
   setFact(s, 'decisions.old', { body: 'Superseded by decisions.new', source: 'y' });
   setFact(s, 'decisions.kept', { body: 'Not superseded', source: 'y', checked_at: ago(40).slice(0, 10) });
 
@@ -108,13 +113,13 @@ test('prune lists each rule\'s case, leaves the near miss out, and writes nothin
   assert.deepEqual(Object.keys(sec), ['quiet-review', 'names-merged-pr', 'old-questions', 'same-title', 'expired-facts', 'dated-facts', 'marked-facts']);
   // The question's task is blocked on it and quiet for 9 days, so it is listed too.
   assert.deepEqual(ids(sec['quiet-review']), [quiet.id, qt.id]);
-  assert.deepEqual(ids(sec['names-merged-pr']), [merged.id]);
+  assert.deepEqual(ids(sec['names-merged-pr']).sort(), [merged.id, submitted.id].sort());
   assert.deepEqual(ids(sec['old-questions']), [oldQ.id]);
   assert.deepEqual(ids(sec['same-title']).sort(), [a.id, b.id].sort());
   assert.match(sec['same-title'].find((r) => r.id === a.id).rule, new RegExp(`same title as ${b.id}$`));
   assert.ok(!ids(sec['same-title']).includes(c.id));
-  assert.deepEqual(sec['expired-facts'].map((r) => r.key), ['usage.week']);
-  assert.deepEqual(sec['dated-facts'].map((r) => r.key), ['usage.snapshot-2020-05-01']);
+  assert.deepEqual(sec['expired-facts'].map((r) => r.key).sort(), ['decisions.gone', 'usage.week']);
+  assert.deepEqual(sec['dated-facts'].map((r) => r.key), ['usage.snapshot-2020-05-01', `usage.edge-${new Date(Date.now() - 7 * DAY).toISOString().slice(0, 10)}`]);
   assert.deepEqual(sec['marked-facts'].map((r) => r.key), ['decisions.old']);
 
   // unchecked-facts is asked for by name only.
@@ -128,9 +133,19 @@ test('prune lists each rule\'s case, leaves the near miss out, and writes nothin
   assert.throws(() => prune(s, { days: 0 }), /days/);
 
   const text = renderPrune(listing);
+  // A long title gives way; the rule and the other id stay.
+  const long = tasks.addTask(s, { title: `Same ${'very '.repeat(40)}long title` }), twin = tasks.addTask(s, { title: `same ${'very '.repeat(40)}long title!` });
+  const lines = renderPrune(prune(s, { sections: 'same-title' }), 100).split('\n');
+  assert.ok(lines.some((l) => l.startsWith(`${long.id} `) && l.endsWith(`same title as ${twin.id}`) && l.length <= 100), lines.join('\n'));
+  assert.throws(() => renderPrune(listing, 0), /line length/);
   assert.match(text, /^Prune listing \(read-only; quiet age 7 days\)/);
   assert.match(text, new RegExp(`${quiet.id} · 10d · builder · Old review · review, nothing recorded for 7\\+ days`));
   assert.match(text, /usage\.week · x · until \d{4}-\d{2}-\d{2} · past its expiry/);
+});
+
+test('saysMerged wants a pull request said to have merged', () => {
+  for (const yes of ['PR #12 merged', 'merged https://github.com/o/r/pull/7 at abc', 'Merged #3.']) assert.ok(saysMerged(yes), yes);
+  for (const no of ['PR #12 has not merged', "#12 isn't merged yet", 'close once #12 is merged', 'merged the branch', 'PR #4 unmerged', 'merge #4 when green']) assert.ok(!saysMerged(no), no);
 });
 
 test('cutTitle drops case, a Low or Feedback prefix and punctuation', () => {

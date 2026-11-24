@@ -129,7 +129,7 @@ export function search(s: Store, query: string, options: {type?: string;role?: s
   params.push(integer(options.limit ?? 20,'limit',1,100));
   const rows = s.all(`SELECT d.type,d.entity_id AS id,d.title,d.role,d.status,d.updated_at,snippet(search,1,'[',']',' … ',24) AS snippet,bm25(search,5,1) AS rank FROM search JOIN documents d ON d.id=search.rowid WHERE ${filters.join(' AND ')} ORDER BY rank,d.id LIMIT ?`,...params);
   // An expired fact is still found, marked (T1415).
-  for (const row of rows) if (row.type === 'fact') row.expired = Boolean(s.get('SELECT 1 FROM facts WHERE workspace_id=? AND id=? AND expires_at<=?',s.ws,Number(String(row.id).slice(1)),now()));
+  for (const row of rows) if (row.type === 'fact') row.expired = Boolean(s.get('SELECT 1 FROM facts WHERE workspace_id=? AND id=? AND expires_at<?',s.ws,Number(String(row.id).slice(1)),now()));
   return rows;
 }
 export function doctor(s: Store): Row {

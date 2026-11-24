@@ -24,7 +24,7 @@ function change(s:Store,actor:string,event:Row):{section:string;row:Row}|undefin
     if(row)return {section:'mail',row:{id:event.entity_id,from:row.sender,task:row.task_id?`T${row.task_id}`:null,state:row.state,text:contextLine(row.text)}};
   }
   if(event.entity==='fact'&&/^F\d+$/.test(event.entity_id)) {
-    const row=s.get('SELECT key,substr(body,1,200) AS text,version,expires_at FROM facts WHERE workspace_id=? AND id=? AND (expires_at IS NULL OR expires_at>?)',s.ws,Number(event.entity_id.slice(1)),now());
+    const row=s.get('SELECT key,substr(body,1,200) AS text,version,expires_at FROM facts WHERE workspace_id=? AND id=? AND (expires_at IS NULL OR expires_at>=?)',s.ws,Number(event.entity_id.slice(1)),now());
     if(row){const {expires_at,...rest}=row;return {section:'facts',row:{id:event.entity_id,...rest,text:contextLine(row.text),until:expires_at?String(expires_at).endsWith('T23:59:59.999Z')?String(expires_at).slice(0,10):expires_at:null}};}
   }
   if(event.entity==='question'&&event.action==='answered'&&/^H\d+$/.test(event.entity_id)) {

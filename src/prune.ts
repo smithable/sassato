@@ -2,6 +2,7 @@
 // rule, so a line says why it is there. Nothing is changed: a session judges the list and closes under the usual rules.
 import type { Row, Store } from './storage.js';
 import { check, integer, now } from './errors.js';
+import { contextLine } from './context-brief.js';
 import { factUntil } from './coordination.js';
 import { humanQueue } from './tasks.js';
 
@@ -15,6 +16,9 @@ const clip = (value: unknown, max = 120) => { const v = String(value ?? '').repl
 // Titles match once the case, a leading "Low:" or "Feedback (…):" and the punctuation are gone.
 export const cutTitle = (title: string) => title.toLowerCase().replace(/^\s*(low|feedback(\s*\([^)]*\))?)\s*:\s*/, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 
+// A note that names a pull request and says it merged, not one that says it has not or will.
+export const saysMerged = (note: string) => /(#\d+|\/pull\/\d+)/.test(note) && /\bmerged\b/i.test(note)
+  && !/\b(not|never|once|until|when|after|before|if|unmerged)\b[^.;]{0,40}\bmerged\b|n't[^.;]{0,40}\bmerged\b/i.test(note);
 export interface PruneData { days: number; sections: Record<string, Row[]> }
 export function prune(s: Store, options: { days?: number; sections?: string } = {}): PruneData {
   const quiet = integer(options.days ?? 7, 'days', 1, 3650);
@@ -28,8 +32,8 @@ export function prune(s: Store, options: { days?: number; sections?: string } = 
     const rules: Record<string, () => Row[]> = {
       'quiet-review': () => s.all(`SELECT t.id,t.title,t.owner,t.for_role,t.status,coalesce(${lastEvent},t.updated_at) AS last FROM tasks t WHERE t.workspace_id=? AND t.status IN ('review','blocked') AND coalesce(${lastEvent},t.updated_at)<?`, s.ws, cutoff)
         .map((r) => task(r, `${r.status}, nothing recorded for ${quiet}+ days`, r.last)),
-      'names-merged-pr': () => s.all(`SELECT t.id,t.title,t.owner,t.for_role,e.created_at,json_extract(e.detail,'$.note') AS note FROM tasks t JOIN events e ON e.workspace_id=t.workspace_id AND e.entity='task' AND e.entity_id='T'||t.id WHERE t.workspace_id=? AND ${open} AND e.id=(SELECT max(x.id) FROM events x WHERE x.workspace_id=t.workspace_id AND x.entity='task' AND x.entity_id='T'||t.id) AND e.action='note'`, s.ws)
-        .filter((r) => /\bmerged\b/i.test(r.note ?? '') && /(#\d+|\/pull\/\d+)/.test(r.note ?? ''))
+      'names-merged-pr': () => s.all(`SELECT t.id,t.title,t.owner,t.for_role,e.created_at,json_extract(e.detail,'$.note') AS note FROM tasks t JOIN events e ON e.workspace_id=t.workspace_id AND e.entity='task' AND e.entity_id='T'||t.id WHERE t.workspace_id=? AND ${open} AND e.id=(SELECT max(x.id) FROM events x WHERE x.workspace_id=t.workspace_id AND x.entity='task' AND x.entity_id='T'||t.id) AND e.action IN ('note','submitted')`, s.ws)
+        .filter((r) => saysMerged(r.note ?? ''))
         .map((r) => ({ ...task(r, 'its last note says a pull request merged', r.created_at), note: clip(r.note) })),
       'old-questions': () => humanQueue(s).filter((r) => r.kind === 'question' && r.age_days >= quiet)
         .map((r) => ({ id: r.id, age_days: r.age_days, since: r.created_at, holder: r.for_role, task: r.task_id, text: clip(r.question), rule: `pending ${quiet}+ days` })),
@@ -40,13 +44,14 @@ export function prune(s: Store, options: { days?: number; sections?: string } = 
         }
         return [...groups.values()].filter((g) => g.length > 1).flatMap((g) => g.map((r) => ({ ...task(r, `same title as ${g.filter((o) => o !== r).map((o) => `T${o.id}`).join(', ')}`, r.created_at) })));
       },
-      'expired-facts': () => s.all('SELECT * FROM facts WHERE workspace_id=? AND expires_at<=?', s.ws, stamp).map((r) => fact(r, 'past its expiry', r.expires_at)),
-      'dated-facts': () => s.all('SELECT * FROM facts WHERE workspace_id=? AND (expires_at IS NULL OR expires_at>?)', s.ws, stamp)
-        .map((r) => ({ r, dated: (String(r.key).match(/\d{4}-\d{2}-\d{2}/g) ?? []).filter((d) => Number.isFinite(Date.parse(d))).sort().pop() }))
-        .filter(({ dated }) => dated !== undefined && dated < cutoff.slice(0, 10)).map(({ r, dated }) => fact(r, `its key names ${dated}`, `${dated}T00:00:00.000Z`)),
-      'marked-facts': () => s.all('SELECT * FROM facts WHERE workspace_id=?', s.ws).filter((r) => /^\s*(duplicate|superseded|withdrawn)\b/i.test(r.body))
+      'expired-facts': () => s.all('SELECT * FROM facts WHERE workspace_id=? AND expires_at<?', s.ws, stamp).map((r) => fact(r, 'past its expiry', r.expires_at)),
+      // The newest date in the key counts: a key naming a range that ends recently is current.
+      'dated-facts': () => s.all('SELECT * FROM facts WHERE workspace_id=? AND (expires_at IS NULL OR expires_at>=?)', s.ws, stamp)
+        .map((r) => ({ r, dated: (String(r.key).match(/(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)/g) ?? []).filter((d) => Number.isFinite(Date.parse(d))).sort().pop() }))
+        .filter(({ dated }) => dated !== undefined && dated <= cutoff.slice(0, 10)).map(({ r, dated }) => fact(r, `its key names ${dated}`, `${dated}T00:00:00.000Z`)),
+      'marked-facts': () => s.all('SELECT * FROM facts WHERE workspace_id=? AND (expires_at IS NULL OR expires_at>=?)', s.ws, stamp).filter((r) => /^\s*(duplicate|superseded|withdrawn)\b/i.test(r.body))
         .map((r) => fact(r, 'its text marks it duplicate, superseded or withdrawn', r.updated_at)),
-      'unchecked-facts': () => s.all('SELECT * FROM facts WHERE workspace_id=? AND checked_at<? AND (expires_at IS NULL OR expires_at>?)', s.ws, new Date(at - 30 * DAY).toISOString(), stamp)
+      'unchecked-facts': () => s.all('SELECT * FROM facts WHERE workspace_id=? AND checked_at<? AND (expires_at IS NULL OR expires_at>=?)', s.ws, new Date(at - 30 * DAY).toISOString(), stamp)
         .map((r) => fact(r, 'not checked for 30+ days', r.checked_at)),
     };
     const sections: Record<string, Row[]> = {};
@@ -55,13 +60,17 @@ export function prune(s: Store, options: { days?: number; sections?: string } = 
   });
 }
 export function renderPrune(data: PruneData, lineLength = 160): string {
+  integer(lineLength, 'line length', 60, 1000);
   const lines = [`Prune listing (read-only; quiet age ${data.days} days). Nothing was changed: close under the usual rules.`];
   for (const [name, rows] of Object.entries(data.sections)) {
     lines.push(`${name} (${rows.length}):`);
     for (const r of rows) {
       const who = r.holder ? ` · ${r.holder}` : r.key ? ` · ${r.key}` : '';
-      const line = `${r.id}${r.task ? ` on ${r.task}` : ''} · ${r.age_days}d${who} · ${r.text}${r.until ? ` · until ${r.until}` : ''} · ${r.rule}`;
-      lines.push(line.length > lineLength ? `${line.slice(0, lineLength - 1)}…` : line);
+      // The text gives way first, so the rule (and a same-title's other ids) always shows.
+      const head = `${r.id}${r.task ? ` on ${r.task}` : ''} · ${r.age_days}d${who} · `, tail = `${r.until ? ` · until ${r.until}` : ''} · ${r.rule}`;
+      const room = Math.max(lineLength - head.length - tail.length, 12);
+      const text = contextLine(r.text, 1000);
+      lines.push(head + (text.length > room ? `${text.slice(0, room - 1)}…` : text) + tail);
     }
   }
   return lines.join('\n');
