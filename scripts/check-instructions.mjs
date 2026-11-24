@@ -36,12 +36,18 @@ options.help = { ...options.help, short: 'h' };
 
 /** Splits one command line into words as a shell would, stopping at a pipe, a list or a redirect. */
 export function words(text) {
-  const line = text.replace(/<[^<>\s][^<>]*>/g, 'PLACEHOLDER'), out = []; let word = '', quote = '', started = false, quoted = false;
-  const push = () => { if (started) out.push(Object.assign(new String(word), { quoted })); word = ''; started = false; quoted = false; };
+  const line = text.replace(/<[^<>\s][^<>]*>/g, 'PLACEHOLDER'), out = []; let word = '', quote = '', started = false, tail = null;
+  // tail: what followed the last closing quote, so punctuation there still ends a sentence.
+  const push = () => { if (started) out.push(Object.assign(new String(word), { tail })); word = ''; started = false; tail = null; };
   for (let i = 0; i < line.length; i++) {
     const c = line[i];
-    if (quote) { if (c === quote) quote = ''; else word += c; continue; }
-    if (c === '"' || c === "'") { quote = c; started = true; quoted = true; continue; }
+    if (quote) {
+      if (quote === '"' && c === '\\' && i + 1 < line.length) word += line[++i];
+      else if (c === quote) { quote = ''; tail = ''; } else word += c;
+      continue;
+    }
+    if (opens(line, i)) { quote = c; started = true; continue; }
+    if (tail !== null && !/\s/.test(c)) tail += c;
     if (/\s/.test(c)) { push(); continue; }
     if ('|;&<>)`#'.includes(c) && !(c === '|' && /^--[\w-]+$/.test(word) && line[i + 1] === '-')) { push(); return out; }
     word += c; started = true;
@@ -54,7 +60,11 @@ export function words(text) {
 function trimmed(ws) {
   const out = [];
   for (const w of ws) {
-    if (w.quoted) { out.push(String(w)); continue; }
+    if (w.tail !== null) {
+      const end = /[.,:;]+$/.exec(w.tail);
+      if (end) { out.push(String(w).slice(0, w.length - end[0].length)); break; }
+      out.push(String(w)); continue;
+    }
     const m = /^(.*?)([.,:;]+)$/.exec(w);
     if (m) { if (m[1]) out.push(m[1]); break; }
     out.push(String(w));
@@ -62,12 +72,21 @@ function trimmed(ws) {
   return out;
 }
 
+/** A quote opens a quoted word; an apostrophe inside a word ("don't") does not. */
+function opens(text, i) {
+  return (text[i] === '"' || text[i] === "'") && (i === 0 || !/[\p{L}\p{N}]/u.test(text[i - 1]) || text[i] === '"');
+}
+
 /** Where each `sas` in a text starts outside quotes, as a shell would read them. */
 function unquoted(part) {
   const at = new Set(); let quote = '';
   for (let i = 0; i < part.length; i++) {
-    if (quote) { if (part[i] === quote) quote = ''; continue; }
-    if (part[i] === '"' || part[i] === "'") quote = part[i]; else at.add(i);
+    if (quote) {
+      if (quote === '"' && part[i] === '\\') i++;
+      else if (part[i] === quote) quote = '';
+      continue;
+    }
+    if (opens(part, i)) quote = part[i]; else at.add(i);
   }
   return at;
 }
@@ -82,7 +101,8 @@ export function commandLines(text, prose) {
     if (fenced) {
       // A shell line continued with a backslash is one command.
       let joined = line;
-      while (joined.endsWith('\\') && i + 1 < lines.length && !/^\s*(```|~~~)/.test(lines[i + 1])) joined = `${joined.slice(0, -1)} ${lines[++i]}`;
+      // An odd run of backslashes continues the line; the shell drops the backslash and the newline.
+      while (/(^|[^\\])(\\\\)*\\$/.test(joined) && i + 1 < lines.length && !/^\s*(```|~~~)/.test(lines[i + 1])) joined = joined.slice(0, -1) + lines[++i];
       parts = [[joined, true, joined.length]];
     } else {
       parts = line.split('`').map((part, k) => [part, k % 2 === 1, part.length]);
