@@ -494,3 +494,47 @@ export function humanQueue(s: Store, options: { limit?: number; forRole?: string
     return shown;
   });
 }
+
+// One look at what waits on a human (T1411): the queue above, split into what holds work back (an
+// agent holds or is meant for the question's task, or an open task depends on the item's task,
+// `block T --on T`) and what can wait, oldest first in each, with what each holds back.
+export function humanBrief(s: Store, options: { forRole?: string } = {}): { for_role: string | null; blocks_work: Row[]; can_wait: Row[] } {
+  return s.snapshot(() => {
+    const recipient = options.forRole === undefined ? null : humanRole(s, options.forRole);
+    const agents = new Set(s.all("SELECT name FROM roles WHERE workspace_id=? AND kind!='human'", s.ws).map((r) => r.name));
+    const holds = (taskNumber: number, question: boolean): string[] => {
+      const held: string[] = [];
+      if (question) {
+        const t = s.get('SELECT id,owner,for_role FROM tasks WHERE workspace_id=? AND id=?', s.ws, taskNumber);
+        const who = [t?.owner, t?.for_role].find((r) => r && agents.has(r));
+        if (who) held.push(`T${taskNumber} (${who})`);
+      }
+      for (const d of s.all("SELECT t.id,t.owner,t.for_role FROM dependencies d JOIN tasks t ON t.workspace_id=d.workspace_id AND t.id=d.task_id WHERE d.workspace_id=? AND d.depends_on=? AND t.status NOT IN ('done','dropped') ORDER BY t.id", s.ws, taskNumber)) {
+        const who = d.owner ?? d.for_role;
+        held.push(who ? `T${d.id} (${who})` : `T${d.id}`);
+      }
+      return held;
+    };
+    const rows = humanQueue(s, { forRole: options.forRole }).map((row): Row => {
+      const question = row.kind === 'question';
+      const task = Number(String(question ? row.task_id : row.id).slice(1));
+      return { id: row.id, kind: row.kind, age_days: row.age_days, created_at: row.created_at, text: question ? row.question : row.title, task_id: `T${task}`, holds_back: holds(task, question) };
+    }).sort((a, b) => a.created_at.localeCompare(b.created_at) || a.kind.localeCompare(b.kind) || Number(a.id.slice(1)) - Number(b.id.slice(1)));
+    return { for_role: recipient, blocks_work: rows.filter((r) => r.holds_back.length > 0), can_wait: rows.filter((r) => r.holds_back.length === 0) };
+  });
+}
+export function renderHumanBrief(data: { for_role: string | null; blocks_work: Row[]; can_wait: Row[] }, lineLength = 160): string {
+  const who = data.for_role ?? 'a human';
+  if (data.blocks_work.length + data.can_wait.length === 0) return `Nothing waits on ${who}.`;
+  const line = (r: Row) => {
+    const tail = r.holds_back.length ? ` · holds back ${r.holds_back.join(', ')}` : '';
+    const head = `${r.id}${r.kind === 'question' ? ` on ${r.task_id}` : ''} · ${r.age_days}d · `;
+    const room = Math.max(20, lineLength - head.length - tail.length);
+    const text = String(r.text).replace(/\s+/g, ' ').trim();
+    return `${head}${text.length > room ? `${text.slice(0, room - 1)}…` : text}${tail}`;
+  };
+  return [
+    `Blocks work (${data.blocks_work.length}), oldest first:`, ...data.blocks_work.map(line),
+    `Can wait (${data.can_wait.length}), oldest first:`, ...data.can_wait.map(line),
+  ].join('\n');
+}
