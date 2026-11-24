@@ -8,7 +8,7 @@ import { assertManagedIdentity,assertManagedWrite,type ManagedCredentials,type M
 // SQLite rows deliberately stay flexible at this small adapter boundary.
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 18;
 export function databasePath(value?: string): string {
   const path = resolve(value ?? process.env.SASSATO_DB ?? `${process.env.XDG_DATA_HOME ?? `${homedir()}/.local/share`}/sassato/sassato.db`);
   let ancestor = path;
@@ -146,7 +146,8 @@ export class Store {
       if (current === 13) { this.db.exec(MIGRATION_14); current = 14; }
       if (current === 14) { this.db.exec(MIGRATION_15); current = 15; }
       if (current === 15) { this.db.exec(MIGRATION_16); current = 16; }
-      if (current === 16) this.db.exec(MIGRATION_17);
+      if (current === 16) { this.db.exec(MIGRATION_17); current = 17; }
+      if (current === 17) this.db.exec(MIGRATION_18);
     });
   }
   private cancelClosedQuestions(): void {
@@ -399,4 +400,13 @@ CREATE TABLE topic_links(id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id INTE
 CREATE INDEX topic_links_topic ON topic_links(workspace_id,topic_id,status);
 INSERT INTO schema_migrations VALUES(17,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 PRAGMA user_version=17;
+`;
+
+const MIGRATION_18 = `
+CREATE TABLE schedules(id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id INTEGER NOT NULL REFERENCES workspaces(id), title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', for_role TEXT, human_only INTEGER NOT NULL DEFAULT 0 CHECK(human_only IN (0,1)), rule TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('active','paused','archived')), state_reason TEXT NOT NULL DEFAULT '', next_due TEXT, revision INTEGER NOT NULL DEFAULT 1, created_by TEXT NOT NULL, updated_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(workspace_id,id), FOREIGN KEY(workspace_id,for_role) REFERENCES roles(workspace_id,name));
+CREATE INDEX schedules_due ON schedules(workspace_id,state,next_due);
+CREATE TABLE occurrences(id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id INTEGER NOT NULL REFERENCES workspaces(id), schedule_id INTEGER NOT NULL, due_at TEXT NOT NULL, last_due_at TEXT NOT NULL, slots INTEGER NOT NULL CHECK(slots>=1), label TEXT NOT NULL, revision INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('issued','coalesced','skipped','superseded')), task_id INTEGER, created_at TEXT NOT NULL, UNIQUE(workspace_id,schedule_id,due_at), FOREIGN KEY(workspace_id,schedule_id) REFERENCES schedules(workspace_id,id), FOREIGN KEY(workspace_id,task_id) REFERENCES tasks(workspace_id,id));
+CREATE TABLE schedule_ticks(workspace_id INTEGER PRIMARY KEY REFERENCES workspaces(id), last_tick_at TEXT NOT NULL, last_actor TEXT NOT NULL);
+INSERT INTO schema_migrations VALUES(18,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+PRAGMA user_version=18;
 `;

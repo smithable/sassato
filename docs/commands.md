@@ -289,6 +289,26 @@ acknowledged. The design is in [topics.md](topics.md).
   `Topics: N open (M pending questions)`, and `context --since` a `topics` row for each topic the role
   keeps or has noted that another role changed.
 
+## Schedules (T1423)
+
+A schedule is a task template and a time rule; a tick turns what has come due into ordinary tasks. The
+design, and what this first step leaves out, is in [recurring-tasks.md](recurring-tasks.md).
+
+| Command | Meaning |
+| - | - |
+| `schedule add TITLE --once INSTANT` | One time, an ISO instant with `Z` or an offset |
+| `schedule add TITLE --daily --at HH:MM --tz ZONE` / `--weekly mon,thu --at HH:MM --tz ZONE` | Civil times in an IANA zone |
+| `schedule add TITLE --every MINUTES [--anchor INSTANT]` | Elapsed time from the anchor (the current minute by default) |
+| `… [--body TEXT] [--for ROLE] [--human-only]` | The task template. A human adds a schedule; an agent proposes one in a task |
+| `schedule list [--due] [--all]` | The last tick, overdue count, and per schedule its rule, next time and last occurrence. `--due` only those due now, `--all` adds archived ones |
+| `schedule show C1 [--limit N]` | The schedule and its occurrences, newest first |
+| `schedule preview C1 [--count N]` | The next due times, in UTC and local time. No side effects |
+| `schedule edit C1 --expect REVISION [--title\|--body\|--for\|--human-only\|a new rule]` | A human changes it from now on; unticked due times of the old rule are recorded as `superseded` |
+| `schedule pause C1 --expect REVISION --reason TEXT` | Any role; issues nothing until resumed |
+| `schedule resume C1 --expect REVISION` | A human; the times passed while paused are recorded as `skipped` |
+| `schedule archive C1 --expect REVISION --reason TEXT` | A human; history and issued tasks stay |
+| `schedule tick` | Issues what is due: one task per schedule for the whole missed range, or a `coalesced` record while its last task is still open. A role under STOP is left due |
+
 ## Rules (T1276)
 
 A rule is a standing instruction for the sessions (the text the machine rules file holds today), kept with
