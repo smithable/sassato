@@ -48,7 +48,8 @@ else if(args[0]==='queue'){
   const worker=new Store(db,'b');worker.use('team');
   registerSession(worker,{provider:'codex',external_id:thread,pid:child.pid});
   saveNotificationProgress(worker,{cursor:0,expected_version:0});
-  const calls=()=>existsSync(log)?readFileSync(log,'utf8').trim().split('\n').map(line=>JSON.parse(line)):[];
+  // The fake creates the log before it writes its line: only whole lines (ending in a newline) count (T1427).
+  const calls=()=>existsSync(log)?readFileSync(log,'utf8').split('\n').slice(0,-1).map(line=>JSON.parse(line)):[];
   const cli=(...args)=>spawnSync(process.execPath,[resolve('bin/sassato.js'),...args,'--db',db,'--as','b','--workspace','team'],
     {encoding:'utf8',env:{...process.env,CODEX_THREAD_ID:thread}});
   t.after(async()=>{process.env.PATH=originalPath;worker.close();operator.close();child.kill();await exited;if(server.listening)server.close();rmSync(dir,{recursive:true,force:true});});
