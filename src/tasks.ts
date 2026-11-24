@@ -25,7 +25,7 @@ export function writable(s: Store, row: Row): string {
   check(human(s) || row.owner === actor || unownedEditor(row, actor), `Only the owner, an unowned task's creator or target, or a human role may modify this task. ${retarget(row, actor)}`, 3);
   return actor;
 }
-function pendingHandoff(s:Store,row:Row):boolean {
+export function pendingHandoff(s:Store,row:Row):boolean {
   // Finalization names the exact pending event; one completion must not clear a
   // different outstanding request, nor keep blocking later unbound work forever.
   return Boolean(s.get(`SELECT p.id FROM events p WHERE p.workspace_id=? AND p.entity='task-handoff' AND p.entity_id=? AND p.action='pending'
@@ -182,7 +182,8 @@ export function renewTask(s: Store, task: string, options: { hours?: number } = 
 export function noteTask(s: Store, task: string, note: string): Row {
   return s.tx(() => {
     const row = s.task(task), actor = s.requireActor();
-    if (!isTopic(row) && row.creator !== actor && row.for_role !== actor) writable(s, row);
+    // Any role notes an open topic; a closed one, like work, takes notes from its holder, creator or target.
+    if (!(isTopic(row) && !terminal(row)) && row.creator !== actor && row.for_role !== actor) writable(s, row);
     text(note, 'note'); return change(s, row, {}, 'note', { note });
   });
 }
@@ -264,7 +265,8 @@ export function reviewTask(s: Store, task: string, options: { approve: boolean; 
   });
 }
 function completeTask(s: Store, row: Row, options: { ref?: string }, allowOpen: boolean): Row {
-  writable(s, row); executable(s, row);
+  // Every way to finish work (done, answer --close) refuses a topic: it closes with topic close.
+  workOnly(row); writable(s, row); executable(s, row);
   check(row.status === 'doing' || row.status === 'review' || (allowOpen && row.status === 'open' && !row.lease_until), row.status === 'blocked' ? `Cannot complete: ${notWorkable(s, row, 'take it and complete it')}` : row.status === 'done' || row.status === 'dropped' ? `Cannot complete: ${taskId(row)} is already ${row.status}` : 'Claim the task before completing it, or reconcile eligible imported/human-only work', 4);
   unblocked(s, row);
   check(!row.review_required || row.reviewed_by, 'This task needs an approved review before completion', 4);

@@ -1,6 +1,6 @@
 import { type Store, type Row } from './storage.js';
 import { check, text, safe, id, now } from './errors.js';
-import { cancelPending, change, human, isTopic, taskView, terminal, writable } from './tasks.js';
+import { cancelPending, change, human, isTopic, pendingHandoff, taskView, terminal, writable } from './tasks.js';
 
 // A topic (T1419) is a task of kind 'topic': a shared page for planning, research and decisions.
 // It is never offered, taken or woken for as work; any role notes and links it, and it closes only
@@ -67,6 +67,11 @@ export function topicFrom(s: Store, task: string): Row {
     check(['open', 'doing', 'blocked'].includes(row.status), `T${row.id} is ${row.status}: only open, held or blocked work becomes a topic`, 4);
     check(!row.owner || row.owner === actor, `T${row.id} is held by ${row.owner}: only its holder converts it`, 3);
     check(!s.get('SELECT 1 FROM dependencies WHERE workspace_id=? AND (task_id=? OR depends_on=?) LIMIT 1', s.ws, row.id, row.id), `T${row.id} has dependencies: remove them first (sas unafter)`, 4);
+    // As for release: no hand-over pending and no checkout bound to it.
+    check(!pendingHandoff(s, row) && !s.get('SELECT 1 FROM checkout_bindings WHERE workspace_id=? AND task_id=? AND released_at IS NULL', s.ws, row.id), `T${row.id} has a pending hand-over or a bound checkout: settle it first`, 4);
+    // Only its pending questions come along; any other open blocker is resolved first, by its own path.
+    check(!s.get("SELECT 1 FROM blockers b WHERE b.workspace_id=? AND b.task_id=? AND b.status='open' AND NOT EXISTS(SELECT 1 FROM questions q WHERE q.workspace_id=b.workspace_id AND q.blocker_id=b.id AND q.status='pending')", s.ws, row.id), `T${row.id} has open blockers other than its questions: resolve them first`, 4);
+    check(!s.get("SELECT 1 FROM topic_links WHERE workspace_id=? AND target=? AND follow_up=1 AND status='linked'", s.ws, `T${row.id}`), `T${row.id} is a topic's follow-up: it stays work`, 4);
     change(s, row, { kind: 'topic', status: 'open', owner: null, lease_until: null, for_role: actor, reviewed_by: null, review_note: null }, 'converted-to-topic');
     return showTopic(s, task);
   });
@@ -114,7 +119,6 @@ export function closeTopic(s: Store, task: string, options: CloseTopicOptions): 
       }
       for (const item of into) insertLink(s, row, item, 'follow-up', true, actor, at);
       const note = `Closed into ${into.join(', ')}`, cancelled = cancelPending(s, row, actor, note, at);
-      resolveOpen(s, row, at);
       change(s, row, { status: 'done', completed_at: at }, 'topic-closed', { into, cancelled_questions: cancelled });
     } else {
       text(options.reason!, 'reason');
@@ -124,15 +128,10 @@ export function closeTopic(s: Store, task: string, options: CloseTopicOptions): 
         check(question.status === 'answered', `${options.acknowledged} is not answered yet`, 4);
       } else check(isHuman, 'Closing without follow-ups needs a human: --acknowledged H… (an answered question on this topic), or a human role', 3);
       const cancelled = cancelPending(s, row, actor, options.reason!, at);
-      resolveOpen(s, row, at);
       change(s, row, { status: 'dropped', completed_at: at }, 'topic-closed', { reason: options.reason, acknowledged: options.acknowledged ?? null, cancelled_questions: cancelled });
     }
     return showTopic(s, task);
   });
-}
-// Blockers a converted task brought with it end with the topic.
-function resolveOpen(s: Store, row: Row, at: string): void {
-  s.run("UPDATE blockers SET status='resolved',resolved_at=? WHERE workspace_id=? AND task_id=? AND status='open'", at, s.ws, row.id);
 }
 
 export function topicLinks(s: Store, row: Row): Row[] {

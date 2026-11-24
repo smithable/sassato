@@ -101,12 +101,15 @@ test('close --into needs existing work or facts; --reason needs an answered ques
   assert.deepEqual(closed.pending_questions,[],'closing cancels its questions');
   assert.equal(s.get("SELECT status FROM questions WHERE id=?",Number(String(pending.question_id??pending.id).slice(1))).status,'cancelled');
   assert.throws(()=>linkTopic(s,topic.id,work.id),e=>e.code===4,'a closed topic takes no links');
+  s.actor='c';assert.throws(()=>noteTask(s,topic.id,'Late word'),e=>e.code===3,'a closed topic takes notes as work does');
+  s.actor='a';assert.throws(()=>topicFrom(s,work.id),code(4),'a follow-up stays work');s.actor='b';
 
   s.actor='a';const dropped=addTopic(s,{title:'Dropped idea'});
   assert.throws(()=>closeTopic(s,dropped.id,{reason:'Nobody wants it'}),e=>e.code===3);
   const q=askHuman(s,dropped.id,{question:'Drop it?',forRole:'human'}),qid=String(q.question_id??q.id);
   assert.throws(()=>closeTopic(s,dropped.id,{reason:'Nobody wants it',acknowledged:qid}),e=>e.code===4,'not answered yet');
-  s.actor='human';answerQuestion(s,qid,'Yes, drop it');
+  s.actor='human';assert.throws(()=>answerQuestion(s,qid,'Yes, drop it',{close:true}),code(4),'answer --close does not close a topic');
+  answerQuestion(s,qid,'Yes, drop it');
   s.actor='a';assert.equal(closeTopic(s,dropped.id,{reason:'Nobody wants it',acknowledged:qid}).status,'dropped');
   const third=addTopic(s,{title:'Third'});
   s.actor='human';assert.equal(closeTopic(s,third.id,{reason:'Not now'}).status,'dropped');
@@ -129,6 +132,8 @@ test('topic from keeps the id, notes and questions; only open unheld work conver
   s.actor='human';assert.throws(()=>topicFrom(s,human.id),e=>e.code===3);
   s.actor='a';const finished=addTask(s,{title:'Finished'});takeTask(s,finished.id);doneTask(s,finished.id);
   assert.throws(()=>topicFrom(s,finished.id),e=>e.code===4);
+  const waiting=addTask(s,{title:'Waits on a vendor'});blockTask(s,waiting.id,{kind:'external',waitingOn:'vendor',body:'Quote due'});
+  assert.throws(()=>topicFrom(s,waiting.id),e=>e.code===4&&/blockers/.test(e.message),'other blockers are resolved first');
 });
 
 test('the keeper gets a quiet entry and a brief row; topics are counted in context',async t=>{
