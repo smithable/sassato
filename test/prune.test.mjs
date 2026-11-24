@@ -197,16 +197,20 @@ test('tasks --closed-since: every task closed since a time, its result, and a ma
   const bare = tasks.addTask(s, { title: 'No note at all' }); tasks.takeTask(s, bare.id); tasks.doneTask(s, bare.id);
   const again = tasks.addTask(s, { title: 'Reopened, closed bare' }); tasks.takeTask(s, again.id); tasks.noteTask(s, again.id, 'Merged as #16'); tasks.doneTask(s, again.id);
   tasks.reopenTask(s, again.id, 'not fixed after all'); tasks.takeTask(s, again.id); tasks.doneTask(s, again.id);
+  const sha = tasks.addTask(s, { title: 'No word merged' }); tasks.takeTask(s, sha.id); tasks.noteTask(s, sha.id, 'Done in #1368 (279d8f7ef)'); tasks.doneTask(s, sha.id, { ref: '279d8f7ef' });
+  const nonote = tasks.addTask(s, { title: 'Reference only' }); tasks.takeTask(s, nonote.id); tasks.doneTask(s, nonote.id, { ref: 'on main 75d12c5' });
   const openTask = tasks.addTask(s, { title: 'Still open' }); tasks.noteTask(s, openTask.id, 'Merged as #14');
   const data = closedSince(s, { since });
   assert.deepEqual(data.items.map((r) => [r.id, r.status, r.names_result]), [
-    [merged.id, 'done', true], [ref.id, 'done', false], [follow.id, 'dropped', true], [self.id, 'done', false], [bare.id, 'done', false], [again.id, 'done', false],
-  ], 'the newest text is the result: a done reference after a merged note replaces it');
-  assert.equal(data.items[1].result, 'read only, nothing changed');
+    [merged.id, 'done', true], [ref.id, 'done', true], [follow.id, 'dropped', true], [self.id, 'done', false], [bare.id, 'done', false], [again.id, 'done', false], [sha.id, 'done', true], [nonote.id, 'done', true],
+  ]);
+  assert.equal(data.items[1].result, 'PR #13 merged · read only, nothing changed', 'the last note and the done reference together');
+  assert.equal(data.items[6].result, 'Done in #1368 (279d8f7ef) · 279d8f7ef');
   assert.equal(data.items[4].result, '');
-  assert.equal(namesResult('Not merged: #15 waits', 'T9'), false);
+  assert.equal(namesResult('Not merged yet, waits on T9', 'T9'), false);
+  assert.equal(namesResult('on main 75d12c5', 'T9'), true);
   const text = renderClosed(data, 120);
-  assert.match(text, /^Closed since .*: 6 task\(s\), 4 naming no result/);
+  assert.match(text, /^Closed since .*: 8 task\(s\), 3 naming no result/);
   assert.match(text, new RegExp(`\\n! ${bare.id} · done .* · No note at all → \\(no note\\)`));
   assert.match(text, new RegExp(`\\n  ${merged.id} · done `));
   assert.deepEqual(closedSince(s, { since, limit: 2 }).has_more, true);
@@ -216,7 +220,7 @@ test('tasks --closed-since: every task closed since a time, its result, and a ma
   const line = renderClosed(long, 60).split('\n')[1];
   assert.ok(line.length <= 60, line); assert.match(line, /→ Merged/);
   const r = raw(db, ['tasks', '--closed-since', since, '--json']);
-  assert.equal(r.status, 0, r.stderr); assert.equal(JSON.parse(r.stdout).items.length, 6);
+  assert.equal(r.status, 0, r.stderr); assert.equal(JSON.parse(r.stdout).items.length, 8);
   const mixed = raw(db, ['tasks', '--closed-since', since, '--status', 'done']);
   assert.equal(mixed.status, 2); assert.match(mixed.stderr, /takes --owner, --for, --limit and --line-length only/);
 });

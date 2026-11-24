@@ -24,8 +24,9 @@ export const saysMerged = (note: string) => /(#\d+|\/pull\/\d+)/.test(note) && /
 export interface PruneData { days: number; sections: Record<string, Row[]> }
 
 // Every task closed since a time, with what it led to (T1447): its last note, drop reason or done reference.
-// A result names a merged pull request or another task; a row with neither is marked for the daily read.
-export const namesResult = (note: string, self: string) => saysMerged(note) || [...note.matchAll(/\bT(\d+)\b/g)].some((m) => `T${m[1]}` !== self);
+// A result names a merged pull request, a pull request number, a commit or another task; a row with none is marked for the daily read.
+export const namesResult = (note: string, self: string) =>
+  saysMerged(note) || /#\d+\b/.test(note) || /\b[0-9a-f]{7,40}\b/.test(note) || [...note.matchAll(/\bT(\d+)\b/g)].some((m) => `T${m[1]}` !== self);
 export interface ClosedData { since: string; items: Row[]; has_more: boolean }
 export function closedSince(s: Store, options: { since: string; owner?: string; forRole?: string; limit?: number }): ClosedData {
   // A bare date is midnight UTC; a time needs Z or an offset, and an impossible calendar date is refused.
@@ -40,9 +41,10 @@ export function closedSince(s: Store, options: { since: string; owner?: string; 
       // Only this closing counts: a note from before the last reopen is not its result.
       const events = s.all("SELECT action,detail FROM events WHERE workspace_id=? AND entity='task' AND entity_id=? AND action IN ('note','dropped','completed','reopened') ORDER BY id DESC LIMIT 50", s.ws, self);
       const cut = events.findIndex((e) => e.action === 'reopened');
-      const texts = (cut < 0 ? events : events.slice(0, cut))
-        .map((e) => { const d = JSON.parse(e.detail); return String((e.action === 'completed' ? d.ref : d.note) ?? '').trim(); }).filter(Boolean);
-      const result = texts[0] ?? '';
+      // The last note (or the drop reason) and the done reference are judged together: 'note · ref'.
+      const closing = (cut < 0 ? events : events.slice(0, cut)).map((e) => ({ action: e.action, d: JSON.parse(e.detail) }));
+      const note = String(closing.find((e) => e.action !== 'completed')?.d.note ?? '').trim(), ref = String(closing.find((e) => e.action === 'completed')?.d.ref ?? '').trim();
+      const result = [note, ref].filter(Boolean).join(' · ');
       return { id: self, status: r.status, closed_at: r.completed_at, holder: r.owner ?? r.for_role ?? null, title: clip(r.title), result: clip(result, 400), names_result: namesResult(result, self) };
     });
     return { since, items, has_more: rows.length > limit };
