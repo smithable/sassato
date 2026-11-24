@@ -325,7 +325,8 @@ a question that has no task yet: it makes the task (owned by and for the asker, 
 question as its body) and asks the question in one step, and prints both ids; a task id
 beside `--new` is refused. The question is one quoted text: a further word is refused (T1275),
 so options are always one `--options 'a|b'`, never `--options 'a' 'b'`. `humans [--for NAME] [--limit N] [--untouched]`
-lists pending questions and human tasks, each with who asked (`asked_by`: the asker, or the
+lists every pending question and human task (`--limit N` shows the first N and says on stderr how many it
+left out; before T1379 a silent default of 50 hid the newest), each with who asked (`asked_by`: the asker, or the
 task's creator), its age in days (`age_days`), when it last changed (`touched_at`: the
 question or its task) and `untouched` when that was more than seven days ago; `--untouched`
 lists only those. Any human may answer; routing is not a private
