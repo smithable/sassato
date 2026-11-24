@@ -195,22 +195,28 @@ test('tasks --closed-since: every task closed since a time, its result, and a ma
   const follow = tasks.addTask(s, { title: 'Led to a task' }); tasks.dropTask(s, follow.id, 'duplicate; the work is T1');
   const self = tasks.addTask(s, { title: 'Names only itself' }); tasks.takeTask(s, self.id); tasks.noteTask(s, self.id, `${self.id}: looked, not merged yet`); tasks.doneTask(s, self.id);
   const bare = tasks.addTask(s, { title: 'No note at all' }); tasks.takeTask(s, bare.id); tasks.doneTask(s, bare.id);
+  const again = tasks.addTask(s, { title: 'Reopened, closed bare' }); tasks.takeTask(s, again.id); tasks.noteTask(s, again.id, 'Merged as #16'); tasks.doneTask(s, again.id);
+  tasks.reopenTask(s, again.id, 'not fixed after all'); tasks.takeTask(s, again.id); tasks.doneTask(s, again.id);
   const openTask = tasks.addTask(s, { title: 'Still open' }); tasks.noteTask(s, openTask.id, 'Merged as #14');
   const data = closedSince(s, { since });
   assert.deepEqual(data.items.map((r) => [r.id, r.status, r.names_result]), [
-    [merged.id, 'done', true], [ref.id, 'done', false], [follow.id, 'dropped', true], [self.id, 'done', false], [bare.id, 'done', false],
+    [merged.id, 'done', true], [ref.id, 'done', false], [follow.id, 'dropped', true], [self.id, 'done', false], [bare.id, 'done', false], [again.id, 'done', false],
   ], 'the newest text is the result: a done reference after a merged note replaces it');
   assert.equal(data.items[1].result, 'read only, nothing changed');
   assert.equal(data.items[4].result, '');
   assert.equal(namesResult('Not merged: #15 waits', 'T9'), false);
   const text = renderClosed(data, 120);
-  assert.match(text, /^Closed since .*: 5 task\(s\), 3 naming no result/);
+  assert.match(text, /^Closed since .*: 6 task\(s\), 4 naming no result/);
   assert.match(text, new RegExp(`\\n! ${bare.id} · done .* · No note at all → \\(no note\\)`));
   assert.match(text, new RegExp(`\\n  ${merged.id} · done `));
   assert.deepEqual(closedSince(s, { since, limit: 2 }).has_more, true);
-  assert.throws(() => closedSince(s, { since: 'yesterday' }), /--closed-since/);
+  for (const bad of ['yesterday', '2026-02-30', '2026-11-24T06:00:00']) assert.throws(() => closedSince(s, { since: bad }), /--closed-since/, bad);
+  assert.equal(closedSince(s, { since: '2026-11-24' }).since, '2026-11-24T00:00:00.000Z');
+  const long = { ...data, items: [{ ...data.items[0], title: 'x'.repeat(200), result: 'Merged as #12 at abc123' }] };
+  const line = renderClosed(long, 60).split('\n')[1];
+  assert.ok(line.length <= 60, line); assert.match(line, /→ Merged/);
   const r = raw(db, ['tasks', '--closed-since', since, '--json']);
-  assert.equal(r.status, 0, r.stderr); assert.equal(JSON.parse(r.stdout).items.length, 5);
+  assert.equal(r.status, 0, r.stderr); assert.equal(JSON.parse(r.stdout).items.length, 6);
   const mixed = raw(db, ['tasks', '--closed-since', since, '--status', 'done']);
   assert.equal(mixed.status, 2); assert.match(mixed.stderr, /takes --owner, --for, --limit and --line-length only/);
 });

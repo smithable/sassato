@@ -6,6 +6,7 @@ import { contextLine } from './context-brief.js';
 import { factUntil } from './coordination.js';
 import { humanQueue } from './tasks.js';
 import { TOPIC_DAYS } from './topics.js';
+import { strictInstant } from './schedules.js';
 
 export const PRUNE_SECTIONS = ['quiet-review','quiet-topics','names-merged-pr','old-questions','same-title','expired-facts','dated-facts','marked-facts','unchecked-facts'] as const;
 // unchecked-facts is asked for by name: most decisions are older than a month by nature and would bury the rest.
@@ -27,8 +28,8 @@ export interface PruneData { days: number; sections: Record<string, Row[]> }
 export const namesResult = (note: string, self: string) => saysMerged(note) || [...note.matchAll(/\bT(\d+)\b/g)].some((m) => `T${m[1]}` !== self);
 export interface ClosedData { since: string; items: Row[]; has_more: boolean }
 export function closedSince(s: Store, options: { since: string; owner?: string; forRole?: string; limit?: number }): ClosedData {
-  check(Number.isFinite(Date.parse(options.since)), 'Use --closed-since with a date or a time, such as 2026-11-24 or 2026-11-24T06:00:00Z', 2);
-  const since = new Date(options.since).toISOString(), limit = integer(options.limit ?? 1000, 'limit', 1, 5000);
+  // A bare date is midnight UTC; a time needs Z or an offset, and an impossible calendar date is refused.
+  const since = strictInstant(/^\d{4}-\d{2}-\d{2}$/.test(options.since) ? `${options.since}T00:00:00Z` : options.since, '--closed-since (a date, midnight UTC, or a time)'), limit = integer(options.limit ?? 1000, 'limit', 1, 5000);
   return s.snapshot(() => {
     if (options.owner) s.role(options.owner);
     if (options.forRole) s.role(options.forRole);
@@ -36,7 +37,10 @@ export function closedSince(s: Store, options: { since: string; owner?: string; 
       s.ws, since, ...(options.owner ? [options.owner] : []), ...(options.forRole ? [options.forRole] : []), limit + 1);
     const items = rows.slice(0, limit).map((r) => {
       const self = `T${r.id}`;
-      const texts = s.all("SELECT action,detail FROM events WHERE workspace_id=? AND entity='task' AND entity_id=? AND action IN ('note','dropped','completed') ORDER BY id DESC LIMIT 20", s.ws, self)
+      // Only this closing counts: a note from before the last reopen is not its result.
+      const events = s.all("SELECT action,detail FROM events WHERE workspace_id=? AND entity='task' AND entity_id=? AND action IN ('note','dropped','completed','reopened') ORDER BY id DESC LIMIT 50", s.ws, self);
+      const cut = events.findIndex((e) => e.action === 'reopened');
+      const texts = (cut < 0 ? events : events.slice(0, cut))
         .map((e) => { const d = JSON.parse(e.detail); return String((e.action === 'completed' ? d.ref : d.note) ?? '').trim(); }).filter(Boolean);
       const result = texts[0] ?? '';
       return { id: self, status: r.status, closed_at: r.completed_at, holder: r.owner ?? r.for_role ?? null, title: clip(r.title), result: clip(result, 400), names_result: namesResult(result, self) };
@@ -49,9 +53,11 @@ export function renderClosed(data: ClosedData, lineLength = 160): string {
   const without = data.items.filter((r) => !r.names_result).length;
   const lines = [`Closed since ${data.since}: ${data.items.length} task(s), ${without} naming no result (no merged pull request, no task).`];
   for (const r of data.items) {
-    const head = `${r.names_result ? '  ' : '! '}${r.id} · ${r.status} ${String(r.closed_at).slice(0, 16).replace('T', ' ')}${r.holder ? ` · ${r.holder}` : ''} · ${r.title} → `;
-    const text = r.result || '(no note)', room = Math.max(lineLength - head.length, 20);
-    lines.push(head + (text.length > room ? `${text.slice(0, room - 1)}…` : text));
+    const head = `${r.names_result ? '  ' : '! '}${r.id} · ${r.status} ${String(r.closed_at).slice(0, 16).replace('T', ' ')}${r.holder ? ` · ${r.holder}` : ''} · `;
+    const text = r.result || '(no note)', room = lineLength - head.length - 3, cut = (t: string, n: number) => (t.length > n ? `${t.slice(0, Math.max(n - 1, 0))}…` : t);
+    // The title gives way to the result: at most two fifths of the room when both do not fit.
+    const title = String(r.title).length + text.length > room ? cut(String(r.title), Math.max(Math.floor(room * 0.4), room - text.length)) : String(r.title);
+    lines.push(cut(`${head}${title} → ${cut(text, Math.max(room - title.length, 1))}`, lineLength));
   }
   if (data.has_more) lines.push('More closed tasks exist: raise --limit or narrow --closed-since.');
   return lines.join('\n');
