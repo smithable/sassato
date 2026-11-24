@@ -414,7 +414,7 @@ on the task or on a new one owned by and for the relaying role. `--relayed-by` i
 | `sent [--limit N]` (alias `outbox`) | Sent messages with unread/read/acked status per recipient; JSON retains receipt timestamps |
 | `ack M1 [M2 ...]` | Atomically mark up to 100 addressed messages done; validate the whole batch first; retries preserve timestamps |
 | `fact set KEY TEXT --source LOCATION [--checked-at ISO_DATE] [--expires DATE\|none] [--expect VERSION] [--answers T1]` | Create/correct shared fact; updates require expected version. `--answers` marks the open human task the fact answers: `humans` shows it as answered in the fact, and a human closes it. `--expires` (below) gives the fact an end |
-| `fact get KEY` / `fact history KEY` | Current fact or immutable revisions; `expired: true` once past its expiry |
+| `fact get KEY` / `fact history KEY` | Current fact (with `expired: true` once past its expiry) or its immutable revisions |
 | `facts [--limit N]` | List facts, expired ones marked `expired: true` |
 | `prune [--days N] [--section NAME[,NAME]] [--line-length N]` | Read-only listing of what may be closed, dropped or corrected, one section per rule ([prune.md](prune.md)) |
 | `wip [show\|get ROLE]` | Read any role's WIP, default current role; its `version` is what `wip set` and `checkpoint save` take as `--expect` |

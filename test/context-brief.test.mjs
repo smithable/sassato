@@ -72,3 +72,9 @@ test('anonymous status preserves workspace totals and does not require an identi
  const {s,path}=setup(t);addTask(s,{title:'Visible workspace total'});const reader=new Store(path,undefined,{readonly:true});reader.use('team');try{const view=status(reader);assert.equal(view.role,undefined);assert.ok(view.tasks.length);assert.equal(JSON.parse(renderStatus(view)).workspace,'team');}finally{reader.close();}
  const result=spawnSync(process.execPath,[resolve('bin/sassato.js'),'status','--json','--db',path,'--workspace','team'],{encoding:'utf8',env:{...process.env,SASSATO_ROLE:''}});assert.equal(result.status,0,result.stderr);assert.equal(JSON.parse(result.stdout).workspace,'team');
 });
+test('brief delta leaves an expired fact out of the unchanged count',t=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.parse('2026-11-01T10:00:00.000Z')});
+ const {s,cursor}=setup(t);setFact(s,'stable',{body:'Kept',source:'fixture'});setFact(s,'usage.week',{body:'40% used',source:'fixture',expires:'2026-11-01T11:00:00.000Z'});
+ const since=cursor();assert.equal(delta(s,since).counts.facts_unchanged,2);
+ t.mock.timers.tick(2*3600_000);assert.equal(delta(s,since).counts.facts_unchanged,1);
+});
