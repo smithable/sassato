@@ -301,14 +301,14 @@ design, and what this first step leaves out, is in [recurring-tasks.md](recurrin
 | `schedule add TITLE --daily --at HH:MM --tz ZONE` / `--weekly mon,thu --at HH:MM --tz ZONE` | Civil times in an IANA zone |
 | `schedule add TITLE --every MINUTES [--anchor INSTANT]` | Elapsed time from the anchor (the current minute by default) |
 | `… [--body TEXT] [--for ROLE] [--human-only]` | The task template. A human adds a schedule; an agent proposes one in a task |
-| `schedule list [--due] [--all]` | The last tick, overdue count, and per schedule its rule, next time and last occurrence. `--due` only those due now, `--all` adds archived ones |
+| `schedule list [--due] [--all]` | The last tick, overdue count, and per schedule its rule, next time and last occurrence. `--due` only those due now, `--all` adds archived ones. Schedules held by a tick whose clock was ahead are named (`held_ahead`) |
 | `schedule show C1 [--limit N]` | The schedule and its occurrences, newest first |
 | `schedule preview C1 [--count N]` | The next due times, in UTC and local time. No side effects |
 | `schedule edit C1 --expect REVISION [--title\|--body\|--for ROLE\|none\|--human-only\|--agent-allowed\|a new rule]` | A human changes it from now on; due times not yet ticked are recorded as `superseded`, never issued under the new revision |
 | `schedule pause C1 --expect REVISION --reason TEXT` | Any role; issues nothing until resumed |
 | `schedule resume C1 --expect REVISION` | A human; the times passed while paused are recorded as `skipped` |
 | `schedule archive C1 --expect REVISION --reason TEXT` | A human; history and issued tasks stay |
-| `schedule tick` | Issues what is due: one task per schedule for the whole missed range, or a `coalesced` record while its last task is still open. A role under STOP is left due, and so is a schedule that cannot issue (listed under `deferred` with the reason) |
+| `schedule tick` | Issues what is due: one task per schedule for the whole missed range, or a `coalesced` record while its last task is still open. A role under STOP is left due, and so is a schedule that cannot issue (listed under `deferred` with the reason). After a tick under a clock ahead of this one, `clock_ahead` names that tick and the schedules it holds |
 
 ## Rules (T1276)
 
