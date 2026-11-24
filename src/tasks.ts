@@ -473,18 +473,24 @@ export function aged(row: Row, askedAt: string, touchedAt: string, at = Date.now
   const day = 86_400_000, age = Math.max(0, Math.floor((at - Date.parse(askedAt)) / day));
   return { ...row, age_days: age, touched_at: touchedAt, untouched: at - Date.parse(touchedAt) > UNTOUCHED_DAYS * day };
 }
-export function humanQueue(s: Store, options: { limit?: number; forRole?: string; untouched?: boolean } = {}): Row[] {
-  const limit = integer(options.limit ?? 50, 'limit', 1, 1000);
+// A human's queue is shown whole unless --limit asks for fewer, and a cut says how many it left out:
+// a silent default of 50 hid three of Johan's 53 questions (T1379).
+export function humanQueue(s: Store, options: { limit?: number; forRole?: string; untouched?: boolean; cut?: (hidden: number) => void } = {}): Row[] {
+  const limit = options.limit === undefined ? null : integer(options.limit, 'limit', 1, 1000);
   return s.snapshot(() => {
     const recipient = options.forRole === undefined ? null : humanRole(s, options.forRole);
     const at = Date.now(), cutoff = options.untouched ? new Date(at - UNTOUCHED_DAYS * 86_400_000).toISOString() : null;
-    const questions = s.all("SELECT q.*,b.waiting_on AS for_role,t.title,t.owner,t.priority,t.human_only,t.status AS task_status,max(q.created_at,t.updated_at) AS touched FROM questions q JOIN tasks t ON t.workspace_id=q.workspace_id AND t.id=q.task_id JOIN blockers b ON b.workspace_id=q.workspace_id AND b.id=q.blocker_id WHERE q.workspace_id=? AND q.status='pending' AND t.status NOT IN ('done','dropped') AND (? IS NULL OR b.waiting_on=?) AND (? IS NULL OR max(q.created_at,t.updated_at)<?) ORDER BY t.priority DESC,q.created_at,q.id LIMIT ?", s.ws, recipient, recipient, cutoff, cutoff, limit).map((q): Row => { const { touched, ...rest } = q; return aged({ ...questionView(rest), kind: 'question' }, q.created_at, touched, at); });
-    const tasks = s.all("SELECT t.* FROM tasks t WHERE t.workspace_id=? AND t.status NOT IN ('done','dropped') AND (t.human_only=1 OR EXISTS (SELECT 1 FROM roles r WHERE r.workspace_id=t.workspace_id AND r.kind='human' AND r.name IN (t.for_role,t.owner))) AND (? IS NULL OR t.for_role=? OR t.owner=?) AND NOT EXISTS (SELECT 1 FROM questions q WHERE q.workspace_id=t.workspace_id AND q.task_id=t.id AND q.status='pending') AND (? IS NULL OR t.updated_at<?) ORDER BY t.priority DESC,t.created_at,t.id LIMIT ?", s.ws, recipient, recipient, recipient, cutoff, cutoff, limit).map((t): Row => aged({ ...taskView(t), kind: 'task', asked_by: t.creator }, t.created_at, t.updated_at, at));
+    const questions = s.all("SELECT q.*,b.waiting_on AS for_role,t.title,t.owner,t.priority,t.human_only,t.status AS task_status,max(q.created_at,t.updated_at) AS touched FROM questions q JOIN tasks t ON t.workspace_id=q.workspace_id AND t.id=q.task_id JOIN blockers b ON b.workspace_id=q.workspace_id AND b.id=q.blocker_id WHERE q.workspace_id=? AND q.status='pending' AND t.status NOT IN ('done','dropped') AND (? IS NULL OR b.waiting_on=?) AND (? IS NULL OR max(q.created_at,t.updated_at)<?) ORDER BY t.priority DESC,q.created_at,q.id", s.ws, recipient, recipient, cutoff, cutoff).map((q): Row => { const { touched, ...rest } = q; return aged({ ...questionView(rest), kind: 'question' }, q.created_at, touched, at); });
+    const tasks = s.all("SELECT t.* FROM tasks t WHERE t.workspace_id=? AND t.status NOT IN ('done','dropped') AND (t.human_only=1 OR EXISTS (SELECT 1 FROM roles r WHERE r.workspace_id=t.workspace_id AND r.kind='human' AND r.name IN (t.for_role,t.owner))) AND (? IS NULL OR t.for_role=? OR t.owner=?) AND NOT EXISTS (SELECT 1 FROM questions q WHERE q.workspace_id=t.workspace_id AND q.task_id=t.id AND q.status='pending') AND (? IS NULL OR t.updated_at<?) ORDER BY t.priority DESC,t.created_at,t.id", s.ws, recipient, recipient, recipient, cutoff, cutoff).map((t): Row => aged({ ...taskView(t), kind: 'task', asked_by: t.creator }, t.created_at, t.updated_at, at));
+    const all = [...questions, ...tasks].sort((a, b) => b.priority - a.priority || a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+    if (limit !== null && all.length > limit) options.cut?.(all.length - limit);
+    const shown = limit === null ? all : all.slice(0, limit);
     // A task a fact answers says so, so the human closes it instead of being asked again (T707).
-    for (const row of tasks) {
+    for (const row of shown) {
+      if (row.kind !== 'task') continue;
       const mark = s.get("SELECT detail FROM events WHERE workspace_id=? AND entity='task' AND entity_id=? AND action='answered-in-fact' ORDER BY id DESC LIMIT 1", s.ws, row.id);
       if (mark) { const d = JSON.parse(mark.detail); row.answered_in = `${d.fact} (${d.key}): close the task if it settles it`; }
     }
-    return [...questions, ...tasks].sort((a, b) => b.priority - a.priority || a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)).slice(0, limit);
+    return shown;
   });
 }
