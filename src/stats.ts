@@ -173,7 +173,8 @@ export function formatStats(r: Row): string {
     for (const x of w.longest) lines.push(`  ${who(x)}: ${span(x.minutes)}${open(x)}`);
   }
   const refused = r.refused_writes;
-  lines.push('', `Refused take, note and done: ${refused.count}${refused.count ? ` (${Object.entries(refused.by_role).map(([k, v]) => `${k} ${v}`).join(', ')})` : ''}`);
+  const counts = (o: Record<string, number>) => Object.entries(o).map(([k, v]) => `${k} ${v}`).join(', ');
+  lines.push('', `Refused take, note and done: ${refused.count}${refused.count ? ` (${counts(refused.by_role)}; ${counts(refused.by_verb)})` : ''}`);
   for (const x of refused.latest) lines.push(`  ${x.at} ${x.role} ${x.verb} ${x.task}: ${x.reason}`);
   lines.push('', 'Not stored, so not counted:', ...r.not_stored.map((x: string) => `  ${x}`));
   return lines.join('\n');

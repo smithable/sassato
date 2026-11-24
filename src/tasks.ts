@@ -575,9 +575,10 @@ export function renderHumanBrief(data: { for_role: string | null; blocks_work: R
 }
 
 /** A take, note or done that sassato refused writes nothing, so the refusal is kept apart for `stats` (T1387).
- * Only a known role's refusal is kept; when even that write is refused, the original refusal still stands. */
+ * Only a refusal (code 3, not allowed, or 4, not in a state for it) by a known role is kept, not a usage error;
+ * when even that write is refused, the original refusal still stands. */
 export function recordRefusal(s: Store, verb: 'take' | 'note' | 'done', task: string, error: unknown): void {
-  if (!(error instanceof AppError) || !s.actor) return;
+  if (!(error instanceof AppError) || (error.code !== 3 && error.code !== 4) || !s.actor) return;
   try {
     s.role(s.actor);
     s.tx(() => s.run('INSERT INTO refusals(workspace_id,role,verb,task,reason,code,created_at) VALUES(?,?,?,?,?,?,?)', s.ws, s.actor, verb, task.slice(0, 32), error.message.slice(0, 500), error.code, now()));

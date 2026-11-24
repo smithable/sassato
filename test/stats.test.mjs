@@ -1,3 +1,4 @@
+import {DatabaseSync} from 'node:sqlite';
 import {spawnSync} from 'node:child_process';
 import {AppError} from '../dist/errors.js';
 import { fixtureConfig } from './fixtures/team.mjs';
@@ -99,20 +100,26 @@ test('a refused take, note or done is stored and counted by stats; a usage error
     assert.ok(error,`${verb} by b is refused`);recordRefusal(s,verb,task.id,error);
   }
   s.actor='nobody';recordRefusal(s,'take',task.id,new AppError('Unknown role',3));
-  s.actor='a';recordRefusal(s,'take',task.id,new Error('not a refusal'));
+  s.actor='a';recordRefusal(s,'take',task.id,new Error('not a refusal'));recordRefusal(s,'take',task.id,new AppError('Usage error',2));
   const r=stats(s);
   assert.equal(r.refused_writes.count,3);assert.deepEqual(r.refused_writes.by_role,{b:3});assert.deepEqual(r.refused_writes.by_verb,{take:1,note:1,done:1});
   assert.deepEqual(r.refused_writes.latest.map(x=>[x.verb,x.task,x.role]),[['done',task.id,'b'],['note',task.id,'b'],['take',task.id,'b']]);
   assert.ok(r.refused_writes.latest.every(x=>x.reason.length>0&&x.code>0));
   assert.equal(stats(s,{role:'a'}).refused_writes.count,0);
-  assert.match(formatStats(r),/Refused take, note and done: 3 \(b 3\)/);
+  assert.match(formatStats(r),/Refused take, note and done: 3 \(b 3; done 1, note 1, take 1\)/);
 });
 
 test('the CLI stores a refused take and still exits with the refusal (T1387)',t=>{
   const dir=mkdtempSync(join(tmpdir(),'sassato-refusal-')),db=join(dir,'state.db');t.after(()=>rmSync(dir,{recursive:true,force:true}));
   const s=new Store(db,'a',{create:true});initWorkspace(s,'team',fixtureConfig);s.use('team');const task=addTask(s,{title:'Held by a',forRole:'a'});takeTask(s,task.id);s.close();
-  const run=spawnSync(process.execPath,[cli,'--db',db,'--workspace','team','take',task.id,'--as','b'],{env:{...process.env,SASSATO_ROLE:''},encoding:'utf8'});
-  assert.notEqual(run.status,0);assert.match(run.stderr,/sassato:/);
+  const take=()=>spawnSync(process.execPath,[cli,'--db',db,'--workspace','team','take',task.id,'--as','b'],{env:{...process.env,SASSATO_ROLE:''},encoding:'utf8'});
+  const run=take();
+  assert.equal(run.status,4);assert.match(run.stderr,/^sassato: Task is not open for claiming: .+\n$/);
+  const usage=spawnSync(process.execPath,[cli,'--db',db,'--workspace','team','take',task.id,'--hours','x','--as','b'],{env:{...process.env,SASSATO_ROLE:''},encoding:'utf8'});
+  assert.equal(usage.status,2,'a usage error is not a refusal');
+  const locked=new DatabaseSync(db);locked.exec('CREATE TRIGGER no_refusals BEFORE INSERT ON refusals BEGIN SELECT RAISE(ABORT,\'blocked\'); END');locked.close();
+  const again=take();
+  assert.equal(again.status,run.status);assert.equal(again.stderr,run.stderr,'a failed record keeps the refusal as it was');
   const after=new Store(db,'a');after.use('team');t.after(()=>after.close());
   assert.deepEqual(after.all('SELECT role,verb,task FROM refusals').map(r=>({...r})),[{role:'b',verb:'take',task:task.id}]);
 });
