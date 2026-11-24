@@ -369,15 +369,30 @@ on the task or on a new one owned by and for the relaying role. `--relayed-by` i
 | `inbox [--peek] [--state unread\|read\|done] [--limit N]` | Unread first; marks only returned unread messages read unless --peek |
 | `sent [--limit N]` (alias `outbox`) | Sent messages with unread/read/acked status per recipient; JSON retains receipt timestamps |
 | `ack M1 [M2 ...]` | Atomically mark up to 100 addressed messages done; validate the whole batch first; retries preserve timestamps |
-| `fact set KEY TEXT --source LOCATION [--checked-at ISO_DATE] [--expect VERSION] [--answers T1]` | Create/correct shared fact; updates require expected version. `--answers` marks the open human task the fact answers: `humans` shows it as answered in the fact, and a human closes it |
-| `fact get KEY` / `fact history KEY` | Current fact or immutable revisions |
-| `facts [--limit N]` | List facts |
+| `fact set KEY TEXT --source LOCATION [--checked-at ISO_DATE] [--expires DATE\|none] [--expect VERSION] [--answers T1]` | Create/correct shared fact; updates require expected version. `--answers` marks the open human task the fact answers: `humans` shows it as answered in the fact, and a human closes it. `--expires` (below) gives the fact an end |
+| `fact get KEY` / `fact history KEY` | Current fact or immutable revisions; `expired: true` once past its expiry |
+| `facts [--limit N]` | List facts, expired ones marked `expired: true` |
+| `prune [--days N] [--section NAME[,NAME]] [--line-length N]` | Read-only listing of what may be closed, dropped or corrected, one section per rule ([prune.md](prune.md)) |
 | `wip [show\|get ROLE]` | Read any role's WIP, default current role; its `version` is what `wip set` and `checkpoint save` take as `--expect` |
 | `wip set [--current TEXT] [--next TEXT] [--notes TEXT] [--expect VERSION]` | Only current role's notes; updates require expected version. A stale version is refused with exit 4 and the current version; a non-number names the command that shows it |
 
 Mail read/done is per recipient. Reading another role's WIP never changes it. Facts need
 a source and checked date (default now); they never confer permission. Empty quoted WIP
 fields clear that field. Fact keys may contain path-like components.
+
+**Fact expiry.** `--expires` takes `YYYY-MM-DD` (the end of that day in UTC) or a full ISO time; a
+time already past is refused, and `none` clears the expiry. A correction without `--expires` keeps a
+future expiry. Correcting a fact whose expiry has passed is refused until `--expires DATE` or
+`--expires none` says what it should be, so a short-lived fact never becomes permanent by accident.
+An expired fact leaves `context` and the brief, and stays readable: `fact get`, `facts` and `search`
+mark it `expired`. In `context` a fact with an expiry shows it as `until=DATE`. No key gets an expiry
+by default.
+
+**Prune listing.** `sas prune` reads one snapshot, writes nothing and may be run by any role. Its
+sections are `quiet-review`, `names-merged-pr`, `old-questions`, `same-title`, `expired-facts`,
+`dated-facts` and `marked-facts`; `unchecked-facts` (not checked for 30 days) is listed only when
+named with `--section`. `--days` is the quiet age, default 7. Each line gives the id, its age, its
+holder or key, a short text and the rule that matched; `--json` gives `{days, sections}`.
 
 ## Sessions and context
 

@@ -8,7 +8,7 @@ import { assertManagedIdentity,assertManagedWrite,type ManagedCredentials,type M
 // SQLite rows deliberately stay flexible at this small adapter boundary.
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = 16;
 export function databasePath(value?: string): string {
   const path = resolve(value ?? process.env.SASSATO_DB ?? `${process.env.XDG_DATA_HOME ?? `${homedir()}/.local/share`}/sassato/sassato.db`);
   let ancestor = path;
@@ -144,7 +144,8 @@ export class Store {
       if (current === 11) { this.db.exec(MIGRATION_12); current = 12; }
       if (current === 12) { this.db.exec(MIGRATION_13); current = 13; }
       if (current === 13) { this.db.exec(MIGRATION_14); current = 14; }
-      if (current === 14) this.db.exec(MIGRATION_15);
+      if (current === 14) { this.db.exec(MIGRATION_15); current = 15; }
+      if (current === 15) this.db.exec(MIGRATION_16);
     });
   }
   private cancelClosedQuestions(): void {
@@ -383,4 +384,11 @@ CREATE TABLE rule_loads(workspace_id INTEGER NOT NULL REFERENCES workspaces(id),
   set_version INTEGER NOT NULL, digest TEXT NOT NULL, loaded_at TEXT NOT NULL, PRIMARY KEY(workspace_id,session_id,set_version));
 INSERT INTO schema_migrations VALUES(15,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 PRAGMA user_version=15;
+`;
+
+// A fact may say when it stops holding (T1415): an expired fact leaves the context, stays readable.
+const MIGRATION_16 = `
+ALTER TABLE facts ADD COLUMN expires_at TEXT;
+INSERT INTO schema_migrations VALUES(16,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+PRAGMA user_version=16;
 `;

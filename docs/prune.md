@@ -1,6 +1,6 @@
 # Prune listing and fact expiry
 
-Status: design, for review (T1415). Nothing here is built yet.
+Status: built (T1415). The command reference is in [commands.md](commands.md).
 
 Old work piles up in a workspace. Tasks sit in review after their change merged. Questions outlive
 the reason they were asked. Two tasks say the same thing. Facts describe a week that has passed.
@@ -19,7 +19,7 @@ The listing never closes, drops, withdraws or edits anything.
 ## `sassato prune`
 
 ```
-sassato prune [--days N] [--section NAME[,NAME]] [--json]
+sassato prune [--days N] [--section NAME[,NAME]] [--line-length N] [--json]
 ```
 
 - **Read-only.** It reads one snapshot and writes no event, so running it twice changes nothing.
@@ -27,7 +27,7 @@ sassato prune [--days N] [--section NAME[,NAME]] [--json]
 - **`--days N`** is the quiet age (default 7). `--section` limits the listing to the named sections.
 - **Plain output:** one line per candidate under a heading per section, oldest first. Each line gives
   the id, its age, its holder, a short text and the rule that matched.
-- **`--json`:** the same data as `{sections: {name: [rows]}}`.
+- **`--json`:** the same data as `{days, sections: {name: [rows]}}`.
 
 ### Sections
 
@@ -37,12 +37,13 @@ audit found.
 | Section | Rule | What a hand audit found |
 | - | - | - |
 | `quiet-review` | Task in `review` or `blocked` with no event (note, change, blocker) for N days. | "done with proof" |
-| `names-merged-pr` | Task not done or dropped whose notes or body name a pull request (`#123` or a PR URL) and say `merged`, with no event since that note. | "done with proof" |
+| `names-merged-pr` | Task not done or dropped whose last event is a note that names a pull request (`#123` or a PR URL) and says `merged`. | "done with proof" |
 | `old-questions` | Pending question older than N days (the `humans` queue's `age_days`). | questions overtaken by events |
 | `same-title` | Two or more open tasks whose titles match once cut down: lower case, a leading `Low:`/`Feedback (…):` and the punctuation removed. | "duplicates" |
 | `expired-facts` | Facts past their `expires_at` (below). | — |
-| `dated-facts` | Facts whose key holds a date (`YYYY-MM-DD`) more than N days old, or whose `checked_at` is more than 30 days old. | "stale facts": usage snapshots, keys with a date |
+| `dated-facts` | Facts not expired whose key holds a date (`YYYY-MM-DD`) more than N days old. | "stale facts": usage snapshots, keys with a date |
 | `marked-facts` | Facts whose body starts with `DUPLICATE`, `Superseded` or `Withdrawn` (any case). | "self-marked duplicate" |
+| `unchecked-facts` | Facts not expired whose `checked_at` is more than 30 days old. Only with `--section unchecked-facts`: most decisions are older than that by nature and would bury the rest. | — |
 
 ### Not in v1
 
@@ -58,16 +59,18 @@ audit found.
 sassato fact set KEY TEXT --source WHERE [--expires DATE|none] --expect V
 ```
 
-- **Schema v6:** `ALTER TABLE facts ADD COLUMN expires_at TEXT` (an ISO date or time, null when the
+- **Schema 16:** `ALTER TABLE facts ADD COLUMN expires_at TEXT` (an ISO date or time, null when the
   fact has no expiry). The migration adds a column and nothing else. Old facts keep null.
 - **Dates.** `--expires` takes `YYYY-MM-DD`, which means the end of that day in UTC, or a full ISO
   time. A date in the past is refused when the fact is set. `none` clears the expiry.
 - **A correction keeps the expiry.** `fact set` without `--expires` keeps a future one, so a
-  correction does not silently make a short-lived fact permanent. It drops one already past: a
-  correction is a fresh check of the fact.
+  correction does not silently make a short-lived fact permanent. When the expiry has already
+  passed, a correction without `--expires` is refused ("say --expires DATE, or --expires none"):
+  dropping it would make a short-lived fact permanent by accident.
 - **An expired fact:**
-  - leaves `context`, `context --brief` and the rule brief;
-  - shows in `fact get` and `fact history` with `expired: true`;
+  - leaves `context` and `context --brief` (while it has a future expiry, both show it beside the
+    fact, as `until=2026-12-01`);
+  - shows in `fact get` with `expired: true`;
   - shows in `facts` (and `search`) marked `expired`;
   - is listed by `prune` under `expired-facts`.
 
@@ -95,15 +98,13 @@ sassato fact set KEY TEXT --source WHERE [--expires DATE|none] --expect V
 - `fact set --expires`:
   - a past date is refused;
   - `none` clears the expiry;
-  - a correction keeps a future expiry and drops a past one;
+  - a correction keeps a future expiry and is refused after a past one until it restates it;
   - an expired fact is absent from `context` and the brief, and marked in `fact get`, `facts` and
     `search`;
-  - the migration from v5 keeps every fact with a null expiry.
+  - the migration from schema 15 keeps every fact with a null expiry.
 
-## Questions for review
+## Decided in review
 
-1. Should `names-merged-pr` call `gh` when it is on the path? This note says no: offline,
-   deterministic, no token.
-2. Should a correction keep the expiry, or should the writer always restate it? This note says a
-   correction keeps a future expiry.
-3. Is 7 days the right quiet age for the weekly round, and 30 days right for `checked_at`?
+1. `names-merged-pr` stays offline: no `gh` call, no token.
+2. A correction keeps a future expiry; after a past one it must restate it.
+3. The quiet age is 7 days. The 30-day `checked_at` rule is its own section, off by default.
