@@ -134,6 +134,8 @@ test('topic from keeps the id, notes and questions; only open unheld work conver
   assert.throws(()=>topicFrom(s,finished.id),e=>e.code===4);
   const waiting=addTask(s,{title:'Waits on a vendor'});blockTask(s,waiting.id,{kind:'external',waitingOn:'vendor',body:'Quote due'});
   assert.throws(()=>topicFrom(s,waiting.id),e=>e.code===4&&/blockers/.test(e.message),'other blockers are resolved first');
+  const passing=addTask(s,{title:'Being handed over'});takeTask(s,passing.id);s.event('task-handoff',passing.id,'pending',{brief_id:'fixture'});
+  assert.throws(()=>topicFrom(s,passing.id),e=>e.code===4&&/hand-over/.test(e.message),'a pending hand-over is settled first');
 });
 
 test('the keeper gets a quiet entry and a brief row; topics are counted in context',async t=>{
