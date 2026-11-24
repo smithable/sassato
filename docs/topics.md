@@ -54,6 +54,7 @@ A topic has no owner and no lease, and is never `doing`, `review` or `blocked`. 
 | `topic close T --into T2[,fact:KEY…]` | The keeper, the creator or a human closes it as `done` into tasks of kind `work` or facts that exist. Each becomes a follow-up link. A pull request alone is not a follow-up. |
 | `topic close T --reason TEXT --acknowledged H…` | Closes it as `dropped`. `H…` must be an answered question on this topic. A human role may close it this way without `--acknowledged`. |
 | `show T` | Adds `kind`, the links, the follow-ups and the pending questions. |
+| `reopen T NOTE` / `update T` | As for work: a closed topic reopens as `open`, and its title or body may change while open. Neither wakes anyone as work. |
 
 On a topic, `take`, `submit`, `done`, `block`, `release`, `handoff` and `after` are refused with
 "T… is a topic: note it, link it, or close it with sas topic close". No task may wait on a topic (`after`, `block --on`);
@@ -71,8 +72,11 @@ rule.
 Each query that offers, counts or wakes for work gains `kind='work'`:
 
 - `tasks --available`, and the `open-work`, `spare-work`, `task-ready` and `task-assigned` wakes;
-- the idle nudge's count of open work, and the supervisor's monitor and snapshot;
-- recovery evidence and attended reconciliation, which look for held work.
+- the idle nudge's count of open work;
+- recovery evidence, which also matches a task by its target role.
+
+The supervisor's monitor and snapshot and attended reconciliation look only at held work (`owner=?`),
+which a topic never is, so they need no filter.
 
 `tasks` lists topics only with `--kind topic` or `--kind all`; by default it lists work, as today.
 
@@ -106,7 +110,8 @@ Each query that offers, counts or wakes for work gains `kind='work'`:
 ## Decided in review
 
 1. `topic from T…` exists, for an open task that is not human-only and is unowned or held by the
-   one converting it; it keeps the id, notes and questions.
+   one converting it; it keeps the id, notes and questions. It refuses work that requires a review, a
+   pending hand-over or bound checkout, a blocker other than a pending question, and a topic's follow-up.
 2. A note, a link or a question on a topic gives its keeper a quiet wake entry.
 3. Thirty days for `quiet-topics`, fixed.
 4. `topic close --into` takes a fact key too; a pull request alone is not a follow-up.

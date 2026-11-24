@@ -11,7 +11,7 @@ import {context,setFact} from '../dist/coordination.js';
 import {contextDelta} from '../dist/context-brief.js';
 import {waitForUrgent} from '../dist/mail-wait.js';
 import {prune} from '../dist/prune.js';
-import {addTask,listTaskPage,takeTask,doneTask,blockTask,addDependency,noteTask,askHuman,answerQuestion,humanBrief,showTask,dropTask} from '../dist/tasks.js';
+import {addTask,listTaskPage,takeTask,doneTask,blockTask,addDependency,noteTask,askHuman,answerQuestion,humanBrief,showTask,dropTask,reopenTask} from '../dist/tasks.js';
 import {addTopic,topicFrom,linkTopic,unlinkTopic,closeTopic,listTopics,showTopic,renderTopics} from '../dist/topics.js';
 function fixture(t){
   const dir=mkdtempSync(join(tmpdir(),'sassato-topics-')),path=join(dir,'state.db'),s=new Store(path,'a',{create:true});
@@ -110,7 +110,12 @@ test('close --into needs existing work or facts; --reason needs an answered ques
   assert.throws(()=>closeTopic(s,dropped.id,{reason:'Nobody wants it',acknowledged:qid}),e=>e.code===4,'not answered yet');
   s.actor='human';assert.throws(()=>answerQuestion(s,qid,'Yes, drop it',{close:true}),code(4),'answer --close does not close a topic');
   answerQuestion(s,qid,'Yes, drop it');
-  s.actor='a';assert.equal(closeTopic(s,dropped.id,{reason:'Nobody wants it',acknowledged:qid}).status,'dropped');
+  s.actor='a';s.run("UPDATE questions SET answered_by='b' WHERE id=?",Number(qid.slice(1)));
+  assert.throws(()=>closeTopic(s,dropped.id,{reason:'Nobody wants it',acknowledged:qid}),e=>e.code===3,'a human must have answered');
+  s.run("UPDATE questions SET answered_by='human' WHERE id=?",Number(qid.slice(1)));
+  assert.equal(closeTopic(s,dropped.id,{reason:'Nobody wants it',acknowledged:qid}).status,'dropped');
+  assert.equal(reopenTask(s,dropped.id,'Back on the table').status,'open');assert.ok(listTopics(s).some(r=>r.id===dropped.id));
+  closeTopic(s,dropped.id,{reason:'Nobody wants it',acknowledged:qid});
   const third=addTopic(s,{title:'Third'});
   s.actor='human';assert.equal(closeTopic(s,third.id,{reason:'Not now'}).status,'dropped');
   assert.deepEqual(listTopics(s).map(r=>r.id),[other.id]);
@@ -125,6 +130,10 @@ test('topic from keeps the id, notes and questions; only open unheld work conver
   const topic=topicFrom(s,work.id);
   assert.equal(topic.id,work.id);assert.equal(topic.kind,'topic');assert.equal(topic.status,'open');assert.equal(topic.owner,null);assert.equal(topic.for_role,'a');
   assert.equal(topic.pending_questions.length,1);
+  s.actor='human';answerQuestion(s,`H${s.get('SELECT id FROM questions WHERE task_id=?',Number(work.id.slice(1))).id}`,'The new one');
+  assert.equal(showTask(s,work.id).status,'open','an answer leaves a converted topic open');s.actor='a';
+  const reviewed=addTask(s,{title:'Needs a review',reviewRequired:true});
+  assert.throws(()=>topicFrom(s,reviewed.id),e=>e.code===4&&/review/.test(e.message));
   assert.ok(showTask(s,work.id).history.some(e=>e.action==='note'));
   const held=addTask(s,{title:'Held',for:'b'});s.actor='b';takeTask(s,held.id);
   s.actor='a';assert.throws(()=>topicFrom(s,held.id),e=>e.code===3);

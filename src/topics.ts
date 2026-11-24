@@ -64,6 +64,8 @@ export function topicFrom(s: Store, task: string): Row {
     const row = s.task(task), actor = writable(s, row);
     check(!isTopic(row), `T${row.id} is already a topic`, 4);
     check(!row.human_only, 'Human-only work cannot become a topic', 3);
+    // A topic closes into follow-ups without a review, so work that requires one stays work.
+    check(!row.review_required, `T${row.id} requires a review: only work without one becomes a topic`, 4);
     check(['open', 'doing', 'blocked'].includes(row.status), `T${row.id} is ${row.status}: only open, held or blocked work becomes a topic`, 4);
     check(!row.owner || row.owner === actor, `T${row.id} is held by ${row.owner}: only its holder converts it`, 3);
     check(!s.get('SELECT 1 FROM dependencies WHERE workspace_id=? AND (task_id=? OR depends_on=?) LIMIT 1', s.ws, row.id, row.id), `T${row.id} has dependencies: remove them first (sas unafter)`, 4);
@@ -126,6 +128,7 @@ export function closeTopic(s: Store, task: string, options: CloseTopicOptions): 
         const question = s.get('SELECT status,answered_by FROM questions WHERE workspace_id=? AND id=? AND task_id=?', s.ws, id(options.acknowledged, 'H'), row.id);
         check(question, `${options.acknowledged} is not a question on T${row.id}`, 3);
         check(question.status === 'answered', `${options.acknowledged} is not answered yet`, 4);
+        check(s.get("SELECT 1 FROM roles WHERE workspace_id=? AND name=? AND kind='human'", s.ws, question.answered_by), `${options.acknowledged} was not answered by a human`, 3);
       } else check(isHuman, 'Closing without follow-ups needs a human: --acknowledged H… (an answered question on this topic), or a human role', 3);
       const cancelled = cancelPending(s, row, actor, options.reason!, at);
       change(s, row, { status: 'dropped', completed_at: at }, 'topic-closed', { reason: options.reason, acknowledged: options.acknowledged ?? null, cancelled_questions: cancelled });

@@ -401,7 +401,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           break;}
         case 'add': {const title=str('title')??rest('title');empty();result=t.addTask(s,{title,body:str('body'),owner:str('owner'),forRole:str('for'),priority:num('priority'),humanOnly:bool('human-only'),reviewRequired:bool('review-required'),spare:bool('spare')||undefined});break;}
         case 'tasks': empty();result=t.listTaskPage(s,{status:str('status'),owner:str('owner'),forRole:str('for'),available:bool('available'),limit:num('limit'),after:str('after'),spare:bool('spare')||undefined,kind:str('kind')});break;
-        case 'show': {const task=arg('task');empty();result=task.startsWith('T')?t.showTask(s,task,{historyLimit:num('limit'),beforeEvent:num('before-event')}):a.showRecord(s,task);if((result as Row).kind==='topic')result={...(result as Row),links:tp.topicLinks(s,s.task(task))};break;}
+        case 'show': {const task=arg('task');empty();result=task.startsWith('T')?t.showTask(s,task,{historyLimit:num('limit'),beforeEvent:num('before-event')}):a.showRecord(s,task);if((result as Row).kind==='topic'){const v=tp.showTopic(s,task);result={...(result as Row),links:v.links,pending_questions:v.pending_questions};}break;}
         case 'retitle': empty();result=retitleImportedTasks(s,{owner:str('owner'),apply:bool('apply')});break;
         case 'take': case 'renew': {const task=arg('task');empty();result=(command==='take'?t.takeTask:t.renewTask)(s,task,{hours:num('hours')});break;}
         case 'submit': {const task=arg('task'),note=rest('note');result=t.submitTask(s,task,note,str('reviewer')?.split(','));break;}

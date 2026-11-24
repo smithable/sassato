@@ -307,7 +307,8 @@ export function cancelPending(s: Store, row: Row, actor: string, note: string, a
 export function reopenTask(s: Store, task: string, note: string): Row {
   return s.tx(() => {
     const row = s.task(task); writable(s, row); check(terminal(row), 'Task is already open', 4); text(note, 'reopen reason');
-    return change(s, row, { status: blocking(s, row).some(b => b.kind !== 'dependency') ? 'blocked' : 'open', lease_until: null, completed_at: null, reviewed_by: null, review_note: null }, 'reopened', { note });
+    // A topic is never blocked: reopened, it is open again.
+    return change(s, row, { status: !isTopic(row) && blocking(s, row).some(b => b.kind !== 'dependency') ? 'blocked' : 'open', lease_until: null, completed_at: null, reviewed_by: null, review_note: null }, 'reopened', { note });
   });
 }
 export function addDependency(s: Store, task: string, after: string): Row {
