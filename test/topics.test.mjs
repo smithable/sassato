@@ -115,7 +115,8 @@ test('close --into needs existing work or facts; --reason needs an answered ques
   s.run("UPDATE questions SET answered_by='human' WHERE id=?",Number(qid.slice(1)));
   assert.equal(closeTopic(s,dropped.id,{reason:'Nobody wants it',acknowledged:qid}).status,'dropped');
   assert.equal(reopenTask(s,dropped.id,'Back on the table').status,'open');assert.ok(listTopics(s).some(r=>r.id===dropped.id));
-  closeTopic(s,dropped.id,{reason:'Nobody wants it',acknowledged:qid});
+  assert.throws(()=>closeTopic(s,dropped.id,{reason:'Nobody wants it',acknowledged:qid}),e=>e.code===4&&/reopened/.test(e.message),'an answer from before the reopening does not count');
+  s.actor='human';closeTopic(s,dropped.id,{reason:'Nobody wants it'});s.actor='a';
   const third=addTopic(s,{title:'Third'});
   s.actor='human';assert.equal(closeTopic(s,third.id,{reason:'Not now'}).status,'dropped');
   assert.deepEqual(listTopics(s).map(r=>r.id),[other.id]);

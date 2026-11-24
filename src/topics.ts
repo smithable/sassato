@@ -125,9 +125,12 @@ export function closeTopic(s: Store, task: string, options: CloseTopicOptions): 
     } else {
       text(options.reason!, 'reason');
       if (options.acknowledged !== undefined) {
-        const question = s.get('SELECT status,answered_by FROM questions WHERE workspace_id=? AND id=? AND task_id=?', s.ws, id(options.acknowledged, 'H'), row.id);
+        const question = s.get('SELECT status,answered_by,answered_at FROM questions WHERE workspace_id=? AND id=? AND task_id=?', s.ws, id(options.acknowledged, 'H'), row.id);
         check(question, `${options.acknowledged} is not a question on T${row.id}`, 3);
         check(question.status === 'answered', `${options.acknowledged} is not answered yet`, 4);
+        // A reopened topic needs a fresh answer: one from before the reopening does not count.
+        const reopened = s.get("SELECT max(created_at) AS at FROM events WHERE workspace_id=? AND entity='task' AND entity_id=? AND action='reopened'", s.ws, `T${row.id}`)?.at;
+        check(!reopened || question.answered_at > reopened, `${options.acknowledged} was answered before T${row.id} was reopened: ask again`, 4);
         check(s.get("SELECT 1 FROM roles WHERE workspace_id=? AND name=? AND kind='human'", s.ws, question.answered_by), `${options.acknowledged} was not answered by a human`, 3);
       } else check(isHuman, 'Closing without follow-ups needs a human: --acknowledged H… (an answered question on this topic), or a human role', 3);
       const cancelled = cancelPending(s, row, actor, options.reason!, at);
