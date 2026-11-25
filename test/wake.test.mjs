@@ -242,3 +242,16 @@ test('a configured stop file observed on receipt closes its enrollment durably',
   assert.equal(pendingCli(f).status,4);
   assert.deepEqual(getNotificationProgress(f.b),f.progress);
 });
+
+test('a repeated --ack acknowledges every mail named; another option given twice keeps its last value (T1545)', (t) => {
+  const f = fixture(t);
+  const one = as(f.s, 'a', () => send(f.s, ['b'], 'first', { urgent: true })), two = as(f.s, 'a', () => send(f.s, ['b'], 'second', { urgent: true }));
+  const cli = (...args) => spawnSync(process.execPath, ['bin/sassato.js', ...args, '--db', f.b.path, '--as', 'b', '--workspace', 'team'], { encoding: 'utf8' });
+  const r = cli('wake', '--timeout', '1', '--settle', '0', '--stop-file', f.stopFile, '--ack', one.id, '--ack', two.id);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, new RegExp(`Acknowledged ${one.id}, ${two.id}\\.`));
+  assert.deepEqual(f.s.all('SELECT state FROM receipts WHERE message_id IN (?,?) ORDER BY message_id', ...[one.id, two.id].map((id) => Number(String(id).replace(/^M/, '')))).map((r) => r.state), ['done', 'done']);
+  const twice = cli('inbox', '--limit', 'none', '--limit', '5', '--workspace', 'team');
+  assert.equal(twice.status, 0, twice.stderr);
+  assert.notEqual(cli('inbox', '--limit', 'none', '--workspace', 'team').status, 0, 'the first value alone is refused');
+});
