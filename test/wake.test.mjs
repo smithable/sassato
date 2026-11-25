@@ -251,6 +251,7 @@ test('a repeated --ack acknowledges every mail named; another option given twice
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, new RegExp(`Acknowledged ${one.id}, ${two.id}\\.`));
   assert.deepEqual(f.s.all('SELECT state FROM receipts WHERE message_id IN (?,?) ORDER BY message_id', ...[one.id, two.id].map((id) => Number(String(id).replace(/^M/, '')))).map((r) => r.state), ['done', 'done']);
-  const twice = cli('inbox', '--limit', '1', '--limit', '5', '--workspace', 'team');
+  const twice = cli('inbox', '--limit', 'none', '--limit', '5', '--workspace', 'team');
   assert.equal(twice.status, 0, twice.stderr);
+  assert.notEqual(cli('inbox', '--limit', 'none', '--workspace', 'team').status, 0, 'the first value alone is refused');
 });
