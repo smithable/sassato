@@ -1009,11 +1009,13 @@ nudged again until something changes for it: mail to it, or an event that would 
 made ready, a block resolved, an answer, a review). Unanswered, it is nudged once more after the same
 interval; one interval after that, the role named in `nudge_escalate` gets one ordinary mail, and the nudges stop
 until the role writes again. Humans are never nudged, nor is a plain `wait`; scored wake mode has no nudge
-yet.
+yet. A human can turn the nudge off for one role, such as a role that works only when a human asks it
+(`sas role set helper --nudge off`; `on` again); `sas roles` shows `nudge: false` for it.
 
 ```sh
 sas workspace set --nudge-minutes 15 --nudge-escalate fable --as HUMAN  # 0 turns it off; none clears the role
 sas idle-reason "waiting for Fable's read of #68; no task ready" --as builder
+sas role set helper --nudge off --as HUMAN   # never nudged; --nudge on again
 ```
 
 ### Leaving out what a role never acts on

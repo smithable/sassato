@@ -7,9 +7,9 @@ import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { Store } from '../dist/storage.js';
 import { initWorkspace } from '../dist/admin.js';
-import { addTask, takeTask, noteTask } from '../dist/tasks.js';
+import { addTask, takeTask, noteTask, blockTask } from '../dist/tasks.js';
 import { idleReason } from '../dist/wake.js';
-import { timeTable, formatTimeTable } from '../dist/stats-time.js';
+import { timeTable, formatTimeTable, causeOf } from '../dist/stats-time.js';
 
 process.env.TZ = 'UTC';
 const MIN = 60_000;
@@ -41,11 +41,14 @@ test("a role's day sums to the day: working per held task, waiting per what for,
   assert.equal(b.working_minutes + b.waiting_minutes + b.not_running_minutes, 12 * 60, 'the minutes sum to the part of the day gone');
   assert.equal(b.working_minutes, 30, 'two writes, fifteen minutes each; the checkpoint and the idle reason are not work');
   assert.deepEqual(b.working, [{ what: task.id, minutes: 30 }]);
-  assert.deepEqual(b.waiting, [{ what: 'on fable', minutes: 45 }, { what: 'nothing named', minutes: 20 }], 'a waiter never ended runs to now');
+  assert.deepEqual(b.waiting, [{ what: 'nothing named', minutes: 45 }, { what: 'waiting for a review', minutes: 20 }],
+    'an old waiter that named a block with no blocker row names nothing; one with no text takes the idle reason given since the waiter before; a waiter never ended runs to now');
+  assert.deepEqual(b.waiting_by_cause, [{ what: 'nothing named', minutes: 45 }, { what: 'review', minutes: 20 }]);
   assert.equal(b.not_running_minutes, 720 - 95);
   assert.deepEqual(b.nudges, { sent: 1, answered: 1, escalated: 0, reasons: ['waiting for a review'] });
   const text = formatTimeTable(day);
   assert.match(text, /b: working 30m · waiting 1h05 · not running 10h25/);
+  assert.match(text, /waiting by cause: nothing named 45m, review 20m/);
   assert.match(text, /nudges: 1 sent, 1 answered, 0 escalated; reasons: "waiting for a review"/);
   assert.match(text, /Working means a write of the role's own in the 15 minutes before/);
 });
@@ -101,4 +104,33 @@ test('a mail sent about a task counts under that task even when the role holds n
   f.at('11:00'); f.event('b', 'message', 'M3', 'sent', { recipients: ['johan'], task_id: 'T43' });
   const b = timeTable(f.s, { day: '2026-11-22', role: 'b', now: new Date('2026-11-22T12:00:00Z') }).roles[0];
   assert.deepEqual(b.working, [{ what: 'T42', minutes: 15 }, { what: 'no task', minutes: 15 }, { what: 'T43', minutes: 15 }]);
+});
+
+test('an old waiter counts only blocks open when it armed and not parked; a new one is taken as stored; causes (T1534)', (t) => {
+  const f = fixture(t);
+  const reviewed = f.as('b', () => takeTask(f.s, addTask(f.s, { title: 'Reviewed' }).id));
+  const parked = f.as('b', () => takeTask(f.s, addTask(f.s, { title: 'Parked' }).id));
+  const asked = f.as('b', () => takeTask(f.s, addTask(f.s, { title: 'Asked' }).id));
+  f.as('b', () => blockTask(f.s, reviewed.id, { kind: 'agent', waitingOn: 'a', body: 'review' }));
+  f.as('b', () => blockTask(f.s, parked.id, { kind: 'other', waitingOn: 'lead', body: 'parked' }));
+  f.at('10:10'); f.event('b', 'waiter', 'b', 'armed', { waiting_for: `${reviewed.id} on a, ${parked.id} on lead` });
+  f.at('10:40'); f.event('b', 'waiter', 'b', 'ended', { reason: 'mail' });
+  f.as('b', () => blockTask(f.s, asked.id, { kind: 'human', waitingOn: 'human', body: 'which?' }));
+  f.at('10:45'); f.event('b', 'waiter', 'b', 'armed', { waiting_for: `${asked.id} on human` });
+  f.at('11:00'); f.event('b', 'waiter', 'b', 'armed', { waiting_for: 'a gate job', waiting_source: 'job' });
+  f.at('11:20'); f.event('b', 'waiter', 'b', 'armed', { waiting_for: 'merge lock held by a', waiting_source: 'idle-reason' });
+  const b = timeTable(f.s, { day: '2026-11-22', role: 'b', now: new Date('2026-11-22T11:30:00Z') }).roles[0];
+  // The blocks are b's own writes (10:00, 10:40), so working takes 10:10-10:15 and 10:45-10:55 from the waits.
+  assert.deepEqual(b.waiting, [{ what: 'on a', minutes: 25 }, { what: 'a gate job', minutes: 20 }, { what: 'merge lock held by a', minutes: 10 }, { what: 'on human', minutes: 5 }]);
+  assert.deepEqual(b.waiting_by_cause, [{ what: 'another role', minutes: 25 }, { what: 'gate', minutes: 20 }, { what: 'merge lock', minutes: 10 }, { what: 'a human', minutes: 5 }]);
+});
+
+test('causeOf reads a wait\'s words in order: merge lock, CI, gate, merge, review, a human', () => {
+  assert.equal(causeOf('waiting on the merge lock'), 'merge lock');
+  assert.equal(causeOf("CI's full check on #1409"), 'CI');
+  assert.equal(causeOf('gate exit pending, then merge-green'), 'gate');
+  assert.equal(causeOf('merge-green running for #12'), 'merge lock');
+  assert.equal(causeOf("waiting for Fable's verdict"), 'review');
+  assert.equal(causeOf('H222 waits on Johan', ['johan']), 'a human');
+  assert.equal(causeOf('reading the logs'), undefined);
 });

@@ -78,17 +78,22 @@ export function stats(s: Store, options: StatsOptions = {}): Row {
     }
     passed.sort((a, b) => b.unread_minutes_after - a.unread_minutes_after);
 
-    // Idle with ready work: each wake for the role's own work records since when it was idle with it.
-    const idle = new Map<string, Map<number, Wait>>();
+    // Idle with ready work: each wake for the role's own work records since when it was idle with it, and the
+    // ready tasks it named, so a spell can be checked against them (T1534).
+    const idle = new Map<string, Map<number, Wait>>(), ready = new Map<string, Set<string>>();
     for (const row of s.all(`SELECT entity_id AS role, json_extract(detail,'$.idle_delivery.since') AS since_ms,
-        json_extract(detail,'$.idle_delivery.delivered') AS delivered_ms FROM events
+        json_extract(detail,'$.idle_delivery.delivered') AS delivered_ms, json_extract(detail,'$.idle_delivery.tasks') AS tasks FROM events
       WHERE workspace_id=? AND entity='notification-progress' AND action='saved' AND created_at>=?
         AND json_extract(detail,'$.idle_delivery.kind')='own-work' ${role ? 'AND entity_id=?' : ''}`, ...[s.ws, since, ...(role ? [role] : [])])) {
       const spells = idle.get(row.role) ?? new Map<number, Wait>();
       spells.set(Number(row.since_ms), { minutes: minutes(Number(row.since_ms), Number(row.delivered_ms)), open: false });
       idle.set(row.role, spells);
+      const named = ready.get(row.role) ?? new Set<string>();
+      try { for (const task of JSON.parse(row.tasks ?? '[]')) if (typeof task?.id === 'string') named.add(task.id); } catch { /* an unreadable list names nothing */ }
+      ready.set(row.role, named);
     }
-    const idleWithWork = [...idle].sort(([a], [b]) => a.localeCompare(b)).map(([r, spells]) => ({ role: r, ...summary([...spells.values()]) }));
+    const idleWithWork = [...idle].sort(([a], [b]) => a.localeCompare(b))
+      .map(([r, spells]) => ({ role: r, ...summary([...spells.values()]), tasks: [...(ready.get(r) ?? [])] }));
 
     // Review requests: from each submit to the next verdict on that task.
     const reviewEvents = s.all(`SELECT entity_id AS task, actor, action, created_at FROM events WHERE workspace_id=? AND entity='task'
@@ -165,7 +170,10 @@ export function formatStats(r: Row): string {
   if (r.passed_unread.count) lines.push(`  listed by a wake before it was read: ${['yes', 'no', 'unknown'].map(k => `${k} ${r.passed_unread.listed[k] ?? 0}`).join(', ')}`);
   for (const m of r.passed_unread.longest) lines.push(`  ${m.message} ${m.class} to ${m.to}: unread ${span(m.unread_minutes_after)} after, listed ${m.listed}${open(m)}`);
   lines.push('', 'Idle with ready work before a wake (spells · median · longest):');
-  for (const row of r.idle_with_work) lines.push(`  ${row.role}: ${row.count} · ${span(row.median_minutes)} · ${span(row.longest_minutes)}`);
+  for (const row of r.idle_with_work) {
+    const tasks = row.tasks.length ? ` · ready: ${row.tasks.slice(0, 8).join(', ')}${row.tasks.length > 8 ? ` and ${row.tasks.length - 8} more` : ''}` : '';
+    lines.push(`  ${row.role}: ${row.count} · ${span(row.median_minutes)} · ${span(row.longest_minutes)}${tasks}`);
+  }
   if (!r.idle_with_work.length) lines.push('  none');
   for (const [title, key, who] of [['Review requests', 'reviews', (x: Row) => `${x.task} by ${x.author}${x.reviewer ? `, read by ${x.reviewer}` : ''}`], ['Questions to a human', 'human_questions', (x: Row) => `${x.question} on ${x.task} from ${x.asked_by}`]] as const) {
     const w = r[key];

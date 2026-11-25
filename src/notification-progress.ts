@@ -1,5 +1,5 @@
 import { type Store } from './storage.js';
-import { check, integer, name } from './errors.js';
+import { check, integer, name, now } from './errors.js';
 import { DIGEST_LIMIT } from './wait-digest.js';
 import { WAKE_SPEEDS, type WakeScore } from './wake-policy.js';
 
@@ -130,6 +130,11 @@ export function saveNotificationProgress(s: Store, input: NotificationProgressIn
     const version=(old?.version??0)+1;
     const event=s.event('notification-progress',role,'saved',{format:1,cursor,version,...(input.delivered?{delivered,...(all.length>delivered.length?{delivered_cut:true}:{})}:{}),...(through===undefined?{}:{scored_through:through}),
       ...(scored?{scored_score:scored.score}:{}),...(idle?{idle_delivery:idle}:{})});
+    // Ordinary mail the printed wake listed has been read: its text was in the wake (T1534). Urgent, needs-reply
+    // and now mail keep their state until acknowledged, so they stay in 'still to acknowledge'.
+    if(all.length)s.run(`UPDATE receipts SET state='read',read_at=? WHERE workspace_id=? AND recipient=? AND state='unread'
+      AND message_id IN (${all.map(()=>'?').join(',')}) AND message_id IN (SELECT id FROM messages WHERE workspace_id=? AND urgent=0 AND reply=0 AND coalesce(immediate,0)=0)`,
+      now(),s.ws,role,...all.map(id=>Number(id.slice(1))),s.ws);
     const saved=s.get('SELECT created_at FROM events WHERE workspace_id=? AND id=?',s.ws,event)!;
     return {id:`E${event}`,role,cursor,version,saved_at:saved.created_at};
   });

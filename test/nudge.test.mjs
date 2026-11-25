@@ -9,7 +9,7 @@ import { initWorkspace } from '../dist/admin.js';
 import { send, inbox } from '../dist/coordination.js';
 import { waitForWork } from '../dist/mail-wait.js';
 import { addTask, takeTask, noteTask, blockTask } from '../dist/tasks.js';
-import { setWorkspaceSettings } from '../dist/workspace-settings.js';
+import { setWorkspaceSettings, setRoleNudge, workspaceSettings } from '../dist/workspace-settings.js';
 import { saveNotificationProgress } from '../dist/notification-progress.js';
 import { idleReason, wake } from '../dist/wake.js';
 
@@ -146,4 +146,51 @@ test('a session that starts or resumes gets the full interval from its start; a 
   const third = await rearm();
   assert.equal(third.result.nudge.count, 1, 'the count starts again with the new session');
   assert.ok(Date.now() - resumed >= 15 * 60_000);
+});
+
+test('a waiter names what the role said, a job of its own, or a block that is not parked; a parked task never names it (T1534)', async (t) => {
+  const f = fixture(t);
+  setWorkspaceSettings(f.s, { nudge_minutes: 0 });
+  const parked = f.as('b', () => takeTask(f.s, addTask(f.s, { title: 'Parked' }).id));
+  f.as('b', () => blockTask(f.s, parked.id, { kind: 'other', waitingOn: 'lead', body: 'parked for the lead' }));
+  f.as('b', () => saveNotificationProgress(f.s, { cursor: f.latest(), expected_version: 0 }));
+  const arm = () => f.as('b', () => wake(f.s, { settle: 0, timeout: 1, clock: f.clock, stopFile: join(f.dir, 'stop') }));
+  const last = () => JSON.parse(f.s.get("SELECT detail FROM events WHERE workspace_id=? AND entity='waiter' AND action='armed' ORDER BY id DESC LIMIT 1", f.s.ws).detail);
+  await arm();
+  assert.deepEqual([last().waiting_for, last().waiting_source], [null, null], 'a parked block is not a wait');
+  f.as('b', () => idleReason(f.s, 'waiting for CI on #70'));
+  await arm();
+  assert.deepEqual([last().waiting_for, last().waiting_source], ['waiting for CI on #70', 'idle-reason']);
+  await arm();
+  assert.equal(last().waiting_for, null, 'an idle reason counts once, for the waiter after it');
+  for (const detail of ['not json', '{}']) {
+    f.s.run("INSERT INTO events(workspace_id,entity,entity_id,actor,action,detail,created_at) VALUES(?,'idle','b','b','reason',?,?)", f.s.ws, detail, new Date().toISOString());
+    await arm();
+    assert.equal(last().waiting_for, null, `an idle reason row of ${detail} names nothing, never the word undefined`);
+  }
+  f.s.run(`INSERT INTO jobs(workspace_id,role,kind,command,status,need_mb,cpu_need,margin,pid,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+    f.s.ws, 'b', 'gate', '["gate.sh"]', 'running', 1, 1, 1, 1, new Date().toISOString());
+  await arm();
+  assert.deepEqual([last().waiting_for, last().waiting_source], ['a gate job', 'job']);
+  f.s.run("UPDATE jobs SET status='done' WHERE workspace_id=?", f.s.ws);
+  const held = f.as('b', () => takeTask(f.s, addTask(f.s, { title: 'Held' }).id));
+  f.as('b', () => blockTask(f.s, held.id, { kind: 'agent', waitingOn: 'a', body: 'review' }));
+  await arm();
+  assert.deepEqual([last().waiting_for, last().waiting_source], [`${held.id} on a`, 'block']);
+});
+
+test('a role a human turns the nudge off for is never nudged; on again, it is (T1539)', async (t) => {
+  const f = fixture(t);
+  assert.throws(() => f.as('a', () => setRoleNudge(f.s, 'b', 'off')), /human/, 'only a human sets it');
+  assert.throws(() => setRoleNudge(f.s, 'b', 'maybe'), /on or off/);
+  assert.throws(() => setRoleNudge(f.s, 'nobody', 'off'));
+  assert.equal(setRoleNudge(f.s, 'b', 'off'), false);
+  assert.deepEqual(workspaceSettings(f.s).nudge_off, ['b']);
+  assert.equal((await f.wait('b', 3000)).reason, 'timeout');
+  assert.deepEqual(f.nudges('b'), []);
+  setWorkspaceSettings(f.s, { nudge_minutes: 10 });
+  assert.deepEqual(workspaceSettings(f.s).nudge_off, ['b'], 'another settings change keeps it');
+  assert.equal(setRoleNudge(f.s, 'b', 'on'), true);
+  assert.deepEqual(workspaceSettings(f.s).nudge_off, []);
+  assert.match((await f.wait('b')).nudge.text, /for 10 minutes/);
 });
