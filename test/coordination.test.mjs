@@ -84,6 +84,13 @@ test('message validation rolls back recipients and search reflects committed dat
   assert.equal(s.get('SELECT count(*) AS n FROM messages').n,3);
 });
 
+test('send all reaches agent roles only; a human role is reached by name',t=>{
+  const {s}=setup(t);
+  assert.deepEqual(c.send(s,'all','Build installed').recipients,c.roles(s).filter(r=>r.kind==='agent'&&r.name!=='a').map(r=>r.name));
+  assert.deepEqual(as(s,'human',()=>c.send(s,'all','From the human')).recipients,c.roles(s).filter(r=>r.kind==='agent').map(r=>r.name));
+  assert.deepEqual(c.send(s,['human'],'By name').recipients,['human']);
+});
+
 test('facts require sources and expected versions, preserve correction history and update FTS atomically',t=>{
   const {s}=setup(t);
   assert.throws(()=>c.setFact(s,'hosting',{body:'Local',source:''}),/nonempty/);
