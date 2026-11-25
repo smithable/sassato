@@ -205,7 +205,7 @@ export function send(s: Store, recipients: string[] | 'all', body: string, optio
   check(!reason||!/[\x00-\x1f\x7f]/.test(reason),'urgency reason must fit on one line');
   return s.tx(() => {
     check(urgency<6||reason||s.role(actor).kind==='human','Agents must give --reason for urgency 6–10');
-    const targets = [...new Set(recipients === 'all' ? roles(s).map(r => r.name as string).filter(r => r !== actor) : recipients.map(name))];
+    const targets = [...new Set(recipients === 'all' ? roles(s).filter(r => r.kind !== 'human' && r.name !== actor).map(r => r.name as string) : recipients.map(name))];
     check(targets.length > 0 && targets.length <= 100,'Choose 1–100 message recipients');
     targets.forEach(role => s.role(role));
     // T1270: 'send fable hassist TEXT' sent 'hassist TEXT' to fable. A text that starts with another role's bare name

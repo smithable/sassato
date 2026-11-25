@@ -410,7 +410,7 @@ on the task or on a new one owned by and for the relaying role. `--relayed-by` i
 
 | Command | Behavior |
 | --- | --- |
-| `send ROLE[,ROLE]\|all TEXT [--re T1] [--urgent \| --now] [--needs-reply]` | Append message, snapshot recipients, optional task link; `--needs-reply` asks each recipient for a reply or review |
+| `send ROLE[,ROLE]\|all TEXT [--re T1] [--urgent \| --now] [--needs-reply]` | Append message, snapshot recipients, optional task link; `all` is every agent role but the sender (a human role is reached only by name); `--needs-reply` asks each recipient for a reply or review |
 | `inbox [--peek] [--state unread\|read\|done] [--limit N]` | Unread first; marks only returned unread messages read unless --peek |
 | `sent [--limit N]` (alias `outbox`) | Sent messages with unread/read/acked status per recipient; JSON retains receipt timestamps |
 | `ack M1 [M2 ...]` | Atomically mark up to 100 addressed messages done; validate the whole batch first; retries preserve timestamps |
