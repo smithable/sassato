@@ -163,6 +163,11 @@ test('a waiter names what the role said, a job of its own, or a block that is no
   assert.deepEqual([last().waiting_for, last().waiting_source], ['waiting for CI on #70', 'idle-reason']);
   await arm();
   assert.equal(last().waiting_for, null, 'an idle reason counts once, for the waiter after it');
+  for (const detail of ['not json', '{}']) {
+    f.s.run("INSERT INTO events(workspace_id,entity,entity_id,actor,action,detail,created_at) VALUES(?,'idle','b','b','reason',?,?)", f.s.ws, detail, new Date().toISOString());
+    await arm();
+    assert.equal(last().waiting_for, null, `an idle reason row of ${detail} names nothing, never the word undefined`);
+  }
   f.s.run(`INSERT INTO jobs(workspace_id,role,kind,command,status,need_mb,cpu_need,margin,pid,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
     f.s.ws, 'b', 'gate', '["gate.sh"]', 'running', 1, 1, 1, 1, new Date().toISOString());
   await arm();

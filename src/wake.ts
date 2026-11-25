@@ -124,7 +124,12 @@ export async function wake(s: Store, options: WakeOptions = {}): Promise<WakeOut
 function waitCause(s: Store, actor: string): { text: string; source: string } | undefined {
   const previous = Number(s.get(`SELECT coalesce(max(id),0) id FROM events WHERE workspace_id=? AND entity='waiter' AND entity_id=? AND action='armed'`, s.ws, actor)!.id);
   const said = s.get(`SELECT detail FROM events WHERE workspace_id=? AND actor=? AND entity='idle' AND action='reason' AND id>? ORDER BY id DESC LIMIT 1`, s.ws, actor, previous);
-  if (said) return { text: String(JSON.parse(said.detail).reason).slice(0, 300), source: 'idle-reason' };
+  if (said) {
+    // A detail that does not parse, or has no reason, names nothing rather than breaking every arm.
+    let reason: unknown;
+    try { reason = JSON.parse(said.detail).reason; } catch { /* unreadable detail */ }
+    if (typeof reason === 'string' && reason.trim()) return { text: reason.slice(0, 300), source: 'idle-reason' };
+  }
   const job = s.get(`SELECT kind FROM jobs WHERE workspace_id=? AND role=? AND status IN ('waiting','running') ORDER BY id DESC LIMIT 1`, s.ws, actor);
   if (job) return { text: `a ${job.kind} job`, source: 'job' };
   const blocks = openBlocks(s, actor);
