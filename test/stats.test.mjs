@@ -63,16 +63,20 @@ test('stats reports unread mail, late urgent mail, mail a cursor passed unread, 
 test('a saved cursor names the mail its wake listed, so stats tells listed-but-unread from never listed (T1241)',t=>{
   const s=fixture(t);
   s.actor='a';
-  const listed=send(s,['c'],'Listed and left');
+  const listed=send(s,['c'],'Listed and left',{needsReply:true});
   const missed=send(s,['c'],'Never listed');
+  const ordinary=send(s,['c'],'Listed, ordinary');
   s.actor='c';
-  const first=saveNotificationProgress(s,{cursor:context(s).snapshot_cursor,expected_version:0,delivered:[listed.id,listed.id]});
+  const first=saveNotificationProgress(s,{cursor:context(s).snapshot_cursor,expected_version:0,delivered:[listed.id,listed.id,ordinary.id]});
+  // Ordinary mail the wake listed was read there (T1534); mail that waits for a reply stays open until acknowledged.
+  const state=(m)=>s.get("SELECT state FROM receipts WHERE workspace_id=? AND message_id=? AND recipient='c'",s.ws,Number(m.id.slice(1))).state;
+  assert.deepEqual([state(listed),state(missed),state(ordinary)],['unread','unread','read']);
   const r=stats(s,{now:later(90)});
   assert.deepEqual(Object.fromEntries(r.passed_unread.longest.map(m=>[m.message,m.listed])),{[listed.id]:'yes',[missed.id]:'no'});
   assert.deepEqual(r.passed_unread.listed,{yes:1,no:1});
   assert.match(formatStats(r),/listed by a wake before it was read: yes 1, no 1, unknown 0/);
   const saved=s.get("SELECT detail FROM events WHERE workspace_id=? AND entity='notification-progress' ORDER BY id DESC LIMIT 1",s.ws);
-  assert.deepEqual(JSON.parse(saved.detail).delivered,[listed.id]);
+  assert.deepEqual(JSON.parse(saved.detail).delivered,[listed.id,ordinary.id]);
   assert.throws(()=>saveNotificationProgress(s,{cursor:context(s).snapshot_cursor,expected_version:first.version,delivered:['T1']}),/Invalid delivered mail list/);
   // A later save without a list, or with a cut one, leaves the never-listed mail unknown (review).
   const plain=saveNotificationProgress(s,{cursor:context(s).snapshot_cursor,expected_version:first.version,scored:undefined,idle:undefined});
@@ -122,4 +126,17 @@ test('the CLI stores a refused take and still exits with the refusal (T1387)',t=
   assert.equal(again.status,run.status);assert.equal(again.stderr,run.stderr,'a failed record keeps the refusal as it was');
   const after=new Store(db,'a');after.use('team');t.after(()=>after.close());
   assert.deepEqual(after.all('SELECT role,verb,task FROM refusals').map(r=>({...r})),[{role:'b',verb:'take',task:task.id}]);
+});
+
+test('idle with ready work names the tasks the wakes named, so a spell can be checked (T1534)',t=>{
+  const s=fixture(t);
+  s.actor='a';
+  const one=addTask(s,{title:'One',forRole:'c'}),two=addTask(s,{title:'Two',forRole:'c'});
+  s.actor='c';
+  const cursor=context(s).snapshot_cursor,start=Date.now()-30*60_000;
+  const first=saveNotificationProgress(s,{cursor,expected_version:0,idle:{kind:'own-work',tasks:[{id:one.id,version:1}],observed:cursor,since:start,delivered:start+20*60_000,repeats:0}});
+  saveNotificationProgress(s,{cursor,expected_version:first.version,idle:{kind:'own-work',tasks:[{id:one.id,version:1},{id:two.id,version:1}],observed:cursor,since:start+25*60_000,delivered:start+30*60_000,repeats:0}});
+  const r=stats(s,{now:later(1)});
+  assert.deepEqual(r.idle_with_work.map(x=>[x.role,x.count,x.tasks]),[['c',2,[one.id,two.id]]]);
+  assert.match(formatStats(r),new RegExp(`  c: 2 · .* · 20m · ready: ${one.id}, ${two.id}`));
 });

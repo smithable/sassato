@@ -5,13 +5,14 @@ import { OWN_WRITE } from './mail-wait.js';
 /**
  * Where each role's time went on one day (T1253), from events alone, minute by minute, summing to the day:
  * working (a write of its own in the 15 minutes before; per task it held), waiting in a waiter (per what the
- * waiter was armed for), or not running. Working wins over a waiter running in the background. With the
+ * waiter was armed for, and by cause: gate, CI, merge lock, review, a human, another role, nothing named; T1534),
+ * or not running. Working wins over a waiter running in the background. With the
  * nudges of that day: sent, answered (an idle reason or a take before the next one), escalated, and the reasons.
  */
 export type TimeOptions = { day: string; role?: string; now?: Date };
 const MINUTE = 60_000, WORKING_MINUTES = 15;
 
-type Span = { from: number; to: number; what: string };
+type Span = { from: number; to: number; what: string; cause: string };
 
 export function timeTable(s: Store, options: TimeOptions): Row {
   // The day in the machine's own time zone; a date that does not exist (2026-02-30) is refused, not moved.
@@ -31,7 +32,7 @@ export function timeTable(s: Store, options: TimeOptions): Row {
       // The task held at each moment: from the role's own claim to its completion, drop, hand-over, release, submission or another's claim.
       const held = heldTasks(s, r, iso(end));
       const waiters = waiterSpans(s, r, start, end);
-      const minutes: Record<string, number> = {}, working: Record<string, number> = {}, waiting: Record<string, number> = {};
+      const minutes: Record<string, number> = {}, working: Record<string, number> = {}, waiting: Record<string, number> = {}, causes: Record<string, number> = {};
       let w = 0, sp = 0, lastWrite: { at: number; task: string } | undefined;
       for (let t = start; t + MINUTE <= end; t += MINUTE) {
         while (w < writes.length && Date.parse(writes[w].created_at) <= t) {
@@ -41,11 +42,14 @@ export function timeTable(s: Store, options: TimeOptions): Row {
         }
         while (sp < waiters.length && waiters[sp].to <= t) sp++;
         if (lastWrite && t - lastWrite.at < WORKING_MINUTES * MINUTE) { working[lastWrite.task] = (working[lastWrite.task] ?? 0) + 1; minutes.working = (minutes.working ?? 0) + 1; }
-        else if (sp < waiters.length && waiters[sp].from <= t) { waiting[waiters[sp].what] = (waiting[waiters[sp].what] ?? 0) + 1; minutes.waiting = (minutes.waiting ?? 0) + 1; }
+        else if (sp < waiters.length && waiters[sp].from <= t) {
+          const x = waiters[sp];
+          waiting[x.what] = (waiting[x.what] ?? 0) + 1; causes[x.cause] = (causes[x.cause] ?? 0) + 1; minutes.waiting = (minutes.waiting ?? 0) + 1;
+        }
         else minutes.not_running = (minutes.not_running ?? 0) + 1;
       }
       return { role: r, working_minutes: minutes.working ?? 0, waiting_minutes: minutes.waiting ?? 0, not_running_minutes: minutes.not_running ?? 0,
-        working: sorted(working), waiting: sorted(waiting), nudges: nudges(s, r, iso(start), iso(end)) };
+        working: sorted(working), waiting: sorted(waiting), waiting_by_cause: sorted(causes), nudges: nudges(s, r, iso(start), iso(end)) };
     });
     return { day: options.day, from: iso(start), to: iso(end), roles: rows,
       working_means: `a write of the role's own in the ${WORKING_MINUTES} minutes before (not a checkpoint, a read, an idle reason or a waiter); time in a waiter running in the background while it writes counts as working`,
@@ -89,24 +93,59 @@ function waiterSpans(s: Store, role: string, start: number, end: number): Span[]
   const sessionEnds = s.all(`SELECT id,created_at FROM events WHERE workspace_id=? AND entity='session' AND action IN ('ended','replaced')
     AND json_extract(detail,'$.role')=? AND created_at<? ORDER BY id`, s.ws, role, new Date(end).toISOString()).map(e => ({ id: Number(e.id), at: Date.parse(e.created_at) }));
   const spans: Span[] = [];
-  let open: { id: number; from: number; what: string } | undefined;
-  const close = (to: number) => { if (open) { const stop = Math.min(to, sessionEnds.find(x => x.id > open!.id)?.at ?? Infinity); if (stop > open.from) spans.push({ from: open.from, to: stop, what: open.what }); open = undefined; } };
+  let open: { id: number; from: number; what: string; cause: string } | undefined;
+  const close = (to: number) => { if (open) { const stop = Math.min(to, sessionEnds.find(x => x.id > open!.id)?.at ?? Infinity); if (stop > open.from) spans.push({ from: open.from, to: stop, what: open.what, cause: open.cause }); open = undefined; } };
+  let previousArm = Number(s.get(`SELECT coalesce(max(id),0) id FROM events WHERE workspace_id=? AND entity='waiter' AND entity_id=? AND action='armed' AND id<?`,
+    s.ws, role, Number(events.find(e => e.action === 'armed')?.id ?? 0))!.id);
   for (const e of events) {
     const at = Date.parse(e.created_at);
-    if (e.action === 'armed') { close(at); open = { id: Number(e.id), from: at, what: waitingFor(e.detail) }; }
+    if (e.action === 'armed') { close(at); open = { id: Number(e.id), from: at, ...waitingFor(s, role, e, previousArm) }; previousArm = Number(e.id); }
     else if (e.action === 'ended') close(at);
   }
   close(end);
   return spans.filter(x => x.to > start);
 }
 
-/** What a wait was for: the first open block's role or kind ('on fable'), else the text given, else nothing named. */
-function waitingFor(detail: string): string {
-  let said: unknown;
-  try { said = JSON.parse(detail).waiting_for; } catch { said = null; }
-  if (typeof said !== 'string' || !said) return 'nothing named';
-  const block = /^T\d+ on (\S+?)(?:,|$)/.exec(said);
-  return block ? `on ${block[1]}` : said.slice(0, 80);
+/**
+ * What a wait was for (T1534). A waiter armed since T1534 says where its text came from (waiting_source) and is
+ * taken as it is. An older one stored the role's open blocks ('T12 on fable, ...'), parked ones included; for it
+ * only a block that was not parked (kind other) and open when the waiter armed counts, else the idle reason the
+ * role gave since its previous waiter, else nothing named. A text the role gave itself is kept.
+ */
+function waitingFor(s: Store, role: string, e: Row, previousArm: number): { what: string; cause: string } {
+  let d: Row;
+  try { d = JSON.parse(e.detail ?? '{}'); } catch { d = {}; }
+  const said = typeof d.waiting_for === 'string' ? d.waiting_for : '';
+  if (d.waiting_source !== undefined || (said && !/^T\d+ on /.test(said))) return named(s, said, d.waiting_source === 'block');
+  const blocks = said.split(', ').map(b => /^T(\d+) on (\S+)$/.exec(b)).filter(m => m !== null).filter(m => s.get(`SELECT 1 FROM blockers WHERE workspace_id=? AND task_id=?
+    AND (waiting_on=? OR kind=?) AND kind!='other' AND created_at<=? AND (resolved_at IS NULL OR resolved_at>?)`, s.ws, Number(m![1]), m![2], m![2], e.created_at, e.created_at));
+  if (blocks.length) return named(s, blocks.map(m => m![0]).join(', '), true);
+  const reason = s.get(`SELECT detail FROM events WHERE workspace_id=? AND actor=? AND entity='idle' AND action='reason' AND id>? AND id<? ORDER BY id DESC LIMIT 1`,
+    s.ws, role, previousArm, Number(e.id));
+  let text = '';
+  try { text = reason ? String(JSON.parse(reason.detail).reason) : ''; } catch { /* unreadable detail */ }
+  return named(s, text, false);
+}
+
+/** A wait's text, short, and its cause. A block names whom it waits on ('on fable'); a human role is 'a human'. */
+function named(s: Store, text: string, block: boolean): { what: string; cause: string } {
+  if (!text) return { what: 'nothing named', cause: 'nothing named' };
+  const on = block ? /^T\d+ on (\S+?)(?:,|$)/.exec(text)?.[1] : undefined;
+  const humans = s.all("SELECT name FROM roles WHERE workspace_id=? AND kind='human'", s.ws).map(r => String(r.name).toLowerCase());
+  if (on) return { what: `on ${on}`, cause: humans.includes(on.toLowerCase()) || on === 'human' ? 'a human' : causeOf(text, humans) ?? 'another role' };
+  return { what: text.slice(0, 80), cause: causeOf(text, humans) ?? 'other' };
+}
+
+/** The cause a wait's words name, in this order: the merge lock, CI, a gate, a merge, a review, a human. */
+export function causeOf(text: string, humans: string[] = []): string | undefined {
+  const t = text.toLowerCase();
+  if (/merge[- ]?lock/.test(t)) return 'merge lock';
+  if (/\bci\b|full[- ]check|full[- ]run|full-ci|\bchecks?\b/.test(t)) return 'CI';
+  if (/\bgates?\b/.test(t)) return 'gate';
+  if (/merge/.test(t)) return 'merge lock';
+  if (/review|verdict/.test(t)) return 'review';
+  if (/\bhuman\b|\bh\d+\b/.test(t) || humans.map(h => h.replace(/[^a-z0-9]/g, '')).some(h => h && new RegExp(`\\b${h}\\b`).test(t))) return 'a human';
+  return undefined;
 }
 
 function nudges(s: Store, role: string, from: string, to: string): Row {
@@ -140,7 +179,8 @@ export function formatTimeTable(r: Row): string {
   for (const x of r.roles) {
     lines.push(`${x.role}: working ${span(x.working_minutes)} · waiting ${span(x.waiting_minutes)} · not running ${span(x.not_running_minutes)}`);
     if (x.working.length) lines.push(`  working: ${x.working.slice(0, 6).map((w: Row) => `${w.what} ${span(w.minutes)}`).join(', ')}`);
-    if (x.waiting.length) lines.push(`  waiting: ${x.waiting.slice(0, 6).map((w: Row) => `${w.what} ${span(w.minutes)}`).join(', ')}`);
+    if (x.waiting_by_cause.length) lines.push(`  waiting by cause: ${x.waiting_by_cause.map((w: Row) => `${w.what} ${span(w.minutes)}`).join(', ')}`);
+    if (x.waiting.length) lines.push(`  waiting for: ${x.waiting.slice(0, 6).map((w: Row) => `${w.what} ${span(w.minutes)}`).join(', ')}`);
     const n = x.nudges;
     if (n.sent || n.escalated || n.reasons.length) lines.push(`  nudges: ${n.sent} sent, ${n.answered} answered, ${n.escalated} escalated${n.reasons.length ? `; reasons: ${n.reasons.map((t: string) => `"${t.slice(0, 80)}"`).join('; ')}` : ''}`);
   }

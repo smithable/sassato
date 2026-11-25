@@ -147,3 +147,29 @@ test('a session that starts or resumes gets the full interval from its start; a 
   assert.equal(third.result.nudge.count, 1, 'the count starts again with the new session');
   assert.ok(Date.now() - resumed >= 15 * 60_000);
 });
+
+test('a waiter names what the role said, a job of its own, or a block that is not parked; a parked task never names it (T1534)', async (t) => {
+  const f = fixture(t);
+  setWorkspaceSettings(f.s, { nudge_minutes: 0 });
+  const parked = f.as('b', () => takeTask(f.s, addTask(f.s, { title: 'Parked' }).id));
+  f.as('b', () => blockTask(f.s, parked.id, { kind: 'other', waitingOn: 'lead', body: 'parked for the lead' }));
+  f.as('b', () => saveNotificationProgress(f.s, { cursor: f.latest(), expected_version: 0 }));
+  const arm = () => f.as('b', () => wake(f.s, { settle: 0, timeout: 1, clock: f.clock, stopFile: join(f.dir, 'stop') }));
+  const last = () => JSON.parse(f.s.get("SELECT detail FROM events WHERE workspace_id=? AND entity='waiter' AND action='armed' ORDER BY id DESC LIMIT 1", f.s.ws).detail);
+  await arm();
+  assert.deepEqual([last().waiting_for, last().waiting_source], [null, null], 'a parked block is not a wait');
+  f.as('b', () => idleReason(f.s, 'waiting for CI on #70'));
+  await arm();
+  assert.deepEqual([last().waiting_for, last().waiting_source], ['waiting for CI on #70', 'idle-reason']);
+  await arm();
+  assert.equal(last().waiting_for, null, 'an idle reason counts once, for the waiter after it');
+  f.s.run(`INSERT INTO jobs(workspace_id,role,kind,command,status,need_mb,cpu_need,margin,pid,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+    f.s.ws, 'b', 'gate', '["gate.sh"]', 'running', 1, 1, 1, 1, new Date().toISOString());
+  await arm();
+  assert.deepEqual([last().waiting_for, last().waiting_source], ['a gate job', 'job']);
+  f.s.run("UPDATE jobs SET status='done' WHERE workspace_id=?", f.s.ws);
+  const held = f.as('b', () => takeTask(f.s, addTask(f.s, { title: 'Held' }).id));
+  f.as('b', () => blockTask(f.s, held.id, { kind: 'agent', waitingOn: 'a', body: 'review' }));
+  await arm();
+  assert.deepEqual([last().waiting_for, last().waiting_source], [`${held.id} on a`, 'block']);
+});

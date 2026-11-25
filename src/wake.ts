@@ -93,11 +93,12 @@ export async function wake(s: Store, options: WakeOptions = {}): Promise<WakeOut
   const since = options.since ?? before.cursor;
   // A --since past the saved cursor would skip the events between them; an earlier one replays them.
   check(since <= before.cursor, `--since ${since} is past the saved cursor ${before.cursor}; that would skip events. Use --since ${before.cursor} or leave it out.`, 4);
-  const waitingFor = options.waitingFor !== undefined ? text(options.waitingFor, 'what the wait is for', 300) : openBlocks(s, actor);
+  const cause = options.waitingFor !== undefined ? { text: text(options.waitingFor, 'what the wait is for', 300), source: 'said' } : waitCause(s, actor);
+  const waitingFor = cause?.text ?? '';
   const expect = options.expectMinutes === undefined ? null : integer(options.expectMinutes, 'expected minutes', 0, 10_080);
   const acknowledged = options.ack?.length ? acknowledgeMany(s, options.ack).map((row) => String(row.message_id)) : [];
   // The waiter's own events (T1253) give the time table its waiting spans; they are bookkeeping, never activity.
-  s.tx(() => s.event('waiter', actor, 'armed', { since, idle_minutes: options.idleMinutes ?? null, waiting_for: waitingFor || null, expect_minutes: expect }));
+  s.tx(() => s.event('waiter', actor, 'armed', { since, idle_minutes: options.idleMinutes ?? null, waiting_for: waitingFor || null, waiting_source: cause?.source ?? null, expect_minutes: expect }));
   let result;
   try {
     if (expect !== null && expect >= 10 && options.armNotice) {
@@ -115,10 +116,25 @@ export async function wake(s: Store, options: WakeOptions = {}): Promise<WakeOut
   return formatWake(s,options,since,result,acknowledged,before.version);
 }
 
-/** The role's open blocks, as what its wait is for when it does not say. */
+/**
+ * What a wait is for when the role does not say (T1534): the idle reason it gave since its previous waiter, else a
+ * job of its own queued or running, else its open blocks that are not parked work (kind other), else nothing named.
+ * A parked task never names a wait: every role holds some, and its waiting time is not spent on them.
+ */
+function waitCause(s: Store, actor: string): { text: string; source: string } | undefined {
+  const previous = Number(s.get(`SELECT coalesce(max(id),0) id FROM events WHERE workspace_id=? AND entity='waiter' AND entity_id=? AND action='armed'`, s.ws, actor)!.id);
+  const said = s.get(`SELECT detail FROM events WHERE workspace_id=? AND actor=? AND entity='idle' AND action='reason' AND id>? ORDER BY id DESC LIMIT 1`, s.ws, actor, previous);
+  if (said) return { text: String(JSON.parse(said.detail).reason).slice(0, 300), source: 'idle-reason' };
+  const job = s.get(`SELECT kind FROM jobs WHERE workspace_id=? AND role=? AND status IN ('waiting','running') ORDER BY id DESC LIMIT 1`, s.ws, actor);
+  if (job) return { text: `a ${job.kind} job`, source: 'job' };
+  const blocks = openBlocks(s, actor);
+  return blocks ? { text: blocks, source: 'block' } : undefined;
+}
+
+/** The role's open blocks that are not parked work. */
 function openBlocks(s: Store, actor: string): string {
   return s.all(`SELECT b.task_id,b.kind,b.waiting_on FROM blockers b JOIN tasks t ON t.workspace_id=b.workspace_id AND t.id=b.task_id
-    WHERE b.workspace_id=? AND b.status='open' AND t.owner=? AND t.status NOT IN ('done','dropped') ORDER BY b.id DESC LIMIT 5`, s.ws, actor)
+    WHERE b.workspace_id=? AND b.status='open' AND b.kind!='other' AND t.owner=? AND t.status NOT IN ('done','dropped') ORDER BY b.id DESC LIMIT 5`, s.ws, actor)
     .map((b) => `T${b.task_id} on ${b.waiting_on ?? b.kind}`).join(', ');
 }
 
