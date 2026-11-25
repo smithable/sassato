@@ -218,7 +218,7 @@ export function showRecord(s: Store, recordId: string): Row {
   const result: Row = {...row,id:recordId};
   if (row.task_id) result.task_id=`T${row.task_id}`;
   if (row.blocker_id) result.blocker_id=`B${row.blocker_id}`;
-  if (prefix==='H') { result.options=JSON.parse(row.options); result.for_role=s.get('SELECT waiting_on FROM blockers WHERE workspace_id=? AND id=?',s.ws,row.blocker_id)!.waiting_on; }
+  if (prefix==='H') { result.options=JSON.parse(row.options); result.seen=row.seen?JSON.parse(row.seen):null; result.for_role=s.get('SELECT waiting_on FROM blockers WHERE workspace_id=? AND id=?',s.ws,row.blocker_id)!.waiting_on; }
   if (prefix==='E') result.detail=JSON.parse(row.detail);
   if (prefix==='M') {
     result.now=messageIsNow(s,recordId);

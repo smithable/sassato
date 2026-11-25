@@ -364,6 +364,14 @@ A blocker of kind `agent` or `human` wakes the role it waits on (as a decision t
 opened; `other` and `external` wake nobody. So a task parked for later is blocked with `--kind other`
 (`--waits-on` still names who sets it in the order); `agent` is for a question someone must answer now.
 
+`ask-human` first compares the new question and its task's title with the pending
+questions and those answered in the last 30 days (shared words, no model; an answered
+question on the same task is not counted). When some look like it, it prints them with
+their answers and records nothing (exit 4). Read them; if yours is still needed, repeat
+it with `--seen H1,H2`, naming every one shown. The list is kept on the question.
+`answer` records as asked and warns about open human tasks that share words with the
+question and its answer, which may now be settled or overtaken.
+
 `ask-human` sends the question and notification to the human selected with `--for`.
 Without `--for`, it uses the configured default human, the sole human, or the calling
 human. Otherwise an agent must choose explicitly. `ask-human --new TITLE QUESTION` asks
