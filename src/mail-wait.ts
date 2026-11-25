@@ -301,7 +301,7 @@ export async function waitForWork(s:Store, options:WaitOptions={}, observer?:Wai
   // that it can take now is woken with those, to take one (T763). Work writes restart the idle period.
   const idle=integer(options.idleMinutes??options.defaultIdleMinutes??0,'idle minutes',0,10_080)*60_000;
   const idleState={next:clock.monotonic()+idle,from:latest};
-  const nudgeMinutes=options.nudge&&s.role(actor).kind!=='human'?workspaceSettings(s).nudge_minutes:0;
+  const settings=workspaceSettings(s),nudgeMinutes=options.nudge&&s.role(actor).kind!=='human'&&!(settings.nudge_off??[]).includes(actor)?settings.nudge_minutes:0;
   const nudgeState:NudgeState={next:nudgeMinutes?clock.now():Infinity,start:{id:latest,at:clock.now()},checked:0,answer:0};
   let nudged=false;
   for(;;) {

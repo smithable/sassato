@@ -9,7 +9,7 @@ import { initWorkspace } from '../dist/admin.js';
 import { send, inbox } from '../dist/coordination.js';
 import { waitForWork } from '../dist/mail-wait.js';
 import { addTask, takeTask, noteTask, blockTask } from '../dist/tasks.js';
-import { setWorkspaceSettings } from '../dist/workspace-settings.js';
+import { setWorkspaceSettings, setRoleNudge, workspaceSettings } from '../dist/workspace-settings.js';
 import { saveNotificationProgress } from '../dist/notification-progress.js';
 import { idleReason, wake } from '../dist/wake.js';
 
@@ -172,4 +172,20 @@ test('a waiter names what the role said, a job of its own, or a block that is no
   f.as('b', () => blockTask(f.s, held.id, { kind: 'agent', waitingOn: 'a', body: 'review' }));
   await arm();
   assert.deepEqual([last().waiting_for, last().waiting_source], [`${held.id} on a`, 'block']);
+});
+
+test('a role a human turns the nudge off for is never nudged; on again, it is (T1539)', async (t) => {
+  const f = fixture(t);
+  assert.throws(() => f.as('a', () => setRoleNudge(f.s, 'b', 'off')), /human/, 'only a human sets it');
+  assert.throws(() => setRoleNudge(f.s, 'b', 'maybe'), /on or off/);
+  assert.throws(() => setRoleNudge(f.s, 'nobody', 'off'));
+  assert.equal(setRoleNudge(f.s, 'b', 'off'), false);
+  assert.deepEqual(workspaceSettings(f.s).nudge_off, ['b']);
+  assert.equal((await f.wait('b', 3000)).reason, 'timeout');
+  assert.deepEqual(f.nudges('b'), []);
+  setWorkspaceSettings(f.s, { nudge_minutes: 10 });
+  assert.deepEqual(workspaceSettings(f.s).nudge_off, ['b'], 'another settings change keeps it');
+  assert.equal(setRoleNudge(f.s, 'b', 'on'), true);
+  assert.deepEqual(workspaceSettings(f.s).nudge_off, []);
+  assert.match((await f.wait('b')).nudge.text, /for 10 minutes/);
 });

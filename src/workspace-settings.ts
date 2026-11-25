@@ -3,7 +3,7 @@ import { check, name, text } from './errors.js';
 import { WAKE_SPEEDS, validateRoleWakePolicy, type RoleWakePolicy, type WakeMode, type WakeSpeed } from './wake-policy.js';
 import { validateBusyChecks, type BusyCheck } from './busy-checks.js';
 
-export interface WorkspaceSettings { default_human: string | null; import_timezone: string; stop_file: string | null; busy_checks:BusyCheck[]; import_answer_markers:string[]; import_role_aliases:Record<string,string>; import_timezone_aliases:Record<string,string>; open_work_roles:string[]|null; digest_skip:Record<string,string[]>; autocompact:Record<string,number>; advisor:Record<string,string>; wake_mode:WakeMode; speed:WakeSpeed; wake_roles:Record<string,RoleWakePolicy>; codex_versions:string[]; spare_work:boolean; spare_providers:string[]; feedback_closers:string[]; rule_relays:string[]; nudge_minutes:number; nudge_escalate:string|null }
+export interface WorkspaceSettings { default_human: string | null; import_timezone: string; stop_file: string | null; busy_checks:BusyCheck[]; import_answer_markers:string[]; import_role_aliases:Record<string,string>; import_timezone_aliases:Record<string,string>; open_work_roles:string[]|null; digest_skip:Record<string,string[]>; autocompact:Record<string,number>; advisor:Record<string,string>; wake_mode:WakeMode; speed:WakeSpeed; wake_roles:Record<string,RoleWakePolicy>; codex_versions:string[]; spare_work:boolean; spare_providers:string[]; feedback_closers:string[]; rule_relays:string[]; nudge_minutes:number; nudge_escalate:string|null; nudge_off:string[] }
 function standardTimezone(zone:string):boolean {
   try {new Intl.DateTimeFormat('en',{timeZone:zone});return true;} catch {return false;}
 }
@@ -96,7 +96,12 @@ export function validateSettings(s: Store, input: Row): WorkspaceSettings {
   const nudge=input.nudge_minutes??DEFAULT_NUDGE_MINUTES,escalate=input.nudge_escalate??null;
   check(Number.isSafeInteger(nudge)&&nudge>=0&&nudge<=1440,'nudge_minutes must be a whole number of minutes from 0 (off) to 1440');
   if(escalate!==null)s.role(name(escalate));
-  return {nudge_minutes:nudge,nudge_escalate:escalate,feedback_closers:[...new Set(closers as string[])],rule_relays:[...new Set(relays as string[])],spare_work:spareWork,spare_providers:[...new Set(spareProviders as string[])],codex_versions:[...new Set(codex as string[])],wake_mode:wakeMode,speed,wake_roles,autocompact:kept,advisor,digest_skip:Object.fromEntries(Object.entries(skip).map(([role,kinds])=>[role,[...new Set(kinds as string[])]])),open_work_roles:openWork===null?null:[...new Set((openWork as unknown[]).map(String))],default_human:human,import_timezone:validateTimezone(input.import_timezone ?? 'UTC'),stop_file:input.stop_file == null ? null : text(input.stop_file,'stop file',4096),busy_checks:validateBusyChecks(input.busy_checks??[]),import_answer_markers:markers.map(marker=>text(marker,'import answer marker',200)),import_role_aliases:roleAliases,import_timezone_aliases:timezoneAliases};
+  // nudge_off (T1539): roles never nudged, such as a role on demand for a human; a human sets it (role set ROLE
+  // --nudge off). An entry for a role that no longer exists is dropped.
+  const off=input.nudge_off??[];
+  check(Array.isArray(off)&&off.length<=64&&off.every(r=>typeof r==='string'),'nudge_off must list at most 64 role names');
+  const roleNames=new Set(s.all('SELECT name FROM roles WHERE workspace_id=?',s.ws).map(r=>String(r.name)));
+  return {nudge_minutes:nudge,nudge_escalate:escalate,nudge_off:[...new Set((off as string[]).filter(r=>roleNames.has(r)))],feedback_closers:[...new Set(closers as string[])],rule_relays:[...new Set(relays as string[])],spare_work:spareWork,spare_providers:[...new Set(spareProviders as string[])],codex_versions:[...new Set(codex as string[])],wake_mode:wakeMode,speed,wake_roles,autocompact:kept,advisor,digest_skip:Object.fromEntries(Object.entries(skip).map(([role,kinds])=>[role,[...new Set(kinds as string[])]])),open_work_roles:openWork===null?null:[...new Set((openWork as unknown[]).map(String))],default_human:human,import_timezone:validateTimezone(input.import_timezone ?? 'UTC'),stop_file:input.stop_file == null ? null : text(input.stop_file,'stop file',4096),busy_checks:validateBusyChecks(input.busy_checks??[]),import_answer_markers:markers.map(marker=>text(marker,'import answer marker',200)),import_role_aliases:roleAliases,import_timezone_aliases:timezoneAliases};
 }
 /** Digest entries a role may choose not to be woken by. Urgent mail, replies, answers, blockers, reviews and
  * stops are never skippable: they always need the role. */
@@ -117,6 +122,18 @@ export function setRoleAutocompact(s:Store,role:string,value:string):number|null
     return tokens;
   });
 }
+/** Whether a role is nudged when quiet (T1539): on by default, off for a role a human exempts. */
+export function setRoleNudge(s:Store,role:string,value:string):boolean {
+  check(value==='on'||value==='off','--nudge takes on or off');
+  return s.tx(()=>{
+    s.requireHuman(); s.role(name(role));
+    const off=new Set(workspaceSettings(s).nudge_off??[]);
+    if(value==='off')off.add(role);else off.delete(role);
+    setWorkspaceSettings(s,{nudge_off:[...off]});
+    return value==='on';
+  });
+}
+export const roleNudged=(settings:WorkspaceSettings,role:string):boolean=>!(settings.nudge_off??[]).includes(role);
 /** A model name for --advisor: letters, digits and . _ : [ ] -, never starting with a dash (so never a flag). */
 export const validAdvisor=(model:unknown):boolean=>typeof model==='string'&&/^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,199}$/.test(model);
 /** A Claude role's advisor model (T1224): a model name, or 'off' to clear it. A human sets it. */
@@ -172,18 +189,18 @@ export const DIGEST_SKIPPABLE=['own-work','open-work','spare-work','task-finishe
 /** Workspace configuration is recorded in its existing append-only audit history. */
 export function workspaceSettings(s: Store): WorkspaceSettings {
   const event=s.get("SELECT actor,detail FROM events WHERE workspace_id=? AND entity='workspace' AND action IN ('created','settings-updated') ORDER BY id DESC LIMIT 1",s.ws);
-  if (!event) return {default_human:null,import_timezone:'UTC',stop_file:null,busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{},autocompact:{},advisor:{},wake_mode:'legacy',speed:'normal',wake_roles:{},codex_versions:[...DEFAULT_CODEX_VERSIONS],spare_work:true,spare_providers:[],rule_relays:[],feedback_closers:[],nudge_minutes:DEFAULT_NUDGE_MINUTES,nudge_escalate:null};
+  if (!event) return {default_human:null,import_timezone:'UTC',stop_file:null,busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{},autocompact:{},advisor:{},wake_mode:'legacy',speed:'normal',wake_roles:{},codex_versions:[...DEFAULT_CODEX_VERSIONS],spare_work:true,spare_providers:[],rule_relays:[],feedback_closers:[],nudge_minutes:DEFAULT_NUDGE_MINUTES,nudge_escalate:null,nudge_off:[]};
   const detail=JSON.parse(event.detail);
   if (detail.settings) {
     // Older builds allowed aliases such as EST/CET. Ignore those overrides on
     // read so standard meanings win and unrelated settings remain editable.
-    const settings={busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{},autocompact:{},advisor:{},wake_mode:'legacy',speed:'normal',wake_roles:{},codex_versions:[...DEFAULT_CODEX_VERSIONS],spare_work:true,spare_providers:[],rule_relays:[],feedback_closers:[],nudge_minutes:DEFAULT_NUDGE_MINUTES,nudge_escalate:null,...detail.settings};
+    const settings={busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{},autocompact:{},advisor:{},wake_mode:'legacy',speed:'normal',wake_roles:{},codex_versions:[...DEFAULT_CODEX_VERSIONS],spare_work:true,spare_providers:[],rule_relays:[],feedback_closers:[],nudge_minutes:DEFAULT_NUDGE_MINUTES,nudge_escalate:null,nudge_off:[],...detail.settings};
     settings.import_timezone_aliases=Object.fromEntries(Object.entries(settings.import_timezone_aliases).filter(([key])=>!standardTimezone(key)));
     return settings;
   }
   // Preserve the recorded bootstrap human; unconfigured imports use generic UTC.
   const human=s.get("SELECT name FROM roles WHERE workspace_id=? AND name=? AND kind='human'",s.ws,event.actor)?.name ?? null;
-  return {default_human:human,import_timezone:'UTC',stop_file:null,busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{},autocompact:{},advisor:{},wake_mode:'legacy',speed:'normal',wake_roles:{},codex_versions:[...DEFAULT_CODEX_VERSIONS],spare_work:true,spare_providers:[],rule_relays:[],feedback_closers:[],nudge_minutes:DEFAULT_NUDGE_MINUTES,nudge_escalate:null};
+  return {default_human:human,import_timezone:'UTC',stop_file:null,busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{},autocompact:{},advisor:{},wake_mode:'legacy',speed:'normal',wake_roles:{},codex_versions:[...DEFAULT_CODEX_VERSIONS],spare_work:true,spare_providers:[],rule_relays:[],feedback_closers:[],nudge_minutes:DEFAULT_NUDGE_MINUTES,nudge_escalate:null,nudge_off:[]};
 }
 export function setWorkspaceSettings(s: Store, patch: Partial<WorkspaceSettings>): WorkspaceSettings {
   return s.tx(()=>{
