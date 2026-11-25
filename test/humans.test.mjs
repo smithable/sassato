@@ -402,6 +402,12 @@ test('an answered question on the same task does not refuse a follow-up, and ung
   assert.equal(tasks.askHuman(s,other,{question}).seen,null);
 });
 
+test('the same question word for word is stopped however short it is',t=>{
+  const {s,db}=fixture(t),ask=()=>raw(db,['--as','builder','ask-human',tasks.addTask(s,{title:'Release'}).id,'Deploy tonight?']);
+  assert.equal(ask().status,0);
+  assert.equal(ask().status,4);
+});
+
 test('recording an answer names open human tasks that share its words',t=>{
   const {s,db}=fixture(t);
   const check=tasks.addTask(s,{title:'Host check: does the browser sandbox run for the preview picture',body:'Run the browser on the host and see if the preview picture comes out.',humanOnly:true}).id;
@@ -411,6 +417,6 @@ test('recording an answer names open human tasks that share its words',t=>{
   const r=raw(db,['--as','alice','answer','H1','On the development machine']);
   assert.equal(r.status,0,r.stderr);
   const warnings=JSON.parse(r.stdout).warnings;
-  assert.equal(warnings.length,1);assert.match(warnings[0],new RegExp(`^${check} is an open human task`));
+  assert.equal(warnings.length,1);assert.match(warnings[0],new RegExp(`^${check} \\(alice\\) is an open human task`));
   assert.match(r.stderr,/sassato: warning: /);
 });

@@ -366,11 +366,13 @@ opened; `other` and `external` wake nobody. So a task parked for later is blocke
 
 `ask-human` first compares the new question and its task's title with the pending
 questions and those answered in the last 30 days (shared words, no model; an answered
-question on the same task is not counted). When some look like it, it prints them with
+question on the same task is not counted). When some look like it (the same words, or
+enough rare ones), it prints up to three with
 their answers and records nothing (exit 4). Read them; if yours is still needed, repeat
 it with `--seen H1,H2`, naming every one shown. The list is kept on the question.
-`answer` records as asked and warns about open human tasks that share words with the
-question and its answer, which may now be settled or overtaken.
+`answer` records as before and warns about up to three open human tasks, whichever human
+they are for, that share words with the question and its answer: they may now be settled
+or overtaken. A task with a pending question of its own is not named.
 
 `ask-human` sends the question and notification to the human selected with `--for`.
 Without `--for`, it uses the configured default human, the sole human, or the calling

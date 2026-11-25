@@ -43,16 +43,24 @@ function closest<T>(text: string, candidates: T[], textOf: (candidate: T) => str
 export function similarQuestions(s: Store, task: { id: number; title: string }, question: string): Row[] {
   const since = new Date(Date.now() - DAYS * 86_400_000).toISOString();
   const rows = s.all("SELECT q.id,q.task_id,q.question,q.status,q.answer,q.created_at,q.answered_at,t.title FROM questions q JOIN tasks t ON t.workspace_id=q.workspace_id AND t.id=q.task_id WHERE q.workspace_id=? AND (q.status='pending' OR (q.status='answered' AND q.answered_at>=? AND q.task_id!=?)) ORDER BY q.id", s.ws, since, task.id);
-  return closest(`${task.title} ${question}`, rows, r => `${r.title} ${r.question}`, ASKED);
+  // The same question word for word counts however few words it has.
+  const plain = (value: string) => value.toLowerCase().replace(/\s+/g, ' ').trim();
+  const exact = rows.filter(r => plain(r.question) === plain(question));
+  return [...exact, ...closest(`${task.title} ${question}`, rows, r => `${r.title} ${r.question}`, ASKED).filter(r => !exact.includes(r))].slice(0, SHOWN);
 }
 
 /**
  * One line for each open human task (with no pending question of its own) that shares words with
- * the answer just recorded to a question: it may be settled or overtaken now.
+ * the answer just recorded to a question: it may be settled or overtaken now. The answer is
+ * already saved, so a failure here is a line too, never an error.
  */
 export function mootWarnings(s: Store, questionId: string): string[] {
+  try { return mootTasks(s, questionId); }
+  catch (error) { return [`The answer is recorded; looking for tasks it settles failed: ${(error as Error).message}`]; }
+}
+function mootTasks(s: Store, questionId: string): string[] {
   const answered = s.get('SELECT q.task_id,q.question,q.answer,t.title FROM questions q JOIN tasks t ON t.workspace_id=q.workspace_id AND t.id=q.task_id WHERE q.workspace_id=? AND q.id=?', s.ws, Number(questionId.slice(1)))!;
-  const rows = s.all("SELECT t.id,t.title,t.body FROM tasks t WHERE t.workspace_id=? AND t.id!=? AND t.status NOT IN ('done','dropped') AND (t.human_only=1 OR EXISTS (SELECT 1 FROM roles r WHERE r.workspace_id=t.workspace_id AND r.kind='human' AND r.name IN (t.for_role,t.owner))) AND NOT EXISTS (SELECT 1 FROM questions q WHERE q.workspace_id=t.workspace_id AND q.task_id=t.id AND q.status='pending') ORDER BY t.id", s.ws, answered.task_id);
+  const rows = s.all("SELECT t.id,t.title,t.body,coalesce(t.for_role,t.owner) AS human FROM tasks t WHERE t.workspace_id=? AND t.id!=? AND t.status NOT IN ('done','dropped') AND (t.human_only=1 OR EXISTS (SELECT 1 FROM roles r WHERE r.workspace_id=t.workspace_id AND r.kind='human' AND r.name IN (t.for_role,t.owner))) AND NOT EXISTS (SELECT 1 FROM questions q WHERE q.workspace_id=t.workspace_id AND q.task_id=t.id AND q.status='pending') ORDER BY t.id", s.ws, answered.task_id);
   return closest(`${answered.title} ${answered.question} ${answered.answer}`, rows, r => `${r.title} ${r.body ?? ''}`, MOOT)
-    .map(r => `T${r.id} is an open human task that shares words with this answer: ${r.title.replace(/\s+/g, ' ')}. If the answer settles it, close or rewrite it.`);
+    .map(r => `T${r.id}${r.human ? ` (${r.human})` : ''} is an open human task that shares words with this answer: ${r.title.replace(/\s+/g, ' ')}. If the answer settles it, close or rewrite it.`);
 }
