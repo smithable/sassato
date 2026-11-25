@@ -304,12 +304,14 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   process.umask(0o077);
   const wantsJson=argv.includes('--json'); let store: Store | undefined;
   try {
-    const opts: Record<string,{type:'string'|'boolean';short?:string}> = {};
-    for (const name of strings) opts[name]={type:'string'};
+    const opts: Record<string,{type:'string'|'boolean';short?:string;multiple?:boolean}> = {};
+    for (const name of strings) opts[name]={type:'string',multiple:true};
     for (const name of booleans) opts[name]={type:'boolean'};
     opts.help.short='h';
     const {values,positionals}=parseArgs({args:argv,options:opts,allowPositionals:true,strict:true});
-    const v=values as Record<string,string|boolean|undefined>;
+    // A repeated --ack adds to the list (T1545); any other option given twice keeps its last value, as before.
+    const v:Record<string,string|boolean|undefined>={};
+    for (const [key,value] of Object.entries(values)) v[key]=!Array.isArray(value)?value:key==='ack'?value.join(','):value.at(-1);
     const str=(key:string):string|undefined=>typeof v[key]==='string'?v[key] as string:undefined;
     const num=(key:string):number|undefined=>str(key)===undefined?undefined:key==='expect'&&!/^-?[0-9]+$/.test(str(key)!)?(check(false,`--expect takes the current version as a number: ${expectSource(command)}`) as never):key==='priority'&&str(key)==='now'?t.NOW:key==='priority'&&str(key)==='normal'?0:integer(str(key),key);
     const bool=(key:string):boolean=>v[key]===true;
