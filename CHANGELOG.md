@@ -2,6 +2,8 @@
 
 ## 0.1.3 — unreleased
 
+- **Changed:** `wake` refuses (exit 4) while another waiter for the same role and workspace is still running,
+  naming its process. A killed or finished one never blocks.
 - `ask-human` makes every other refusal (a task another role holds, bad options, an unknown `--seen`) before it
   looks pull requests up, so those are answered at once.
 - `ask-human` looks up the pull requests a task or question names and refuses once when one is merged or closed,
