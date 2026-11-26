@@ -1,4 +1,5 @@
 import { similarQuestions } from './similar.js';
+import { pullName, type PullState } from './pull-requests.js';
 import { type Store, type Row, type Param } from './storage.js';
 import { AppError, check, text, safe, integer, id, now } from './errors.js';
 import { assertWorkAllowed } from './control.js';
@@ -401,21 +402,34 @@ export function listBlockers(s: Store, options: { task?: string; chain?: string;
   const dependencies = s.all("SELECT d.task_id,p.id,p.title,p.status,p.owner FROM dependencies d JOIN tasks p ON p.workspace_id=d.workspace_id AND p.id=d.depends_on JOIN tasks t ON t.workspace_id=d.workspace_id AND t.id=d.task_id WHERE d.workspace_id=? AND p.status!='done' AND t.status NOT IN ('done','dropped') ORDER BY d.task_id,p.id LIMIT ?", s.ws, limit).map(r => ({ id: `D${r.task_id}-${r.id}`, kind: 'dependency', task_id: `T${r.task_id}`, waiting_on: `T${r.id}`, body: r.title, status: 'open', dependency_status: r.status, owner: r.owner }));
   return [...explicit, ...dependencies].slice(0, limit);
 }
-// guard: refuse until every earlier question that looks like this one is named in seen (the
+// guard: refuse until every earlier question that looks like this one is named in seen, and every
+// merged or closed pull request the task names (pulls, looked up by the caller) in seenPulls (the
 // ask-human command; a rule proposal and an answer recorded after the fact are never refused).
-export interface AskOptions { question: string; options?: string[]; recommendation?: string; command?: string; forRole?: string; guard?: boolean; seen?: string[] }
+export interface AskOptions { question: string; options?: string[]; recommendation?: string; command?: string; forRole?: string; guard?: boolean; seen?: string[]; pulls?: PullState[]; seenPulls?: number[] }
 const brief = (value: string) => { const line = value.replace(/\s+/g, ' ').trim(); return line.length > 300 ? `${line.slice(0, 300)}…` : line; };
-function seenQuestions(s: Store, task: Row, options: AskOptions): string[] {
+function guardAsk(s: Store, task: Row, options: AskOptions): { seen: string[]; seenPulls: string[] } {
   const seen = (options.seen ?? []).map(value => {
     const question = s.get('SELECT id FROM questions WHERE workspace_id=? AND id=?', s.ws, id(value.trim(), 'H'));
     check(question, `Question ${value.trim()} not found in this workspace`, 3);
     return `H${question.id}`;
   });
-  if (!options.guard) return seen;
+  const named = options.seenPulls ?? [];
+  if (!options.guard) return { seen, seenPulls: [] };
+  const over = (options.pulls ?? []).filter(pull => pull.state !== 'OPEN');
   const matches = similarQuestions(s, { id: task.id, title: task.title }, options.question);
-  if (matches.every(m => seen.includes(`H${m.id}`))) return seen;
+  const unreadQuestions = !matches.every(m => seen.includes(`H${m.id}`)), unreadPulls = !over.every(pull => named.includes(pull.number));
+  if (!unreadQuestions && !unreadPulls) return { seen, seenPulls: over.map(pullName) };
   const lines = matches.map(m => `H${m.id} on T${m.task_id} (${m.status === 'pending' ? `pending since ${m.created_at.slice(0, 10)}` : `answered ${m.answered_at.slice(0, 10)}`}): ${brief(m.question)}${m.answer ? `\n    answer: ${brief(m.answer)}` : ''}`);
-  check(false, `Not recorded: earlier questions look like this one. Read them first.\n  ${lines.join('\n  ')}\nIf yours is still needed, repeat it with --seen ${matches.map(m => `H${m.id}`).join(',')}`, 4);
+  const reasons: string[] = [], flags: string[] = [];
+  if (matches.length) {
+    if (unreadQuestions) reasons.push(`earlier questions look like this one. Read them first.\n  ${lines.join('\n  ')}`);
+    flags.push(`--seen ${matches.map(m => `H${m.id}`).join(',')}`);
+  }
+  if (over.length) {
+    if (unreadPulls) reasons.push(`a pull request this task or question names is no longer open. Check that there is still something to ask.\n  ${over.map(pull => `${pullName(pull)}: ${pull.state}${pull.date ? ` ${pull.date}` : ''}`).join('\n  ')}`);
+    flags.push(`--seen-pr ${[...new Set(over.map(pull => pull.number))].join(',')}`);
+  }
+  check(false, `Not recorded: ${reasons.join('\nAlso, ')}\nIf yours is still needed, repeat it with ${flags.join(' ')}`, 4);
 }
 // askedBy: the role that asked, when a human records a question relayed for it (recordAnswered).
 export function askHuman(s: Store, task: string, options: AskOptions, askedBy?: string): Row {
@@ -425,13 +439,13 @@ export function askHuman(s: Store, task: string, options: AskOptions, askedBy?: 
     if (options.recommendation !== undefined) text(options.recommendation, 'recommendation', 5000);
     if (options.command !== undefined) text(options.command, 'command', 10_000);
     const recipient = humanRole(s, options.forRole);
-    const seen = seenQuestions(s, row, options);
+    const { seen, seenPulls } = guardAsk(s, row, options);
     const blocker = block(s, row, { kind: 'human', waitingOn: recipient, body: options.question }, actor);
     const at = now(), n = s.run('INSERT INTO questions(workspace_id,task_id,blocker_id,asked_by,question,options,recommendation,command,created_at,seen) VALUES(?,?,?,?,?,?,?,?,?,?)', s.ws, row.id, id(blocker.id, 'B'), askedBy ?? actor, options.question, JSON.stringify(choices), options.recommendation ?? null, options.command ?? null, at, seen.length ? JSON.stringify(seen) : null).lastInsertRowid;
     const question = s.get('SELECT * FROM questions WHERE workspace_id=? AND id=?', s.ws, n)!;
     s.index('question', `H${n}`, options.question, JSON.stringify({ options: choices, recommendation: options.recommendation, command: options.command }), { role: recipient, status: 'pending', updated_at: at });
     s.event('task', task, 'human-question', questionView(question));
-    s.event('question', `H${n}`, 'asked', { task, question: options.question });
+    s.event('question', `H${n}`, 'asked', { task, question: options.question, ...(seenPulls.length ? { seen_pr: seenPulls } : {}) });
     notify(s, [recipient], `${task} / H${n}: ${options.question}`, row);
     return { ...questionView(question), for_role: recipient };
   });

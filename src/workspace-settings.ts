@@ -3,7 +3,7 @@ import { check, name, text } from './errors.js';
 import { WAKE_SPEEDS, validateRoleWakePolicy, type RoleWakePolicy, type WakeMode, type WakeSpeed } from './wake-policy.js';
 import { validateBusyChecks, type BusyCheck } from './busy-checks.js';
 
-export interface WorkspaceSettings { default_human: string | null; import_timezone: string; stop_file: string | null; busy_checks:BusyCheck[]; import_answer_markers:string[]; import_role_aliases:Record<string,string>; import_timezone_aliases:Record<string,string>; open_work_roles:string[]|null; digest_skip:Record<string,string[]>; autocompact:Record<string,number>; advisor:Record<string,string>; wake_mode:WakeMode; speed:WakeSpeed; wake_roles:Record<string,RoleWakePolicy>; codex_versions:string[]; spare_work:boolean; spare_providers:string[]; feedback_closers:string[]; rule_relays:string[]; nudge_minutes:number; nudge_escalate:string|null; nudge_off:string[] }
+export interface WorkspaceSettings { default_human: string | null; import_timezone: string; stop_file: string | null; busy_checks:BusyCheck[]; import_answer_markers:string[]; import_role_aliases:Record<string,string>; import_timezone_aliases:Record<string,string>; open_work_roles:string[]|null; digest_skip:Record<string,string[]>; autocompact:Record<string,number>; advisor:Record<string,string>; wake_mode:WakeMode; speed:WakeSpeed; wake_roles:Record<string,RoleWakePolicy>; codex_versions:string[]; spare_work:boolean; spare_providers:string[]; feedback_closers:string[]; rule_relays:string[]; pull_repositories:Record<string,string>; nudge_minutes:number; nudge_escalate:string|null; nudge_off:string[] }
 function standardTimezone(zone:string):boolean {
   try {new Intl.DateTimeFormat('en',{timeZone:zone});return true;} catch {return false;}
 }
@@ -91,6 +91,10 @@ export function validateSettings(s: Store, input: Row): WorkspaceSettings {
   const relays=input.rule_relays??[];
   check(Array.isArray(relays)&&relays.length<=8,'rule_relays must list at most 8 role names');
   for(const role of relays)check(s.role(name(role)).kind!=='human','rule_relays lists the agent roles that relay a human\'s answer, not humans');
+  // pull_repositories: short names for the repositories whose pull requests task text names; set by a human.
+  const repositories=input.pull_repositories??{};
+  check(repositories!==null&&typeof repositories==='object'&&!Array.isArray(repositories)&&Object.keys(repositories).length<=16,'pull_repositories must map at most 16 short names to owner/repo');
+  for(const [short,repo] of Object.entries(repositories))check((short==='#'||/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(short))&&typeof repo==='string'&&/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/.test(repo),'pull_repositories must map short names (or "#", the default) to owner/repo');
   // nudge_minutes (T1253): a role that has written nothing for this long is asked why, apart from the waiter's
   // --idle-minutes; 0 turns it off. nudge_escalate: the role told when two nudges go unanswered (null: nobody).
   const nudge=input.nudge_minutes??DEFAULT_NUDGE_MINUTES,escalate=input.nudge_escalate??null;
@@ -101,7 +105,7 @@ export function validateSettings(s: Store, input: Row): WorkspaceSettings {
   const off=input.nudge_off??[];
   check(Array.isArray(off)&&off.length<=64&&off.every(r=>typeof r==='string'),'nudge_off must list at most 64 role names');
   const roleNames=new Set(s.all('SELECT name FROM roles WHERE workspace_id=?',s.ws).map(r=>String(r.name)));
-  return {nudge_minutes:nudge,nudge_escalate:escalate,nudge_off:[...new Set((off as string[]).filter(r=>roleNames.has(r)))],feedback_closers:[...new Set(closers as string[])],rule_relays:[...new Set(relays as string[])],spare_work:spareWork,spare_providers:[...new Set(spareProviders as string[])],codex_versions:[...new Set(codex as string[])],wake_mode:wakeMode,speed,wake_roles,autocompact:kept,advisor,digest_skip:Object.fromEntries(Object.entries(skip).map(([role,kinds])=>[role,[...new Set(kinds as string[])]])),open_work_roles:openWork===null?null:[...new Set((openWork as unknown[]).map(String))],default_human:human,import_timezone:validateTimezone(input.import_timezone ?? 'UTC'),stop_file:input.stop_file == null ? null : text(input.stop_file,'stop file',4096),busy_checks:validateBusyChecks(input.busy_checks??[]),import_answer_markers:markers.map(marker=>text(marker,'import answer marker',200)),import_role_aliases:roleAliases,import_timezone_aliases:timezoneAliases};
+  return {pull_repositories:{...repositories},nudge_minutes:nudge,nudge_escalate:escalate,nudge_off:[...new Set((off as string[]).filter(r=>roleNames.has(r)))],feedback_closers:[...new Set(closers as string[])],rule_relays:[...new Set(relays as string[])],spare_work:spareWork,spare_providers:[...new Set(spareProviders as string[])],codex_versions:[...new Set(codex as string[])],wake_mode:wakeMode,speed,wake_roles,autocompact:kept,advisor,digest_skip:Object.fromEntries(Object.entries(skip).map(([role,kinds])=>[role,[...new Set(kinds as string[])]])),open_work_roles:openWork===null?null:[...new Set((openWork as unknown[]).map(String))],default_human:human,import_timezone:validateTimezone(input.import_timezone ?? 'UTC'),stop_file:input.stop_file == null ? null : text(input.stop_file,'stop file',4096),busy_checks:validateBusyChecks(input.busy_checks??[]),import_answer_markers:markers.map(marker=>text(marker,'import answer marker',200)),import_role_aliases:roleAliases,import_timezone_aliases:timezoneAliases};
 }
 /** Digest entries a role may choose not to be woken by. Urgent mail, replies, answers, blockers, reviews and
  * stops are never skippable: they always need the role. */
@@ -189,18 +193,18 @@ export const DIGEST_SKIPPABLE=['own-work','open-work','spare-work','task-finishe
 /** Workspace configuration is recorded in its existing append-only audit history. */
 export function workspaceSettings(s: Store): WorkspaceSettings {
   const event=s.get("SELECT actor,detail FROM events WHERE workspace_id=? AND entity='workspace' AND action IN ('created','settings-updated') ORDER BY id DESC LIMIT 1",s.ws);
-  if (!event) return {default_human:null,import_timezone:'UTC',stop_file:null,busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{},autocompact:{},advisor:{},wake_mode:'legacy',speed:'normal',wake_roles:{},codex_versions:[...DEFAULT_CODEX_VERSIONS],spare_work:true,spare_providers:[],rule_relays:[],feedback_closers:[],nudge_minutes:DEFAULT_NUDGE_MINUTES,nudge_escalate:null,nudge_off:[]};
+  if (!event) return {default_human:null,import_timezone:'UTC',stop_file:null,busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{},autocompact:{},advisor:{},wake_mode:'legacy',speed:'normal',wake_roles:{},codex_versions:[...DEFAULT_CODEX_VERSIONS],spare_work:true,spare_providers:[],rule_relays:[],pull_repositories:{},feedback_closers:[],nudge_minutes:DEFAULT_NUDGE_MINUTES,nudge_escalate:null,nudge_off:[]};
   const detail=JSON.parse(event.detail);
   if (detail.settings) {
     // Older builds allowed aliases such as EST/CET. Ignore those overrides on
     // read so standard meanings win and unrelated settings remain editable.
-    const settings={busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{},autocompact:{},advisor:{},wake_mode:'legacy',speed:'normal',wake_roles:{},codex_versions:[...DEFAULT_CODEX_VERSIONS],spare_work:true,spare_providers:[],rule_relays:[],feedback_closers:[],nudge_minutes:DEFAULT_NUDGE_MINUTES,nudge_escalate:null,nudge_off:[],...detail.settings};
+    const settings={busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{},autocompact:{},advisor:{},wake_mode:'legacy',speed:'normal',wake_roles:{},codex_versions:[...DEFAULT_CODEX_VERSIONS],spare_work:true,spare_providers:[],rule_relays:[],pull_repositories:{},feedback_closers:[],nudge_minutes:DEFAULT_NUDGE_MINUTES,nudge_escalate:null,nudge_off:[],...detail.settings};
     settings.import_timezone_aliases=Object.fromEntries(Object.entries(settings.import_timezone_aliases).filter(([key])=>!standardTimezone(key)));
     return settings;
   }
   // Preserve the recorded bootstrap human; unconfigured imports use generic UTC.
   const human=s.get("SELECT name FROM roles WHERE workspace_id=? AND name=? AND kind='human'",s.ws,event.actor)?.name ?? null;
-  return {default_human:human,import_timezone:'UTC',stop_file:null,busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{},autocompact:{},advisor:{},wake_mode:'legacy',speed:'normal',wake_roles:{},codex_versions:[...DEFAULT_CODEX_VERSIONS],spare_work:true,spare_providers:[],rule_relays:[],feedback_closers:[],nudge_minutes:DEFAULT_NUDGE_MINUTES,nudge_escalate:null,nudge_off:[]};
+  return {default_human:human,import_timezone:'UTC',stop_file:null,busy_checks:[],import_answer_markers:[],import_role_aliases:{},import_timezone_aliases:{},open_work_roles:null,digest_skip:{},autocompact:{},advisor:{},wake_mode:'legacy',speed:'normal',wake_roles:{},codex_versions:[...DEFAULT_CODEX_VERSIONS],spare_work:true,spare_providers:[],rule_relays:[],pull_repositories:{},feedback_closers:[],nudge_minutes:DEFAULT_NUDGE_MINUTES,nudge_escalate:null,nudge_off:[]};
 }
 export function setWorkspaceSettings(s: Store, patch: Partial<WorkspaceSettings>): WorkspaceSettings {
   return s.tx(()=>{

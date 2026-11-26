@@ -4,6 +4,7 @@
 // expected-version check, and ends with the exact command to re-arm. Saving at wake time means the role
 // attests that it has read the entries, not that it has finished them: unfinished work stays on its tasks
 // (a note, a block), and urgent mail keeps coming back until it is acknowledged.
+import { lookupPulls, pullName, readReferences, taskText } from './pull-requests.js';
 import { activeStop } from './control.js';
 import { readPendingWake, workerStop } from './pending-wake.js';
 import type { Row, Store } from './storage.js';
@@ -41,7 +42,7 @@ function notesSince(s: Store, task: string, since: number, until: number): Row[]
 }
 
 /** What an entry says in full: a message's body, a task's state, brief and latest note, an answer. */
-function detail(s: Store, entry: DigestEntry, since: number, until: number): string {
+function detail(s: Store, entry: DigestEntry, since: number, until: number, merged?: Map<string, string>): string {
   if (/^M\d+$/.test(entry.id)) {
     const message = s.get('SELECT body FROM messages WHERE workspace_id=? AND id=?', s.ws, Number(entry.id.slice(1)));
     return message ? wakeText(message.body, entry.id) : entry.summary;
@@ -61,9 +62,34 @@ function detail(s: Store, entry: DigestEntry, since: number, until: number): str
     const own = entry.kind === 'own-work';
     if (own) lines.push(`Reminder: held by ${entry.from} with nothing written for a while.`);
     for (const note of notesSince(s, taskId, since, until)) if (!own || note.actor !== entry.from) lines.push(`Note (${note.actor}): ${wakeText(note.note, taskId, 500)}`);
+    const over = ['open-work', 'own-work'].includes(entry.kind) ? merged?.get(taskId) : undefined;
+    if (over) lines.push(over);
     return lines.join('\n');
   }
   return entry.summary;
+}
+
+/** For the open and own work a wake names: the tasks whose every named pull request is merged. One
+ * time budget for the whole wake; a task with any state unknown gets no line. */
+function mergedWork(s: Store, result: WaitResult): Map<string, string> {
+  const open = (kind: string) => kind === 'open-work' || kind === 'own-work';
+  // The short "nothing new" form of a repeated idle wake never shows the line: look nothing up for it.
+  if (unchangedIdleText(result.idle ?? result.scored?.idle)) return new Map();
+  const ids = new Set<string>(open(result.reason) ? result.tasks ?? [] : []);
+  for (const entry of result.digest?.entries ?? []) if (open(entry.kind) && !entry.unchanged) {
+    for (const id of entry.tasks ?? [entry.task ?? entry.id]) ids.add(id);
+  }
+  const merged = new Map<string, string>(), end = Date.now() + 4000, repositories = workspaceSettings(s).pull_repositories;
+  for (const id of ids) {
+    const task = s.get('SELECT * FROM tasks WHERE workspace_id=? AND id=?', s.ws, Number(id.slice(1)));
+    const { refs, unresolved } = task ? readReferences(taskText(s, task), repositories) : { refs: [], unresolved: false };
+    if (!refs.length || unresolved) continue;
+    const { states, unchecked } = lookupPulls(refs, end - Date.now());
+    if (!unchecked.length && states.every((pull) => pull.state === 'MERGED')) {
+      merged.set(id, `Every pull request it names is merged: ${states.map((pull) => `${pullName(pull)}${pull.date ? ` (${pull.date})` : ''}`).join(', ')}. Close it with its result, or note what is left.`);
+    }
+  }
+  return merged;
 }
 
 /** Urgent and needs-reply mail the role has not acknowledged, newest first, bounded. */
@@ -113,7 +139,7 @@ export async function wake(s: Store, options: WakeOptions = {}): Promise<WakeOut
     throw error;
   }
   s.tx(() => s.event('waiter', actor, 'ended', { reason: result.reason, cursor: result.cursor }));
-  return formatWake(s,options,since,result,acknowledged,before.version);
+  return formatWake(s,options,since,result,acknowledged,before.version,mergedWork(s,result));
 }
 
 /**
@@ -151,7 +177,7 @@ export function idleReason(s: Store, reason: string): Row {
 }
 
 function formatWake(s: Store, options: WakeOptions, since: number, result: WaitResult,
-  acknowledged: string[], version?: number): WakeOutcome {
+  acknowledged: string[], version?: number, merged?: Map<string, string>): WakeOutcome {
   const actor=s.requireActor();
   const quote = (value: string) => /^[\w./~:@%+=,-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
   const stopFlag = options.stopFile ? ` --stop-file ${quote(options.stopFile)}` : '';
@@ -178,6 +204,11 @@ function formatWake(s: Store, options: WakeOptions, since: number, result: WaitR
     (result.reason===idle?.kind||result.reason==='digest');
   const body: string[] = [];
   if (!result.digest && result.reason !== 'timeout') body.push(unchanged??(result.nudge?`nudge: ${result.nudge.text}`:undefined)??`${result.reason==='own-work'?'reminder: ':''}${result.reason}${result.task ? ` ${result.task}` : ''}${result.message ? ` ${result.message.id} from ${result.message.sender}:\n${indent(wakeText(result.message.summary, result.message.id))}` : ''}`);
+  // A wake without a digest names its tasks only; say which of them have nothing left open.
+  if(!options.pending && !result.digest && !unchanged) for(const task of result.tasks ?? []) {
+    const over = merged?.get(task);
+    if(over) body.push(indent(`${task}: ${over}`));
+  }
   if(options.pending && !result.digest && result.tasks && !unchanged) {
     for(const task of result.tasks) body.push(indent(detail(s,{id:task,task,from:actor,kind:result.reason,group:'other',summary:task},since,result.cursor)));
   }
@@ -195,8 +226,8 @@ function formatWake(s: Store, options: WakeOptions, since: number, result: WaitR
       body.push(`  ${entry.id} · from ${from.join(', ')} · ${entry.kind}${entry.task && entry.task !== entry.id ? ` · ${entry.task}` : ''}`);
       if(entry.unchanged)body.push(indent(entry.summary));
       else if((options.pending||result.scored) && entry.tasks?.length) {
-        for(const task of entry.tasks) body.push(indent(detail(s,{...entry,id:task,task},since,result.cursor)));
-      } else body.push(indent(detail(s, entry, since, result.cursor)));
+        for(const task of entry.tasks) body.push(indent(detail(s,{...entry,id:task,task},since,result.cursor,merged)));
+      } else body.push(indent(detail(s, entry, since, result.cursor, merged)));
     }
   }
   if (left.length) {

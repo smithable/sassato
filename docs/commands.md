@@ -370,6 +370,25 @@ question on the same task is not counted). When some look like it (the same word
 enough rare ones), it prints up to three with
 their answers and records nothing (exit 4). Read them; if yours is still needed, repeat
 it with `--seen H1,H2`, naming every one shown. The list is kept on the question.
+
+It also looks up the pull requests named in the task's title, body and notes and in the
+question (`gh pr view`, up to 8, newest numbers first). When one is merged or closed it prints
+the state and date and records nothing (exit 4); repeat with `--seen-pr 12,13`, naming every
+one shown. When both checks refuse, one message names both flags. A GitHub URL or
+`owner/repo#12` is taken as written. `app#12` and `app PR #12` need the short name in the
+workspace's `pull_repositories`. A bare `#12` is the repository the text names, when it names
+exactly one of those; otherwise the default under the key `"#"`; with no default it is not
+looked up. A word that is not a configured name does not count (`other PR #12` is read as a bare
+number), so list every repository the tasks write about. A human sets them:
+
+```sh
+sas workspace set --pull-repositories '{"#":"owner/app","app":"owner/app","tools":"owner/tools"}' --as HUMAN
+```
+
+Without `gh`, signed out, offline or too slow, or for a number that is not a pull request,
+the question is recorded and one line says what was not checked. A wake's open-work and
+own-work entries say so when every pull request a task names is merged; with any state
+unknown they say nothing. A launcher's pending digest does not carry this line.
 `answer` records as before and warns about up to three open human tasks, whichever human
 they are for, that share words with the question and its answer: they may now be settled
 or overtaken. A task with a pending question of its own is not named.
