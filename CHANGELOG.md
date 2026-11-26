@@ -5,7 +5,8 @@
 - `ask-human` looks up the pull requests a task or question names and refuses once when one is merged or closed,
   printing its state and date; it records when the asker repeats with `--seen-pr 12`. A wake's open-work and
   own-work entries say when every pull request a task names is merged. Short names for repositories are a new
-  workspace setting (`workspace set --pull-repositories`); URLs and `owner/repo#12` work without it. Needs `gh`
+  workspace setting (`workspace set --pull-repositories`, with `"#"` for the repository of a bare `#12`); URLs and
+  `owner/repo#12` work without it. Needs `gh`
   and skips the check without it. Before, a human could be asked about a pull request merged days earlier.
 
 - `ask-human` refuses once when a pending or recently answered question looks like the new one, prints it with its

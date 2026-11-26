@@ -13,7 +13,8 @@ const REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_][A-Za-z0-9_.-]{0
 export const pullName = (pull: PullRef) => `${pull.repo}#${pull.number}`;
 
 /** A GitHub URL or owner/repo#N is taken as written. `name #N` needs the name in the workspace's
- * pull_repositories; a bare #N counts only when the text names exactly one of those repositories. */
+ * pull_repositories. A bare #N is the repository the text names, when it names exactly one of
+ * those; else the one under the key "#", the default; else none. */
 export function pullRefs(text: string, repositories: Record<string, string>): PullRef[] {
   return readReferences(text, repositories).refs;
 }
@@ -23,7 +24,7 @@ export function readReferences(text: string, repositories: Record<string, string
   const names = new Map(Object.entries(repositories).map(([name, repo]) => [name.toLowerCase(), repo]));
   const known = (word: string) => names.get(word.toLowerCase()) ?? [...names.values()].find(repo => repo.toLowerCase() === word.toLowerCase());
   const mentioned = new Set((text.match(/[\w./-]+/g) ?? []).flatMap(word => known(word.replace(/[./-]+$/, '')) ?? []));
-  const sole = mentioned.size === 1 ? [...mentioned][0] : undefined;
+  const bare = mentioned.size === 1 ? [...mentioned][0] : names.get('#');
   const found = new Map<string, PullRef>();
   let unresolved = false;
   const add = (repo: string | undefined, number: string) => {
@@ -39,7 +40,7 @@ export function readReferences(text: string, repositories: Record<string, string
       continue;
     }
     const spaced = /([\w./-]+)[ \t]+(?:(?:PR|pull request)[ \t]*)?$/i.exec(before)?.[1];
-    add((spaced && known(spaced)) || sole, m[1]);
+    add((spaced && known(spaced)) || bare, m[1]);
   }
   return { refs: [...found.values()], unresolved };
 }

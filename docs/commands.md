@@ -376,11 +376,13 @@ question (`gh pr view`, up to 8, newest numbers first). When one is merged or cl
 the state and date and records nothing (exit 4); repeat with `--seen-pr 12,13`, naming every
 one shown. When both checks refuse, one message names both flags. A GitHub URL or
 `owner/repo#12` is taken as written. `app#12` and `app PR #12` need the short name in the
-workspace's `pull_repositories`, and a bare `#12` counts only when the text names exactly one
-of those repositories, so name every repository the tasks write about. A human sets them:
+workspace's `pull_repositories`. A bare `#12` is the repository the text names, when it names
+exactly one of those; otherwise the default under the key `"#"`; with no default it is not
+looked up. A word that is not a configured name does not count (`other PR #12` is read as a bare
+number), so list every repository the tasks write about. A human sets them:
 
 ```sh
-sas workspace set --pull-repositories '{"app":"owner/app","tools":"owner/tools"}' --as HUMAN
+sas workspace set --pull-repositories '{"#":"owner/app","app":"owner/app","tools":"owner/tools"}' --as HUMAN
 ```
 
 Without `gh`, signed out, offline or too slow, or for a number that is not a pull request,

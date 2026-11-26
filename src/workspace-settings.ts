@@ -94,7 +94,7 @@ export function validateSettings(s: Store, input: Row): WorkspaceSettings {
   // pull_repositories: short names for the repositories whose pull requests task text names; set by a human.
   const repositories=input.pull_repositories??{};
   check(repositories!==null&&typeof repositories==='object'&&!Array.isArray(repositories)&&Object.keys(repositories).length<=16,'pull_repositories must map at most 16 short names to owner/repo');
-  for(const [short,repo] of Object.entries(repositories))check(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(short)&&typeof repo==='string'&&/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/.test(repo),'pull_repositories must map short names to owner/repo');
+  for(const [short,repo] of Object.entries(repositories))check((short==='#'||/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(short))&&typeof repo==='string'&&/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$/.test(repo),'pull_repositories must map short names (or "#", the default) to owner/repo');
   // nudge_minutes (T1253): a role that has written nothing for this long is asked why, apart from the waiter's
   // --idle-minutes; 0 turns it off. nudge_escalate: the role told when two nudges go unanswered (null: nobody).
   const nudge=input.nudge_minutes??DEFAULT_NUDGE_MINUTES,escalate=input.nudge_escalate??null;

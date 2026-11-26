@@ -131,3 +131,18 @@ test('the line is on a digest entry too, as a scored wake prints its idle work',
   assert.ok(out.result.digest, out.text);
   assert.match(out.text, new RegExp(`${task.id}[\\s\\S]*Every pull request it names is merged: example/app#12`));
 });
+
+test('with a default repository, a bare number in a text that names none is looked up and refused', t => {
+  const f = fixture(t, { 1354: 'MERGED' });
+  f.s.actor = 'alice'; setWorkspaceSettings(f.s, { pull_repositories: { ...repositories, '#': 'example/app' } }); f.s.actor = 'builder';
+  const task = tasks.addTask(f.s, { title: 'Move the film work (#1354, approved last week)', owner: 'builder' });
+  const out = f.run(['ask-human', task.id, 'How should it be moved?']);
+  assert.equal(out.status, 4, out.stdout + out.stderr);
+  assert.match(out.stderr, /example\/app#1354: MERGED/);
+  // A configured name still wins over the default; two names leave a bare number to the default.
+  const set = { ...repositories, '#': 'example/app' }, read = text => pullRefs(text, set).map(pullName);
+  assert.deepEqual(read('tools #12 and tools#13'), ['example/tools#12', 'example/tools#13']);
+  assert.deepEqual(read('merge #12 in tools'), ['example/tools#12']);
+  assert.deepEqual(read('app and tools both: see #12'), ['example/app#12']);
+  assert.deepEqual(read('elsewhere#12'), []);
+});

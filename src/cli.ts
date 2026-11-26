@@ -53,7 +53,7 @@ Setup:      init (interactive in a terminal) | init --workspace NAME
             workspace settings | workspace set --default-human NAME | --wake-mode legacy|scored | --speed slow|normal|fast
             workspace wake-audit [--limit N] --as HUMAN
             workspace set --feedback-closers ROLE,ROLE|none --as HUMAN (roles besides humans that close feedback)
-            workspace set --pull-repositories '{"app":"owner/app"}' --as HUMAN (short names for pull requests in task text)
+            workspace set --pull-repositories '{"#":"owner/app","app":"owner/app"}' --as HUMAN (names for pull requests in task text)
             workspace set --rule-relays ROLE,ROLE|none --as HUMAN (roles that relay a human's answer to a rule proposal)
             workspace set --nudge-minutes N (0 off) | --nudge-escalate ROLE|none --as HUMAN (ask a quiet role why)
             codex versions | codex accept VERSION [--replace] --as HUMAN (the Codex CLI versions launch accepts)
