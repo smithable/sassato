@@ -381,6 +381,7 @@ retained; neither is a native provider transcript to edit):
 
 ```bash
 # In a replacement terminal, export TRIAL_EVIDENCE as in the recovery block first.
+set -e  # a failed lookup stops here, before any evidence file is overwritten
 PROBE_DB="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["database"])' "$TRIAL_EVIDENCE/trial.json")"
 PROBE_REPO="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["repository"])' "$TRIAL_EVIDENCE/trial.json")"
 export PROBE_DB PROBE_REPO
