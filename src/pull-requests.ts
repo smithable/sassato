@@ -15,15 +15,22 @@ export const pullName = (pull: PullRef) => `${pull.repo}#${pull.number}`;
 /** A GitHub URL or owner/repo#N is taken as written. `name #N` needs the name in the workspace's
  * pull_repositories; a bare #N counts only when the text names exactly one of those repositories. */
 export function pullRefs(text: string, repositories: Record<string, string>): PullRef[] {
+  return readReferences(text, repositories).refs;
+}
+
+/** The pull requests found, and whether some #N could not be given a repository. */
+export function readReferences(text: string, repositories: Record<string, string>): { refs: PullRef[]; unresolved: boolean } {
   const names = new Map(Object.entries(repositories).map(([name, repo]) => [name.toLowerCase(), repo]));
   const known = (word: string) => names.get(word.toLowerCase()) ?? [...names.values()].find(repo => repo.toLowerCase() === word.toLowerCase());
   const mentioned = new Set((text.match(/[\w./-]+/g) ?? []).flatMap(word => known(word.replace(/[./-]+$/, '')) ?? []));
   const sole = mentioned.size === 1 ? [...mentioned][0] : undefined;
   const found = new Map<string, PullRef>();
+  let unresolved = false;
   const add = (repo: string | undefined, number: string) => {
-    if (repo) found.set(`${repo.toLowerCase()}#${Number(number)}`, { repo, number: Number(number) });
+    if (!repo) unresolved = true;
+    else found.set(`${repo.toLowerCase()}#${Number(number)}`, { repo, number: Number(number) });
   };
-  for (const m of text.matchAll(/https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d{1,7})/g)) if (REPOSITORY.test(m[1])) add(m[1], m[2]);
+  for (const m of text.matchAll(/https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d{1,7})(?![\w-])/g)) if (REPOSITORY.test(m[1])) add(m[1], m[2]);
   for (const m of text.matchAll(/#(\d{1,7})(?![\w-])/g)) {
     const before = text.slice(Math.max(0, m.index - 160), m.index);
     const attached = /[\w./-]+$/.exec(before)?.[0];
@@ -34,7 +41,7 @@ export function pullRefs(text: string, repositories: Record<string, string>): Pu
     const spaced = /([\w./-]+)[ \t]+(?:(?:PR|pull request)[ \t]*)?$/i.exec(before)?.[1];
     add((spaced && known(spaced)) || sole, m[1]);
   }
-  return [...found.values()];
+  return { refs: [...found.values()], unresolved };
 }
 
 /** The task's title, body and notes, as one text. */
@@ -44,9 +51,11 @@ export function taskText(s: Store, task: Row): string {
   return [task.title, task.body ?? '', ...notes].join('\n');
 }
 
-function pullState(pull: PullRef, timeout: number): PullState | undefined {
+// 'unavailable': gh cannot answer at all (missing, hung or signed out), so asking again is no use.
+function pullState(pull: PullRef, timeout: number): PullState | 'unavailable' | undefined {
   const run = spawnSync('gh', ['pr', 'view', String(pull.number), '-R', pull.repo, '--json', 'state,mergedAt,closedAt'],
-    { encoding: 'utf8', timeout, shell: false, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, GH_PROMPT_DISABLED: '1' } });
+    { encoding: 'utf8', timeout, killSignal: 'SIGKILL', shell: false, stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, GH_PROMPT_DISABLED: '1' } });
+  if (run.error || run.status === 4) return 'unavailable';
   if (run.status !== 0) return undefined;
   try {
     const { state, mergedAt, closedAt } = JSON.parse(run.stdout);
@@ -59,15 +68,14 @@ function pullState(pull: PullRef, timeout: number): PullState | undefined {
 /** The states, newest numbers first, within a total time budget; the rest are counted as unchecked. */
 export function lookupPulls(refs: PullRef[], budgetMs: number): { states: PullState[]; unchecked: PullRef[] } {
   const end = Date.now() + budgetMs, states: PullState[] = [], unchecked: PullRef[] = [];
-  let failedToRun = false;
+  let unavailable = false;
   [...refs].sort((a, b) => b.number - a.number).forEach((pull, i) => {
     const left = end - Date.now();
-    const state = i < MAX_LOOKUPS && !failedToRun && left > 0 ? pullState(pull, Math.min(left, ONE_LOOKUP_MS)) : undefined;
-    if (state) states.push(state);
+    const state = i < MAX_LOOKUPS && !unavailable && left > 0 ? pullState(pull, Math.min(left, ONE_LOOKUP_MS)) : undefined;
+    if (state && state !== 'unavailable') states.push(state);
     else {
       unchecked.push(pull);
-      // Two failures with nothing found: gh is missing, signed out or offline.
-      failedToRun = !states.length && unchecked.length >= 2;
+      unavailable ||= state === 'unavailable';
     }
   });
   return { states, unchecked };

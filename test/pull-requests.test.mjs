@@ -11,7 +11,7 @@ import * as tasks from '../dist/tasks.js';
 import { context } from '../dist/coordination.js';
 import { saveNotificationProgress } from '../dist/notification-progress.js';
 import { wake } from '../dist/wake.js';
-import { pullRefs, pullName } from '../dist/pull-requests.js';
+import { pullRefs, pullName, readReferences } from '../dist/pull-requests.js';
 
 const cli = resolve('bin/sassato.js');
 const repositories = { app: 'example/app', tools: 'example/tools' };
@@ -26,6 +26,10 @@ test('pull requests are read from URLs, owner/repo, a short name, or a bare numb
   assert.deepEqual(named('app and tools both: see #12'), []);
   assert.deepEqual(named('app-cloud#12'), []);
   assert.deepEqual(named('constructor#12 in app'), []);
+  assert.deepEqual(named('https://github.com/other/thing/pull/12abc and /pull/12345678'), []);
+  // A number with no repository is remembered, so it is never counted as merged.
+  assert.equal(readReferences('app#12 and elsewhere#13', repositories).unresolved, true);
+  assert.equal(readReferences('app#12', repositories).unresolved, false);
 });
 
 // A gh that answers from a table: PR number to state. Anything else exits 1, as for an issue.
@@ -65,11 +69,11 @@ test('ask-human refuses once for a merged or closed pull request the task names,
   out = f.run(['ask-human', task.id, 'Which way should it move?', '--seen-pr', '12,13']);
   assert.equal(out.status, 0, out.stderr);
   assert.equal(pending(f.s), 1);
-  assert.match(f.s.get("SELECT detail FROM events WHERE entity='question' AND action='asked'").detail, /"seen_pr":\[13,12\]/);
+  assert.match(f.s.get("SELECT detail FROM events WHERE entity='question' AND action='asked'").detail, /"seen_pr":\["example\/app#13","example\/app#12"\]/);
 });
 
 test('an open pull request, an unknown number and a missing gh all record the question', t => {
-  const f = fixture(t, { 12: 'OPEN' });
+  const f = fixture(t, { 12: 'OPEN', 3: 'MERGED' });
   let out = f.run(['ask-human', '--new', 'About app#12', 'Ship it now?']);
   assert.equal(out.status, 0, out.stderr);
   assert.match(out.stdout, /example\/app#12 is OPEN/);
@@ -83,6 +87,9 @@ test('an open pull request, an unknown number and a missing gh all record the qu
   assert.equal(out.status, 0, out.stderr);
   assert.match(out.stderr, /state not checked for example\/app#44/);
   assert.equal(pending(f.s), 4);
+  // Two numbers gh does not know (issues) do not stop the merged one after them from being found.
+  out = f.run(['ask-human', '--new', 'Several', 'About app#101, app#102 and app#3?']);
+  assert.equal(out.status, 4, out.stdout + out.stderr);
 });
 
 test('an earlier look-alike question and a merged pull request are refused together', t => {
@@ -98,6 +105,7 @@ test("a wake's open work says when every pull request it names is merged, and no
   const f = fixture(t, { 12: 'MERGED' });
   const done = tasks.addTask(f.s, { title: 'Finish app#12', forRole: 'builder' });
   const unsure = tasks.addTask(f.s, { title: 'Finish app#12 and app#99', forRole: 'builder' });
+  const elsewhere = tasks.addTask(f.s, { title: 'Finish app#12 and elsewhere#13', forRole: 'builder' });
   // The idle minute passes by the test's own clock; gh is the fixture's.
   const real = performance.now.bind(performance), path = process.env.PATH; let shift = 0;
   performance.now = () => real() + shift; process.env.PATH = f.dir;
@@ -108,4 +116,5 @@ test("a wake's open work says when every pull request it names is merged, and no
   assert.equal(out.result.reason, 'open-work', out.text);
   assert.match(out.text, new RegExp(`${done.id}: Every pull request it names is merged: example/app#12 \\(2026-01-02\\)`));
   assert.doesNotMatch(out.text, new RegExp(`${unsure.id}: Every`));
+  assert.doesNotMatch(out.text, new RegExp(`${elsewhere.id}: Every`));
 });

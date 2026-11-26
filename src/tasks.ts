@@ -407,7 +407,7 @@ export function listBlockers(s: Store, options: { task?: string; chain?: string;
 // ask-human command; a rule proposal and an answer recorded after the fact are never refused).
 export interface AskOptions { question: string; options?: string[]; recommendation?: string; command?: string; forRole?: string; guard?: boolean; seen?: string[]; pulls?: PullState[]; seenPulls?: number[] }
 const brief = (value: string) => { const line = value.replace(/\s+/g, ' ').trim(); return line.length > 300 ? `${line.slice(0, 300)}…` : line; };
-function guardAsk(s: Store, task: Row, options: AskOptions): { seen: string[]; seenPulls: number[] } {
+function guardAsk(s: Store, task: Row, options: AskOptions): { seen: string[]; seenPulls: string[] } {
   const seen = (options.seen ?? []).map(value => {
     const question = s.get('SELECT id FROM questions WHERE workspace_id=? AND id=?', s.ws, id(value.trim(), 'H'));
     check(question, `Question ${value.trim()} not found in this workspace`, 3);
@@ -418,7 +418,7 @@ function guardAsk(s: Store, task: Row, options: AskOptions): { seen: string[]; s
   const over = (options.pulls ?? []).filter(pull => pull.state !== 'OPEN');
   const matches = similarQuestions(s, { id: task.id, title: task.title }, options.question);
   const unreadQuestions = !matches.every(m => seen.includes(`H${m.id}`)), unreadPulls = !over.every(pull => named.includes(pull.number));
-  if (!unreadQuestions && !unreadPulls) return { seen, seenPulls: over.map(pull => pull.number) };
+  if (!unreadQuestions && !unreadPulls) return { seen, seenPulls: over.map(pullName) };
   const lines = matches.map(m => `H${m.id} on T${m.task_id} (${m.status === 'pending' ? `pending since ${m.created_at.slice(0, 10)}` : `answered ${m.answered_at.slice(0, 10)}`}): ${brief(m.question)}${m.answer ? `\n    answer: ${brief(m.answer)}` : ''}`);
   const reasons: string[] = [], flags: string[] = [];
   if (matches.length) {

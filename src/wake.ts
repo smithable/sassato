@@ -4,7 +4,7 @@
 // expected-version check, and ends with the exact command to re-arm. Saving at wake time means the role
 // attests that it has read the entries, not that it has finished them: unfinished work stays on its tasks
 // (a note, a block), and urgent mail keeps coming back until it is acknowledged.
-import { lookupPulls, pullName, pullRefs, taskText } from './pull-requests.js';
+import { lookupPulls, pullName, readReferences, taskText } from './pull-requests.js';
 import { activeStop } from './control.js';
 import { readPendingWake, workerStop } from './pending-wake.js';
 import type { Row, Store } from './storage.js';
@@ -80,8 +80,8 @@ function mergedWork(s: Store, result: WaitResult): Map<string, string> {
   const merged = new Map<string, string>(), end = Date.now() + 4000, repositories = workspaceSettings(s).pull_repositories;
   for (const id of ids) {
     const task = s.get('SELECT * FROM tasks WHERE workspace_id=? AND id=?', s.ws, Number(id.slice(1)));
-    const refs = task ? pullRefs(taskText(s, task), repositories) : [];
-    if (!refs.length) continue;
+    const { refs, unresolved } = task ? readReferences(taskText(s, task), repositories) : { refs: [], unresolved: false };
+    if (!refs.length || unresolved) continue;
     const { states, unchecked } = lookupPulls(refs, end - Date.now());
     if (!unchecked.length && states.every((pull) => pull.state === 'MERGED')) {
       merged.set(id, `Every pull request it names is merged: ${states.map((pull) => `${pullName(pull)}${pull.date ? ` (${pull.date})` : ''}`).join(', ')}. Close it with its result, or note what is left.`);

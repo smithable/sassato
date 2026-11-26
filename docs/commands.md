@@ -377,7 +377,7 @@ the state and date and records nothing (exit 4); repeat with `--seen-pr 12,13`, 
 one shown. When both checks refuse, one message names both flags. A GitHub URL or
 `owner/repo#12` is taken as written. `app#12` and `app PR #12` need the short name in the
 workspace's `pull_repositories`, and a bare `#12` counts only when the text names exactly one
-of those repositories. A human sets them:
+of those repositories, so name every repository the tasks write about. A human sets them:
 
 ```sh
 sas workspace set --pull-repositories '{"app":"owner/app","tools":"owner/tools"}' --as HUMAN
