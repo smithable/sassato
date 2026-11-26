@@ -8,7 +8,7 @@ import { assertManagedIdentity,assertManagedWrite,type ManagedCredentials,type M
 // SQLite rows deliberately stay flexible at this small adapter boundary.
 export type Row = Record<string, any>;
 export type Param = SQLInputValue;
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 20;
 export function databasePath(value?: string): string {
   const path = resolve(value ?? process.env.SASSATO_DB ?? `${process.env.XDG_DATA_HOME ?? `${homedir()}/.local/share`}/sassato/sassato.db`);
   let ancestor = path;
@@ -148,7 +148,8 @@ export class Store {
       if (current === 15) { this.db.exec(MIGRATION_16); current = 16; }
       if (current === 16) { this.db.exec(MIGRATION_17); current = 17; }
       if (current === 17) { this.db.exec(MIGRATION_18); current = 18; }
-      if (current === 18) this.db.exec(MIGRATION_19);
+      if (current === 18) { this.db.exec(MIGRATION_19); current = 19; }
+      if (current === 19) this.db.exec(MIGRATION_20);
     });
   }
   private cancelClosedQuestions(): void {
@@ -416,4 +417,10 @@ CREATE TABLE refusals(id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id INTEGER
 CREATE INDEX refusals_time ON refusals(workspace_id,created_at);
 INSERT INTO schema_migrations VALUES(19,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 PRAGMA user_version=19;
+`;
+// The earlier questions the asker had read when a question that looks like them was recorded.
+const MIGRATION_20 = `
+ALTER TABLE questions ADD COLUMN seen TEXT;
+INSERT INTO schema_migrations VALUES(20,strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+PRAGMA user_version=20;
 `;

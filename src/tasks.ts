@@ -1,3 +1,4 @@
+import { similarQuestions } from './similar.js';
 import { type Store, type Row, type Param } from './storage.js';
 import { AppError, check, text, safe, integer, id, now } from './errors.js';
 import { assertWorkAllowed } from './control.js';
@@ -11,7 +12,7 @@ export const human = (s: Store): boolean => s.role(s.requireActor()).kind === 'h
 const taskId = (row: Row): string => `T${row.id}`;
 export const taskView = (row: Row): Row => ({ ...row, id: taskId(row), human_only: Boolean(row.human_only), review_required: Boolean(row.review_required), spare: Boolean(row.spare), stale: Boolean(row.lease_until && row.lease_until < now() && !terminal(row)) });
 const blockerView = (row: Row): Row => ({ ...row, id: `B${row.id}`, task_id: `T${row.task_id}` });
-const questionView = (row: Row): Row => ({ ...row, id: `H${row.id}`, task_id: `T${row.task_id}`, blocker_id: `B${row.blocker_id}`, options: JSON.parse(row.options) });
+const questionView = (row: Row): Row => ({ ...row, id: `H${row.id}`, task_id: `T${row.task_id}`, blocker_id: `B${row.blocker_id}`, options: JSON.parse(row.options), seen: row.seen ? JSON.parse(row.seen) : null });
 // What to ask for when a task is another role's: who can pass it on, and the command they run (T972).
 function retarget(row: Row, actor: string): string {
   const id = taskId(row);
@@ -400,7 +401,22 @@ export function listBlockers(s: Store, options: { task?: string; chain?: string;
   const dependencies = s.all("SELECT d.task_id,p.id,p.title,p.status,p.owner FROM dependencies d JOIN tasks p ON p.workspace_id=d.workspace_id AND p.id=d.depends_on JOIN tasks t ON t.workspace_id=d.workspace_id AND t.id=d.task_id WHERE d.workspace_id=? AND p.status!='done' AND t.status NOT IN ('done','dropped') ORDER BY d.task_id,p.id LIMIT ?", s.ws, limit).map(r => ({ id: `D${r.task_id}-${r.id}`, kind: 'dependency', task_id: `T${r.task_id}`, waiting_on: `T${r.id}`, body: r.title, status: 'open', dependency_status: r.status, owner: r.owner }));
   return [...explicit, ...dependencies].slice(0, limit);
 }
-export interface AskOptions { question: string; options?: string[]; recommendation?: string; command?: string; forRole?: string }
+// guard: refuse until every earlier question that looks like this one is named in seen (the
+// ask-human command; a rule proposal and an answer recorded after the fact are never refused).
+export interface AskOptions { question: string; options?: string[]; recommendation?: string; command?: string; forRole?: string; guard?: boolean; seen?: string[] }
+const brief = (value: string) => { const line = value.replace(/\s+/g, ' ').trim(); return line.length > 300 ? `${line.slice(0, 300)}…` : line; };
+function seenQuestions(s: Store, task: Row, options: AskOptions): string[] {
+  const seen = (options.seen ?? []).map(value => {
+    const question = s.get('SELECT id FROM questions WHERE workspace_id=? AND id=?', s.ws, id(value.trim(), 'H'));
+    check(question, `Question ${value.trim()} not found in this workspace`, 3);
+    return `H${question.id}`;
+  });
+  if (!options.guard) return seen;
+  const matches = similarQuestions(s, { id: task.id, title: task.title }, options.question);
+  if (matches.every(m => seen.includes(`H${m.id}`))) return seen;
+  const lines = matches.map(m => `H${m.id} on T${m.task_id} (${m.status === 'pending' ? `pending since ${m.created_at.slice(0, 10)}` : `answered ${m.answered_at.slice(0, 10)}`}): ${brief(m.question)}${m.answer ? `\n    answer: ${brief(m.answer)}` : ''}`);
+  check(false, `Not recorded: earlier questions look like this one. Read them first.\n  ${lines.join('\n  ')}\nIf yours is still needed, repeat it with --seen ${matches.map(m => `H${m.id}`).join(',')}`, 4);
+}
 // askedBy: the role that asked, when a human records a question relayed for it (recordAnswered).
 export function askHuman(s: Store, task: string, options: AskOptions, askedBy?: string): Row {
   return s.tx(() => {
@@ -409,8 +425,9 @@ export function askHuman(s: Store, task: string, options: AskOptions, askedBy?: 
     if (options.recommendation !== undefined) text(options.recommendation, 'recommendation', 5000);
     if (options.command !== undefined) text(options.command, 'command', 10_000);
     const recipient = humanRole(s, options.forRole);
+    const seen = seenQuestions(s, row, options);
     const blocker = block(s, row, { kind: 'human', waitingOn: recipient, body: options.question }, actor);
-    const at = now(), n = s.run('INSERT INTO questions(workspace_id,task_id,blocker_id,asked_by,question,options,recommendation,command,created_at) VALUES(?,?,?,?,?,?,?,?,?)', s.ws, row.id, id(blocker.id, 'B'), askedBy ?? actor, options.question, JSON.stringify(choices), options.recommendation ?? null, options.command ?? null, at).lastInsertRowid;
+    const at = now(), n = s.run('INSERT INTO questions(workspace_id,task_id,blocker_id,asked_by,question,options,recommendation,command,created_at,seen) VALUES(?,?,?,?,?,?,?,?,?,?)', s.ws, row.id, id(blocker.id, 'B'), askedBy ?? actor, options.question, JSON.stringify(choices), options.recommendation ?? null, options.command ?? null, at, seen.length ? JSON.stringify(seen) : null).lastInsertRowid;
     const question = s.get('SELECT * FROM questions WHERE workspace_id=? AND id=?', s.ws, n)!;
     s.index('question', `H${n}`, options.question, JSON.stringify({ options: choices, recommendation: options.recommendation, command: options.command }), { role: recipient, status: 'pending', updated_at: at });
     s.event('task', task, 'human-question', questionView(question));

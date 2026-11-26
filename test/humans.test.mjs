@@ -366,3 +366,57 @@ test('humans --brief splits what waits on a human into what holds work back and 
   const many=tasks.renderHumanBrief({for_role:'alice',blocks_work:[{id:'T1',kind:'task',age_days:0,text:'x',holds_back:['T2','T3','T4','T5','T6']}],can_wait:[]});
   assert.match(many,/holds back T2, T3, T4, 2 more$/m);
 });
+
+test('ask-human refuses once when an earlier question looks like the new one, until it is named as seen',t=>{
+  const {s,db}=fixture(t);
+  const add=title=>tasks.addTask(s,{title}).id;
+  const first=add('Preview picture of an invitation');
+  const q=tasks.askHuman(s,first,{question:'The browser crashes inside the sandbox on the host: where should the invitation preview picture be made?',guard:true});
+  as(s,'alice',()=>tasks.answerQuestion(s,q.id,'On the development machine'));
+  const second=add('Invitation landing page');
+  const again='The preview picture cannot be made on the host, the browser crashes in its sandbox: what should the invitation page show?';
+  s.actor='builder';
+  const ask=extra=>raw(db,['--as','builder','ask-human',second,again,...extra]);
+  const refused=ask([]);
+  assert.equal(refused.status,4,refused.stderr);
+  assert.match(refused.stderr,/H1 on T1 \(answered/);assert.match(refused.stderr,/On the development machine/);assert.match(refused.stderr,/--seen H1/);
+  assert.equal(tasks.showTask(s,second).status,'open');
+  const tasksBefore=s.get('SELECT count(*) n FROM tasks').n;
+  assert.equal(raw(db,['--as','builder','ask-human','--new','Invitation preview picture',again]).status,4);
+  assert.equal(s.get('SELECT count(*) n FROM tasks').n,tasksBefore);
+  assert.equal(ask(['--seen','H9']).status,3);
+  const asked=run(db,['--as','builder','ask-human',second,again,'--seen','H1']);
+  assert.deepEqual(asked.seen,['H1']);assert.deepEqual(showRecord(s,asked.id).seen,['H1']);
+  // A pending question counts too; an unrelated one is recorded at once.
+  assert.equal(raw(db,['--as','builder','ask-human',add('Invitation preview'),again,'--seen','H1']).status,4);
+  assert.equal(run(db,['--as','builder','ask-human',add('Backups'),'How many days of database backups do we keep?']).seen,null);
+});
+
+test('an answered question on the same task does not refuse a follow-up, and unguarded callers are never refused',t=>{
+  const {s,db}=fixture(t),id=tasks.addTask(s,{title:'Release the beta server'}).id,question='The beta server is behind main: release the new build tonight?';
+  run(db,['--as','alice','ask-human',id,question]);
+  as(s,'alice',()=>tasks.answerQuestion(s,'H1','Not tonight'));
+  run(db,['--as','alice','ask-human',id,question]);
+  const other=tasks.addTask(s,{title:'Release the beta server again'}).id;
+  s.actor='alice';
+  assert.equal(tasks.askHuman(s,other,{question}).seen,null);
+});
+
+test('the same question word for word is stopped however short it is',t=>{
+  const {s,db}=fixture(t),ask=()=>raw(db,['--as','builder','ask-human',tasks.addTask(s,{title:'Release'}).id,'Deploy tonight?']);
+  assert.equal(ask().status,0);
+  assert.equal(ask().status,4);
+});
+
+test('recording an answer names open human tasks that share its words',t=>{
+  const {s,db}=fixture(t);
+  const check=tasks.addTask(s,{title:'Host check: does the browser sandbox run for the preview picture',body:'Run the browser on the host and see if the preview picture comes out.',humanOnly:true}).id;
+  tasks.addTask(s,{title:'Renew the domain',body:'Pay the yearly fee.',humanOnly:true});
+  const id=tasks.addTask(s,{title:'Preview picture of an invitation'}).id;
+  tasks.askHuman(s,id,{question:'Where should the preview picture be made, now that the browser sandbox fails on the host?'});
+  const r=raw(db,['--as','alice','answer','H1','On the development machine']);
+  assert.equal(r.status,0,r.stderr);
+  const warnings=JSON.parse(r.stdout).warnings;
+  assert.equal(warnings.length,1);assert.match(warnings[0],new RegExp(`^${check} \\(alice\\) is an open human task`));
+  assert.match(r.stderr,/sassato: warning: /);
+});

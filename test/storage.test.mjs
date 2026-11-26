@@ -96,7 +96,7 @@ function questionV4Fixture(t) {
     INSERT INTO questions_v4(id,workspace_id,task_id,blocker_id,asked_by,question,options,recommendation,command,status,answer,answered_by,created_at,answered_at) SELECT id,workspace_id,task_id,blocker_id,asked_by,question,options,recommendation,command,status,answer,answered_by,created_at,answered_at FROM questions;
     DROP TABLE questions;ALTER TABLE questions_v4 RENAME TO questions;CREATE INDEX questions_status ON questions(workspace_id,status,id);
     UPDATE sqlite_sequence SET seq=100 WHERE name='questions';
-    ${stripNewerSql}
+    ${stripNewerSql.replace('ALTER TABLE questions DROP COLUMN seen; ','')}
     DROP TABLE supervisor_waiters; DROP TABLE supervisor_pings; DROP TABLE managed_transitions; DROP TABLE managed_workers; DROP TABLE managed_controllers; DROP TABLE task_briefs; DROP TABLE checkout_bindings; DROP TABLE project_checkouts; DROP TABLE registry_checkouts; DROP TABLE registry_repositories; DROP TABLE registry_projects; DROP TABLE jobs; ALTER TABLE messages DROP COLUMN reply;
     DELETE FROM schema_migrations WHERE version>=5;PRAGMA user_version=4;COMMIT;`);
   db.close();return {path,dropped,pending,completed,obsolete,active,live,answeredTask,answered,external,before};

@@ -2,6 +2,11 @@
 
 ## 0.1.3 — unreleased
 
+- `ask-human` refuses once when a pending or recently answered question looks like the new one, prints it with its
+  answer, and records when the asker repeats with `--seen H1,H2`; `answer` warns about open human tasks that share
+  its words. Before, an answered question could be asked again by someone who had not looked. Database schema 20
+  (`sassato migrate`).
+
 - `send all` goes to every agent role and leaves human-kind roles out; a human role is reached only by name.
   Before, an announcement to the agents also landed in the human's mail.
 

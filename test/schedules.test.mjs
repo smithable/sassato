@@ -28,7 +28,7 @@ test('schema 18 adds the schedule tables and keeps every row',t=>{
   const {s,path}=fixture(t);
   addTask(s,{title:'Old work'});s.close();
   const db=new DatabaseSync(path);
-  db.exec('DROP INDEX refusals_time; DROP TABLE refusals; DROP TABLE schedule_ticks; DROP TABLE occurrences; DROP INDEX schedules_due; DROP TABLE schedules; DELETE FROM schema_migrations WHERE version>=18; PRAGMA user_version=17;');db.close();
+  db.exec('ALTER TABLE questions DROP COLUMN seen; DROP INDEX refusals_time; DROP TABLE refusals; DROP TABLE schedule_ticks; DROP TABLE occurrences; DROP INDEX schedules_due; DROP TABLE schedules; DELETE FROM schema_migrations WHERE version>=18; PRAGMA user_version=17;');db.close();
   const again=new Store(path,'human');again.use('team');
   assert.equal(again.get('PRAGMA user_version').user_version,SCHEMA_VERSION);
   assert.deepEqual(again.all('SELECT title FROM tasks').map(r=>r.title),['Old work']);
