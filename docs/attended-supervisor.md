@@ -385,7 +385,8 @@ set -e  # a failed lookup stops here, before any evidence file is overwritten
 PROBE_DB="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["database"])' "$TRIAL_EVIDENCE/trial.json")"
 PROBE_REPO="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["repository"])' "$TRIAL_EVIDENCE/trial.json")"
 export PROBE_DB PROBE_REPO
-sassato show "$(python3 -c 'import json,os;print(json.load(open(os.environ["TRIAL_EVIDENCE"]+"/trial.json"))["task"])')" --db "$PROBE_DB" --workspace supervisor-probe --as operator --json > "$TRIAL_EVIDENCE/task.json"
+TRIAL_TASK="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["task"])' "$TRIAL_EVIDENCE/trial.json")"
+sassato show "$TRIAL_TASK" --db "$PROBE_DB" --workspace supervisor-probe --as operator --json > "$TRIAL_EVIDENCE/task.json"
 sassato sessions --db "$PROBE_DB" --workspace supervisor-probe --as operator --json > "$TRIAL_EVIDENCE/sessions.json"
 sassato export "$TRIAL_EVIDENCE/export" --db "$PROBE_DB" --workspace supervisor-probe --as operator
 sassato backup "$TRIAL_EVIDENCE/after-trial.db" --db "$PROBE_DB" --workspace supervisor-probe --as operator
