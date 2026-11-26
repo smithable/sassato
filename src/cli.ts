@@ -441,11 +441,13 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           check(p.length<=(title===undefined?2:1),'ask-human takes one question text: quote it, and separate options with | inside --options (--options \'yes|no\')');
           const task=title===undefined?arg('task'):undefined,question=rest('question');
           const seenPulls=str('seen-pr')?.split(',').map(value=>{check(/^#?[0-9]{1,7}$/.test(value.trim()),'--seen-pr takes pull request numbers separated by commas');return Number(value.trim().replace('#',''));});
+          const ask={guard:true,seen:str('seen')?.split(','),seenPulls,question,forRole:str('for'),options:str('options')?.split('|'),recommendation:str('recommend'),command:str('command')};
+          t.checkAsk(s,task,ask);
           // Looked up here, before the transaction that records the question.
           const text=[task===undefined?title:taskText(s,s.task(task)),question].join('\n');
           const {states,unchecked}=lookupPulls(pullRefs(text,workspaceSettings(s).pull_repositories),8000);
           if(unchecked.length)console.error(`sassato: state not checked for ${unchecked.map(pullName).join(', ')} (gh unavailable or too slow, or not a pull request)`);
-          const options={guard:true,seen:str('seen')?.split(','),seenPulls,pulls:states,question,forRole:str('for'),options:str('options')?.split('|'),recommendation:str('recommend'),command:str('command')};
+          const options={...ask,pulls:states};
           result=task===undefined?t.askHumanNew(s,title!,options):t.askHuman(s,task,options);
           result=withWarnings(result,states.map(pull=>`${pullName(pull)} is ${pull.state}${pull.date?` ${pull.date}`:''}.`));
           break;

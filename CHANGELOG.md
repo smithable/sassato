@@ -2,6 +2,8 @@
 
 ## 0.1.3 — unreleased
 
+- `ask-human` makes every other refusal (a task another role holds, bad options, an unknown `--seen`) before it
+  looks pull requests up, so those are answered at once.
 - `ask-human` looks up the pull requests a task or question names and refuses once when one is merged or closed,
   printing its state and date; it records when the asker repeats with `--seen-pr 12`. A wake's open-work and
   own-work entries say when every pull request a task names is merged. Short names for repositories are a new
