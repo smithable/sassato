@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -254,4 +255,33 @@ test('a repeated --ack acknowledges every mail named; another option given twice
   const twice = cli('inbox', '--limit', 'none', '--limit', '5', '--workspace', 'team');
   assert.equal(twice.status, 0, twice.stderr);
   assert.notEqual(cli('inbox', '--limit', 'none', '--workspace', 'team').status, 0, 'the first value alone is refused');
+});
+
+test('a second waiter for the same role is refused while the first runs, and a dead or ended one never blocks', async t => {
+  const f = fixture(t);
+  const m = as(f.s, 'a', () => send(f.s, ['b'], 'please look', { urgent: true }));
+  const args = ['bin/sassato.js', 'wake', '--db', f.b.path, '--as', 'b', '--workspace', 'team', '--stop-file', f.stopFile];
+  const armed = () => f.b.all("SELECT id FROM events WHERE workspace_id=? AND entity='waiter' AND action='armed'", f.b.ws).length;
+  // A long settle keeps the first waiting while mail arrives beside it.
+  const first = spawn(process.execPath, [...args, '--ack', m.id, '--timeout', '60', '--settle', '60', '--settle-max', '60']);
+  t.after(() => first.kill('SIGKILL'));
+  for (let n = 0; !armed(); n++) { assert.ok(n < 600, 'the first waiter armed'); await new Promise(done => setTimeout(done, 50)); }
+  const other = as(f.s, 'a', () => send(f.s, ['b'], 'second mail', { needsReply: true }));
+  const receipt = () => f.b.get('SELECT state FROM receipts WHERE workspace_id=? AND message_id=? AND recipient=?', f.b.ws, Number(other.id.slice(1)), 'b').state;
+  const before = receipt();
+  const second = spawnSync(process.execPath, [...args, '--ack', other.id, '--timeout', '1'], { encoding: 'utf8' });
+  assert.equal(second.status, 4, second.stderr);
+  assert.match(second.stderr, new RegExp(`already running \\(pid ${first.pid}, armed `));
+  assert.equal(armed(), 1);
+  assert.equal(receipt(), before);
+  // Killed, it records no end: its process is gone, so the next one arms.
+  const gone = new Promise(done => first.once('exit', done));
+  first.kill('SIGKILL'); await gone;
+  await quick(f);
+  assert.equal(armed(), 2);
+  // That one ended in this still-running process: an end releases the role, and so does an identity that does not match.
+  await quick(f, { timeout: 1 });
+  as(f.b, 'b', () => f.b.tx(() => f.b.event('waiter', 'b', 'armed', { pid: process.pid, identity: 'another-boot:1' })));
+  await quick(f, { timeout: 1 });
+  assert.equal(armed(), 5);
 });

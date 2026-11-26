@@ -990,6 +990,10 @@ sas wake --since 123 --idle-minutes 50 --as builder  # first wake after context
 sas wake --since 140 --ack M12,M13 --as builder      # the re-arm: acknowledge what was handled, wait again
 ```
 
+A role has one waiter per workspace: while one is running, a second `wake` exits 4 naming its process and
+when it armed, and acknowledges and records nothing. A waiter that was killed, or ran before a reboot, never
+blocks (Linux; where the process cannot be read nothing is refused). `--pending` arms nothing and is not affected.
+
 In one call, `wake`:
 1. acknowledges the mail named with `--ack`, once its cursor checks have passed;
 2. waits exactly like `wait` (same settling, STOP and immediate signals). It needs saved progress (the start

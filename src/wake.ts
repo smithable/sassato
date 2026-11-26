@@ -10,7 +10,7 @@ import { readPendingWake, workerStop } from './pending-wake.js';
 import type { Row, Store } from './storage.js';
 import { waitWithManagedObservation } from './managed-wait.js';
 import { getNotificationProgress, saveNotificationProgress } from './notification-progress.js';
-import { acknowledgeMany } from './coordination.js';
+import { acknowledgeMany, processIdentity } from './coordination.js';
 import { idleOpenWork, unchangedIdleText, type WaitOptions, type WaitResult } from './mail-wait.js';
 import { DIGEST_GROUPS, scoreExplanation, type DigestEntry } from './wait-digest.js';
 import { AppError, check, integer, text } from './errors.js';
@@ -122,9 +122,14 @@ export async function wake(s: Store, options: WakeOptions = {}): Promise<WakeOut
   const cause = options.waitingFor !== undefined ? { text: text(options.waitingFor, 'what the wait is for', 300), source: 'said' } : waitCause(s, actor);
   const waitingFor = cause?.text ?? '';
   const expect = options.expectMinutes === undefined ? null : integer(options.expectMinutes, 'expected minutes', 0, 10_080);
-  const acknowledged = options.ack?.length ? acknowledgeMany(s, options.ack).map((row) => String(row.message_id)) : [];
-  // The waiter's own events (T1253) give the time table its waiting spans; they are bookkeeping, never activity.
-  s.tx(() => s.event('waiter', actor, 'armed', { since, idle_minutes: options.idleMinutes ?? null, waiting_for: waitingFor || null, waiting_source: cause?.source ?? null, expect_minutes: expect }));
+  // One write transaction: a refused wake acknowledges and records nothing, and two started together cannot both arm.
+  const acknowledged = s.tx(() => {
+    refuseSecondWaiter(s, actor);
+    const ids = options.ack?.length ? acknowledgeMany(s, options.ack).map((row) => String(row.message_id)) : [];
+    // The waiter's own events (T1253) give the time table its waiting spans; they are bookkeeping, never activity.
+    s.event('waiter', actor, 'armed', { since, idle_minutes: options.idleMinutes ?? null, waiting_for: waitingFor || null, waiting_source: cause?.source ?? null, expect_minutes: expect, pid: process.pid, identity: processIdentity(process.pid) });
+    return ids;
+  });
   let result;
   try {
     if (expect !== null && expect >= 10 && options.armNotice) {
@@ -140,6 +145,20 @@ export async function wake(s: Store, options: WakeOptions = {}): Promise<WakeOut
   }
   s.tx(() => s.event('waiter', actor, 'ended', { reason: result.reason, cursor: result.cursor }));
   return formatWake(s,options,since,result,acknowledged,before.version,mergedWork(s,result));
+}
+
+/**
+ * One waiter per role and workspace. The latest armed one still runs when it recorded no end and its process is
+ * the very one that armed (start time and boot, so a killed waiter, a reused PID or a reboot never blocks).
+ * Where the identity cannot be read (not Linux, another PID namespace) nothing is refused.
+ */
+function refuseSecondWaiter(s: Store, actor: string): void {
+  const last = s.get(`SELECT action,detail,created_at FROM events WHERE workspace_id=? AND entity='waiter' AND entity_id=? ORDER BY id DESC LIMIT 1`, s.ws, actor);
+  if (last?.action !== 'armed') return;
+  let armed: { pid?: unknown; identity?: unknown };
+  try { armed = JSON.parse(last.detail) ?? {}; } catch { return; }
+  if (typeof armed.identity !== 'string' || processIdentity(Number(armed.pid)) !== armed.identity) return;
+  check(false, `A waiter for ${actor} in ${s.workspace} is already running (pid ${armed.pid}, armed ${last.created_at}). Nothing was acknowledged or armed. Keep that one: its end wakes you. To replace it, stop it first.`, 4);
 }
 
 /**
