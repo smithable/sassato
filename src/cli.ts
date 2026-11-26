@@ -442,7 +442,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           const task=title===undefined?arg('task'):undefined,question=rest('question');
           const seenPulls=str('seen-pr')?.split(',').map(value=>{check(/^#?[0-9]{1,7}$/.test(value.trim()),'--seen-pr takes pull request numbers separated by commas');return Number(value.trim().replace('#',''));});
           const ask={guard:true,seen:str('seen')?.split(','),seenPulls,question,forRole:str('for'),options:str('options')?.split('|'),recommendation:str('recommend'),command:str('command')};
-          t.checkAsk(s,task,ask);
+          t.checkAsk(s,task,ask,title);
           // Looked up here, before the transaction that records the question.
           const text=[task===undefined?title:taskText(s,s.task(task)),question].join('\n');
           const {states,unchecked}=lookupPulls(pullRefs(text,workspaceSettings(s).pull_repositories),8000);

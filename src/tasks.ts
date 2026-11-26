@@ -437,7 +437,8 @@ function guardAsk(s: Store, task: Row, options: AskOptions): { seen: string[]; s
 // askedBy: the role that asked, when a human records a question relayed for it (recordAnswered).
 // Every refusal that needs no lookup. The command line runs it before it looks pull requests
 // up (task undefined: --new), and askHuman again inside its transaction.
-export function checkAsk(s: Store, task: string | undefined, options: AskOptions) {
+export function checkAsk(s: Store, task: string | undefined, options: AskOptions, title?: string) {
+  if (task === undefined && title !== undefined) text(title, 'title', 500);
   const row = task === undefined ? undefined : s.task(task), actor = row === undefined || isTopic(row) ? s.requireActor() : writable(s, row);
   if (row) active(row);
   text(options.question, 'question');

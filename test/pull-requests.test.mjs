@@ -62,7 +62,8 @@ test('ask-human makes its other refusals before it looks any pull request up', t
     [[theirs.id, 'Ship it?'], /Only the owner/],
     [[mine.id, 'Ship it?', '--options', options], /At most 20 options/],
     [[mine.id, 'Ship it?', '--seen', 'H999'], /Question H999 not found/],
-    [['--new', 'About app#12', 'Ship it?', '--for', 'nobody'], /nobody/]
+    [['--new', 'About app#12', 'Ship it?', '--for', 'nobody'], /nobody/],
+    [['--new', `About app#12 ${'x'.repeat(500)}`, 'Ship it?'], /title/i]
   ]) {
     const out = f.run(['ask-human', ...args]);
     assert.notEqual(out.status, 0, String(message));
