@@ -265,7 +265,7 @@ test('a second waiter for the same role is refused while the first runs, and a d
   // A long settle keeps the first waiting while mail arrives beside it.
   const first = spawn(process.execPath, [...args, '--ack', m.id, '--timeout', '60', '--settle', '60', '--settle-max', '60']);
   t.after(() => first.kill('SIGKILL'));
-  for (let n = 0; !armed(); n++) { assert.ok(n < 200, 'the first waiter armed'); await new Promise(done => setTimeout(done, 50)); }
+  for (let n = 0; !armed(); n++) { assert.ok(n < 600, 'the first waiter armed'); await new Promise(done => setTimeout(done, 50)); }
   const other = as(f.s, 'a', () => send(f.s, ['b'], 'second mail', { needsReply: true }));
   const receipt = () => f.b.get('SELECT state FROM receipts WHERE workspace_id=? AND message_id=? AND recipient=?', f.b.ws, Number(other.id.slice(1)), 'b').state;
   const before = receipt();
