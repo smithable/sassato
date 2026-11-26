@@ -407,12 +407,15 @@ export function listBlockers(s: Store, options: { task?: string; chain?: string;
 // ask-human command; a rule proposal and an answer recorded after the fact are never refused).
 export interface AskOptions { question: string; options?: string[]; recommendation?: string; command?: string; forRole?: string; guard?: boolean; seen?: string[]; pulls?: PullState[]; seenPulls?: number[] }
 const brief = (value: string) => { const line = value.replace(/\s+/g, ' ').trim(); return line.length > 300 ? `${line.slice(0, 300)}…` : line; };
-function guardAsk(s: Store, task: Row, options: AskOptions): { seen: string[]; seenPulls: string[] } {
-  const seen = (options.seen ?? []).map(value => {
+function seenQuestions(s: Store, values: string[] = []): string[] {
+  return values.map(value => {
     const question = s.get('SELECT id FROM questions WHERE workspace_id=? AND id=?', s.ws, id(value.trim(), 'H'));
     check(question, `Question ${value.trim()} not found in this workspace`, 3);
     return `H${question.id}`;
   });
+}
+function guardAsk(s: Store, task: Row, options: AskOptions): { seen: string[]; seenPulls: string[] } {
+  const seen = seenQuestions(s, options.seen);
   const named = options.seenPulls ?? [];
   if (!options.guard) return { seen, seenPulls: [] };
   const over = (options.pulls ?? []).filter(pull => pull.state !== 'OPEN');
@@ -432,13 +435,23 @@ function guardAsk(s: Store, task: Row, options: AskOptions): { seen: string[]; s
   check(false, `Not recorded: ${reasons.join('\nAlso, ')}\nIf yours is still needed, repeat it with ${flags.join(' ')}`, 4);
 }
 // askedBy: the role that asked, when a human records a question relayed for it (recordAnswered).
+// Every refusal that needs no lookup. The command line runs it before it looks pull requests
+// up (task undefined: --new), and askHuman again inside its transaction.
+export function checkAsk(s: Store, task: string | undefined, options: AskOptions, title?: string) {
+  if (task === undefined && title !== undefined) text(title, 'title', 500);
+  const row = task === undefined ? undefined : s.task(task), actor = row === undefined || isTopic(row) ? s.requireActor() : writable(s, row);
+  if (row) active(row);
+  text(options.question, 'question');
+  const choices = options.options ?? []; check(Array.isArray(choices) && choices.length <= 20, 'At most 20 options are allowed'); for (const choice of choices) text(choice, 'option', 2000);
+  if (options.recommendation !== undefined) text(options.recommendation, 'recommendation', 5000);
+  if (options.command !== undefined) text(options.command, 'command', 10_000);
+  const recipient = humanRole(s, options.forRole);
+  seenQuestions(s, options.seen);
+  return { row, actor, choices, recipient };
+}
 export function askHuman(s: Store, task: string, options: AskOptions, askedBy?: string): Row {
   return s.tx(() => {
-    const row = s.task(task), actor = isTopic(row) ? s.requireActor() : writable(s, row); active(row); text(options.question, 'question');
-    const choices = options.options ?? []; check(Array.isArray(choices) && choices.length <= 20, 'At most 20 options are allowed'); for (const choice of choices) text(choice, 'option', 2000);
-    if (options.recommendation !== undefined) text(options.recommendation, 'recommendation', 5000);
-    if (options.command !== undefined) text(options.command, 'command', 10_000);
-    const recipient = humanRole(s, options.forRole);
+    const checked = checkAsk(s, task, options), row = checked.row!, { actor, choices, recipient } = checked;
     const { seen, seenPulls } = guardAsk(s, row, options);
     const blocker = block(s, row, { kind: 'human', waitingOn: recipient, body: options.question }, actor);
     const at = now(), n = s.run('INSERT INTO questions(workspace_id,task_id,blocker_id,asked_by,question,options,recommendation,command,created_at,seen) VALUES(?,?,?,?,?,?,?,?,?,?)', s.ws, row.id, id(blocker.id, 'B'), askedBy ?? actor, options.question, JSON.stringify(choices), options.recommendation ?? null, options.command ?? null, at, seen.length ? JSON.stringify(seen) : null).lastInsertRowid;

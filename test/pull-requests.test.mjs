@@ -54,6 +54,25 @@ console.log(JSON.stringify({ state, mergedAt: state === 'MERGED' ? '2026-01-02T0
 }
 const pending = s => s.all("SELECT * FROM questions WHERE status='pending'").length;
 
+test('ask-human makes its other refusals before it looks any pull request up', t => {
+  const f = fixture(t, { 12: 'MERGED' });
+  const mine = tasks.addTask(f.s, { title: 'Move app#12', owner: 'builder' }), theirs = tasks.addTask(f.s, { title: 'Held app#12', owner: 'alice' });
+  const options = Array.from({ length: 21 }, (_, n) => `choice ${n}`).join('|');
+  for (const [args, message] of [
+    [[theirs.id, 'Ship it?'], /Only the owner/],
+    [[mine.id, 'Ship it?', '--options', options], /At most 20 options/],
+    [[mine.id, 'Ship it?', '--seen', 'H999'], /Question H999 not found/],
+    [['--new', 'About app#12', 'Ship it?', '--for', 'nobody'], /nobody/],
+    [['--new', `About app#12 ${'x'.repeat(500)}`, 'Ship it?'], /title/i]
+  ]) {
+    const out = f.run(['ask-human', ...args]);
+    assert.notEqual(out.status, 0, String(message));
+    assert.match(out.stderr, message);
+  }
+  assert.deepEqual(f.asked(), []);
+  assert.equal(pending(f.s), 0);
+});
+
 test('ask-human refuses once for a merged or closed pull request the task names, in its notes too', t => {
   const f = fixture(t, { 12: 'MERGED', 13: 'CLOSED' });
   const task = tasks.addTask(f.s, { title: 'Move the app change app#12', owner: 'builder' });
