@@ -118,3 +118,16 @@ test("a wake's open work says when every pull request it names is merged, and no
   assert.doesNotMatch(out.text, new RegExp(`${unsure.id}: Every`));
   assert.doesNotMatch(out.text, new RegExp(`${elsewhere.id}: Every`));
 });
+
+test('the line is on a digest entry too, as a scored wake prints its idle work', async t => {
+  const f = fixture(t, { 12: 'MERGED' }), path = process.env.PATH;
+  process.env.PATH = f.dir; t.after(() => { process.env.PATH = path; });
+  f.s.actor = 'alice'; setWorkspaceSettings(f.s, { wake_mode: 'scored', speed: 'fast' }); f.s.actor = 'builder';
+  const task = tasks.addTask(f.s, { title: 'Finish app#12', forRole: 'builder' });
+  saveNotificationProgress(f.s, { cursor: context(f.s).snapshot_cursor, expected_version: 0 });
+  const base = Date.now() + 100; let elapsed = 0;
+  const clock = { now: () => base + elapsed, monotonic: () => elapsed, sleep: async ms => { elapsed += Math.max(ms, 1_500_000); } };
+  const out = await wake(f.s, { timeout: 1501, clock });
+  assert.ok(out.result.digest, out.text);
+  assert.match(out.text, new RegExp(`${task.id}[\\s\\S]*Every pull request it names is merged: example/app#12`));
+});

@@ -73,6 +73,8 @@ function detail(s: Store, entry: DigestEntry, since: number, until: number, merg
  * time budget for the whole wake; a task with any state unknown gets no line. */
 function mergedWork(s: Store, result: WaitResult): Map<string, string> {
   const open = (kind: string) => kind === 'open-work' || kind === 'own-work';
+  // The short "nothing new" form of a repeated idle wake never shows the line: look nothing up for it.
+  if (unchangedIdleText(result.idle ?? result.scored?.idle)) return new Map();
   const ids = new Set<string>(open(result.reason) ? result.tasks ?? [] : []);
   for (const entry of result.digest?.entries ?? []) if (open(entry.kind) && !entry.unchanged) {
     for (const id of entry.tasks ?? [entry.task ?? entry.id]) ids.add(id);
