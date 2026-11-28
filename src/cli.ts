@@ -1,4 +1,4 @@
-import { lookupPulls, pullName, pullRefs, taskText } from './pull-requests.js';
+import { lookupPulls, pullName, readReferences, taskText } from './pull-requests.js';
 import { launchWatch, reconcileWatch, watchStatus } from './launch-watch.js';
 import { idleReason, wake as wakeCommand } from './wake.js';
 import { formatDigest } from './wait-digest.js';
@@ -445,7 +445,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           t.checkAsk(s,task,ask,title);
           // Looked up here, before the transaction that records the question.
           const text=[task===undefined?title:taskText(s,s.task(task)),question].join('\n');
-          const {states,unchecked}=lookupPulls(pullRefs(text,workspaceSettings(s).pull_repositories),8000);
+          const {refs,unclear}=readReferences(text,workspaceSettings(s).pull_repositories);
+          const {states,unchecked}=lookupPulls(refs,8000);
+          if(unclear.length)console.error(`sassato: state not checked for ${unclear.map(n=>`#${n}`).join(', ')} (the text names several repositories; write name#N)`);
           if(unchecked.length)console.error(`sassato: state not checked for ${unchecked.map(pullName).join(', ')} (gh unavailable or too slow, or not a pull request)`);
           const options={...ask,pulls:states};
           result=task===undefined?t.askHumanNew(s,title!,options):t.askHuman(s,task,options);
