@@ -2,6 +2,7 @@
 
 ## 0.1.3 — unreleased
 
+- **Added:** `send --re T1` tells the sender the task's status and the start of its last note, on stderr.
 - **Changed:** a bare `#12` in a text that names several repositories is no longer read as the default
   repository's: it is not looked up, `ask-human` says so, and a wake does not call the task merged.
 - **Changed:** `wake` refuses (exit 4) while another waiter for the same role and workspace is still running,

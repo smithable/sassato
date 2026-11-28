@@ -291,6 +291,13 @@ function humanOutput(value: unknown, command?: string): string {
   return JSON.stringify(value,null,2);
 }
 /** Warning lines on stderr and in the JSON result: a wait with no question (wip, checkpoint), a human task an answer may settle (answer). */
+/** For the sender of mail about a task: its status and last note, so a job already done or overtaken shows. */
+function taskNow(s: Store, taskId: string): string {
+  const task=s.task(taskId),id=`T${task.id}`;
+  const last=s.get("SELECT actor,created_at,detail FROM events WHERE workspace_id=? AND entity='task' AND entity_id=? AND action='note' ORDER BY id DESC LIMIT 1",s.ws,id);
+  const note=last?Array.from(String(JSON.parse(last.detail).note??'').replace(/[\s\x00-\x1f\x7f]+/g,' ').trim()):[];
+  return `${id} is ${task.status}; ${last?`last note (${last.actor}, ${String(last.created_at).slice(0,10)}): ${note.slice(0,200).join('')}${note.length>200?'…':''}`:'no notes'}`;
+}
 function withWarnings(result: unknown, warnings: string[]): unknown {
   for (const line of warnings) console.error(`sassato: warning: ${line}`);
   return warnings.length && result && typeof result === 'object' ? { ...result, warnings } : result;
@@ -457,7 +464,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         case 'withdraw': {const question=arg('question');result=t.withdrawQuestion(s,question,rest('reason'));break;}
         case 'answer': {const asked=str('asked');if(asked!==undefined){const relayedBy=str('relayed-by');check(relayedBy!==undefined,'--asked records a question nobody recorded: say who heard it with --relayed-by ROLE');result=t.recordAnswered(s,{question:asked,task:str('on'),title:str('new'),answer:rest('answer'),relayedBy,close:bool('close')});result=withWarnings(result,mootWarnings(s,(result as Row).id));break;}check(str('on')===undefined&&str('new')===undefined,'--on and --new go with --asked');const question=arg('question or task');result=t.answerQuestion(s,question,rest('answer'),{close:bool('close'),relayedBy:str('relayed-by')});result=withWarnings(result,mootWarnings(s,(result as Row).id));break;}
         case 'humans': empty();if(bool('brief')){check(str('limit')===undefined&&!bool('untouched'),'--brief shows the whole queue: leave out --limit and --untouched');result=t.humanBrief(s,{forRole:str('for')});break;}check(str('line-length')===undefined,'--line-length goes with --brief');result=t.humanQueue(s,{limit:num('limit'),forRole:str('for'),untouched:bool('untouched'),cut:hidden=>console.error(`sassato: ${hidden} more not shown; leave out --limit to see the whole queue`)});break;
-        case 'send': {const to=arg('recipient');result=c.send(s,to==='all'?'all':to.split(','),rest('message'),{task:str('re'),urgent:bool('urgent'),needsReply:bool('needs-reply'),now:bool('now'),urgency:str('urgency'),reason:str('reason')});break;}
+        case 'send': {const to=arg('recipient');result=c.send(s,to==='all'?'all':to.split(','),rest('message'),{task:str('re'),urgent:bool('urgent'),needsReply:bool('needs-reply'),now:bool('now'),urgency:str('urgency'),reason:str('reason')});const re=str('re');if(re!==undefined)try{console.error(`sassato: ${taskNow(s,re)}`);}catch{/* the mail is sent: a failed look must not read as a failed send */}break;}
         case 'wait': {empty();result=await waitWithManagedObservation(s,{timeout:num('timeout'),stopFile:str('stop-file'),since:num('since'),idleMinutes:num('idle-minutes'),settle:num('settle'),settleMax:num('settle-max')});if((result as WaitResult).reason==='timeout')process.exitCode=5;break;}
         case 'inbox': empty();check(!(bool('unread')&&str('state')),'Give --unread or --state, not both');result=c.inbox(s,{peek:bool('peek'),state:(bool('unread')?'unread':str('state')) as 'unread'|'read'|'done'|undefined,limit:num('limit')});break;
         case 'wake': {
