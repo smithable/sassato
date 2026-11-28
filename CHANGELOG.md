@@ -2,6 +2,7 @@
 
 ## 0.1.3 — unreleased
 
+- **Added:** `send --re T1` tells the sender the task's status and the start of its last note, on stderr.
 - **Changed:** `wake` refuses (exit 4) while another waiter for the same role and workspace is still running,
   naming its process. A killed or finished one never blocks.
 - `ask-human` makes every other refusal (a task another role holds, bad options, an unknown `--seen`) before it
