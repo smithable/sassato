@@ -377,8 +377,9 @@ the state and date and records nothing (exit 4); repeat with `--seen-pr 12,13`, 
 one shown. When both checks refuse, one message names both flags. A GitHub URL or
 `owner/repo#12` is taken as written. `app#12` and `app PR #12` need the short name in the
 workspace's `pull_repositories`. A bare `#12` is the repository the text names, when it names
-exactly one of those; otherwise the default under the key `"#"`; with no default it is not
-looked up. A word that is not a configured name does not count (`other PR #12` is read as a bare
+exactly one of those; when it names none, the default under the key `"#"` (with no default it is
+not looked up). When it names several, a bare `#12` is not looked up, `ask-human` says so, and a
+wake adds no merged line for that task; write `app#12`. A word that is not a configured name does not count (`other PR #12` is read as a bare
 number), so list every repository the tasks write about. A human sets them:
 
 ```sh
