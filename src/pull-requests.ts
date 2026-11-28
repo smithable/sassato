@@ -25,7 +25,9 @@ export function pullRefs(text: string, repositories: Record<string, string>): Pu
 export function readReferences(text: string, repositories: Record<string, string>): { refs: PullRef[]; unresolved: boolean; unclear: number[] } {
   const names = new Map(Object.entries(repositories).map(([name, repo]) => [name.toLowerCase(), repo]));
   const known = (word: string) => names.get(word.toLowerCase()) ?? [...names.values()].find(repo => repo.toLowerCase() === word.toLowerCase());
-  const mentioned = new Set((text.match(/[\w./-]+/g) ?? []).flatMap(word => known(word.replace(/[./-]+$/, '')) ?? []));
+  const urls = [...text.matchAll(/https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d{1,7})(?![\w-])/g)];
+  // A configured repository is named by its short name, its full name, or a pull request URL.
+  const mentioned = new Set([...(text.match(/[\w./-]+/g) ?? []).map(word => word.replace(/[./-]+$/, '')), ...urls.map(m => m[1])].flatMap(word => known(word) ?? []));
   const bare = mentioned.size === 1 ? [...mentioned][0] : mentioned.size ? undefined : names.get('#');
   const unclear = new Set<number>();
   const found = new Map<string, PullRef>();
@@ -34,7 +36,7 @@ export function readReferences(text: string, repositories: Record<string, string
     if (!repo) unresolved = true;
     else found.set(`${repo.toLowerCase()}#${Number(number)}`, { repo, number: Number(number) });
   };
-  for (const m of text.matchAll(/https?:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d{1,7})(?![\w-])/g)) if (REPOSITORY.test(m[1])) add(m[1], m[2]);
+  for (const m of urls) if (REPOSITORY.test(m[1])) add(m[1], m[2]);
   for (const m of text.matchAll(/#(\d{1,7})(?![\w-])/g)) {
     const before = text.slice(Math.max(0, m.index - 160), m.index);
     const attached = /[\w./-]+$/.exec(before)?.[0];

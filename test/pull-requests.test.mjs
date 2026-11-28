@@ -167,6 +167,9 @@ test('with a default repository, a bare number in a text that names none is look
   assert.deepEqual(read('app and tools both: see #12'), []);
   assert.deepEqual(readReferences('app and tools both: see #12, tools#13', set), { refs: [{ repo: 'example/tools', number: 13 }], unresolved: true, unclear: [12] });
   assert.deepEqual(read('elsewhere#12'), []);
+  // A repository named only by a pull request's URL counts as named.
+  assert.deepEqual(read('https://github.com/example/app/pull/7 and tools#8, see #12'), ['example/app#7', 'example/tools#8']);
+  assert.deepEqual(read('https://github.com/example/tools/pull/7, then #12'), ['example/tools#7', 'example/tools#12']);
 });
 
 test('ask-human says which bare numbers it did not check when the text names several repositories', t => {
